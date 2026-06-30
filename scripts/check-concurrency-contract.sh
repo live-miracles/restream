@@ -14,6 +14,7 @@ scripts/resource-limit cargo test health_endpoint_exposes_probe_and_egress_fault
 scripts/resource-limit cargo test output_status_and_health_preserve_recent_egress_failure_after_unregister --test api -- --nocapture
 scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state_after_restart --test api -- --nocapture
 scripts/resource-limit cargo test health_endpoint_clears_recent_disconnect_details_after_reconnect --test api -- --nocapture
+scripts/resource-limit cargo test health_endpoint_surfaces_repeated_transient_disconnects_as_flapping --test api -- --nocapture
 scripts/resource-limit cargo test stale_job_update_cannot_clobber_replacement_attempt --test db -- --nocapture
 scripts/resource-limit cargo test multiple_stale_job_updates_cannot_clobber_newest_attempt --test db -- --nocapture
 scripts/resource-limit cargo test stale_ingest_unregister_cannot_clobber_replacement_attempt --lib -- --nocapture
@@ -25,6 +26,8 @@ scripts/resource-limit cargo test prop_no_loss_no_gap_no_duplication --test ring
 scripts/resource-limit cargo test write_batch_round_trips_random_chunks --lib -- --nocapture
 scripts/resource-limit cargo test epoll_waiter_coordination --lib -- --nocapture
 scripts/resource-limit cargo test recent_ingest_disconnect_respects_grace_window --lib -- --nocapture
+scripts/resource-limit cargo test build_recent_ingest_outcome_resets_flap_streak_outside_window --lib -- --nocapture
+scripts/resource-limit cargo test health_snapshot_surfaces_flapping_after_repeated_reconnects --lib -- --nocapture
 scripts/resource-limit cargo test late_retry_state_update_is_ignored_after_output_restarts --lib -- --nocapture
 scripts/resource-limit cargo test repeated_late_retry_updates_cannot_poison_newest_output_attempt --lib -- --nocapture
 scripts/resource-limit cargo test output_status_surfaces_retry_backoff_after_failure --lib -- --nocapture

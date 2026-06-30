@@ -149,10 +149,14 @@ Input lifecycle snapshots also expose transient upstream grace explicitly:
 |---|---|
 | `disconnectGraceActive` | `true` only while the most recent ingest disconnect is still inside `RESTREAM_INGEST_DISCONNECT_GRACE_MS` |
 | `disconnectGraceRemainingMs` | Remaining milliseconds before that grace window expires; `null` when no grace is active |
+| `recentDisconnectCount` | Number of ingest disconnects still inside the short flap window. Resets to `0` once that window expires. |
+| `flapping` | `true` when repeated ingest disconnects happened inside the flap window, even if the publisher is currently back online. |
 
 These fields let the dashboard distinguish "publisher briefly dropped, keep
 watching" from a genuinely idle pipeline, instead of inferring grace only from
-the combination of `status=off` plus recent disconnect metadata.
+the combination of `status=off` plus recent disconnect metadata. They also let
+the UI surface "publisher is flapping" separately from a one-off transient
+drop or a fully healthy live input.
 
 The egress bitrate updates only after a sample window longer than 0.5 seconds
 and only when the byte counter advances.

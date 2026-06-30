@@ -10363,6 +10363,38 @@ async fn recovery_live_cases(
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+        stop_child(&mut resumed_child).await;
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+
+        let second_gap_health = api.get_json("/api/v1/engine/health").await.ok();
+        let second_gap_input = second_gap_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["input"].clone())
+            .unwrap_or(Value::Null);
+        let second_gap_grace_active = second_gap_input["disconnectGraceActive"] == true;
+        let second_gap_grace_remaining = second_gap_input["disconnectGraceRemainingMs"]
+            .as_u64()
+            .is_some_and(|remaining| remaining > 0 && remaining <= 5_000);
+
+        let mut second_resumed_child = spawn_publisher(
+            fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-transient", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(api, &pid, Duration::from_secs(30)).await?;
+
+        let second_resume_deadline = Instant::now() + Duration::from_secs(15);
+        let mut second_resumed = false;
+        while Instant::now() < second_resume_deadline {
+            if metrics.video_count.load(Ordering::Relaxed) > baseline_video + 20 {
+                second_resumed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
         let final_connections = metrics.connections.load(Ordering::Relaxed);
         let final_status = api
             .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
@@ -10387,23 +10419,34 @@ async fn recovery_live_cases(
             && final_input["lastDisconnectReason"].is_null()
             && final_input["lastFailurePhase"].is_null()
             && final_input["recentDisconnectError"] == false;
+        let final_flapping = final_input["flapping"] == true;
+        let final_recent_disconnect_count =
+            final_input["recentDisconnectCount"].as_u64().unwrap_or(0);
         let passed = baseline_video >= 10
             && baseline_connections == 1
             && gap_preserved
             && resumed
+            && second_gap_grace_active
+            && second_gap_grace_remaining
+            && second_resumed
             && final_connections == baseline_connections
             && final_status_running
             && !final_retrying
-            && final_disconnect_cleared;
+            && final_disconnect_cleared
+            && final_flapping
+            && final_recent_disconnect_count >= 2;
         println!(
-            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={} gapStatusRunning={} gapRetrying={} finalRetrying={} disconnectCleared={})",
+            "[fault] Transient RTMP publisher drop preserves egress: {} (connections={} resumed={} secondResumed={} gapStatusRunning={} gapRetrying={} finalRetrying={} disconnectCleared={} flapping={} disconnectCount={})",
             if passed { "PASS" } else { "FAIL" },
             final_connections,
             resumed,
+            second_resumed,
             gap_status_running,
             gap_retrying,
             final_retrying,
             final_disconnect_cleared,
+            final_flapping,
+            final_recent_disconnect_count,
         );
         results.push(json!({
             "test": "transient-rtmp-drop-preserves-egress",
@@ -10419,10 +10462,16 @@ async fn recovery_live_cases(
             "gapGraceRemainingBounded": gap_grace_remaining,
             "gapInputSnapshot": gap_input,
             "resumed": resumed,
+            "secondGapGraceActive": second_gap_grace_active,
+            "secondGapGraceRemainingBounded": second_gap_grace_remaining,
+            "secondGapInputSnapshot": second_gap_input,
+            "secondResumed": second_resumed,
             "finalConnections": final_connections,
             "finalStatusRunning": final_status_running,
             "finalRetrying": final_retrying,
             "finalDisconnectCleared": final_disconnect_cleared,
+            "finalFlapping": final_flapping,
+            "finalRecentDisconnectCount": final_recent_disconnect_count,
             "finalInputSnapshot": final_input,
         }));
 
@@ -10432,7 +10481,7 @@ async fn recovery_live_cases(
                 json!({}),
             )
             .await;
-        stop_child(&mut resumed_child).await;
+        stop_child(&mut second_resumed_child).await;
         sink_task.abort();
     }
 

@@ -120,6 +120,7 @@ surface already covers it.
 - `scripts/check-concurrency-contract.sh`
 - `tests/api.rs`
   - `health_endpoint_exposes_probe_and_egress_fault_fields`
+  - `health_endpoint_surfaces_repeated_transient_disconnects_as_flapping`
   - `output_status_and_health_preserve_recent_egress_failure_after_unregister`
 - `tests/ring_migration.rs`
   - `prop_no_loss_no_gap_no_duplication`
@@ -129,6 +130,8 @@ surface already covers it.
   - `stale_egress_unregister_cannot_clobber_replacement_attempt`
   - `stale_egress_error_cannot_poison_replacement_attempt`
   - `stale_egress_queue_removal_cannot_drop_replacement_queue`
+  - `build_recent_ingest_outcome_resets_flap_streak_outside_window`
+  - `health_snapshot_surfaces_flapping_after_repeated_reconnects`
   - `output_status_surfaces_retry_backoff_after_failure`
   - `prop_egress_lifecycle_preserves_runtime_and_health_invariants`
 - `src/media/avio.rs`
@@ -146,4 +149,4 @@ current gate set. Remaining high-value areas include:
 
 - More model-checked coverage for lifecycle registries beyond the TS muxer seam
 - Property tests for lifecycle permutations where loom is not the right tool
-- More live chaos cases for slow-sink isolation and repeated downstream flaps
+- More live chaos cases for slow-sink isolation and broader repeated downstream flaps across protocols

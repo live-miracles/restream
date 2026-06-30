@@ -47,6 +47,7 @@ let inspectPipelineId: string | null = null;
 let inspectGraphPipelineId: string | null = null;
 let inspectGraphInFlight: Promise<void> | null = null;
 let inspectGraphRequestSeq = 0;
+let inspectGraphRenderedStateKey: string | null = null;
 let inspectGraphAutoRefresh = true;
 let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
 let settingsMounted = false;
@@ -291,10 +292,12 @@ function pipelineHealthLabel(pipe: PipelineView): {
   }
   if (pipe.input.status === "warning") {
     return {
-      label: "Input warning",
+      label: pipe.input.flapping ? "Input flapping" : "Input warning",
       cls: badgeClassForTone("warning"),
       tone: "warning",
-      detail: "check ingest",
+      detail: pipe.input.flapping
+        ? `${Math.max(pipe.input.recentDisconnectCount, 2)} recent drops`
+        : "check ingest",
     };
   }
   if (pipe.input.status !== "on") {
@@ -345,6 +348,14 @@ function pipelineHealthLabel(pipe: PipelineView): {
       detail: "input live",
     };
   }
+  if (pipe.input.flapping) {
+    return {
+      label: "Input flapping",
+      cls: badgeClassForTone("warning"),
+      tone: "warning",
+      detail: `${Math.max(pipe.input.recentDisconnectCount, 2)} recent drops`,
+    };
+  }
   return {
     label: "Live",
     cls: badgeClassForTone("success"),
@@ -371,12 +382,16 @@ function summaryCounts() {
   return {
     pipelines: state.pipelines.length,
     liveInputs: state.pipelines.filter(
-      (pipe) => pipe.input.status === "on" && pipe.input.probeReady,
+      (pipe) =>
+        pipe.input.status === "on" &&
+        pipe.input.probeReady &&
+        !pipe.input.flapping,
     ).length,
     warningInputs: state.pipelines.filter(
       (pipe) =>
         pipe.input.status === "warning" ||
-        (pipe.input.status === "on" && !pipe.input.probeReady),
+        (pipe.input.status === "on" &&
+          (!pipe.input.probeReady || pipe.input.flapping)),
     ).length,
     runningOutputs: outputs.filter(isOutputRunning).length,
     retryingOutputs: outputs.filter(isOutputRetrying).length,
@@ -406,6 +421,13 @@ function inputOverviewPill(pipe: PipelineView): string {
     return statusPill("Input probing", "warning", detail);
   }
   if (pipe.input.status === "on") {
+    if (pipe.input.flapping) {
+      return statusPill(
+        "Input flapping",
+        "warning",
+        `${Math.max(pipe.input.recentDisconnectCount, 2)} recent drops${protocol ? ` / ${protocol}` : ""}`,
+      );
+    }
     return statusPill(
       "Live input",
       "success",
@@ -414,9 +436,11 @@ function inputOverviewPill(pipe: PipelineView): string {
   }
   if (pipe.input.status === "warning") {
     return statusPill(
-      "Input warning",
+      pipe.input.flapping ? "Input flapping" : "Input warning",
       "warning",
-      protocol || "publisher attached",
+      pipe.input.flapping
+        ? `${Math.max(pipe.input.recentDisconnectCount, 2)} recent drops`
+        : protocol || "publisher attached",
     );
   }
   if (pipe.input.status === "error") {
@@ -639,6 +663,7 @@ function getInspectPipeline(): PipelineView | null {
 
 function renderInspect(): void {
   const pipe = getInspectPipeline();
+  const stateKey = inspectGraphStateKey(pipe);
   const select = document.getElementById(
     "inspect-pipeline-select",
   ) as HTMLSelectElement | null;
@@ -707,7 +732,12 @@ function renderInspect(): void {
     };
   }
 
-  if (pipe && inspectGraphPipelineId !== pipe.id) {
+  if (
+    pipe &&
+    !inspectGraphInFlight &&
+    (inspectGraphPipelineId !== pipe.id ||
+      inspectGraphRenderedStateKey !== stateKey)
+  ) {
     void refreshInspectGraph();
   }
   syncInspectGraphAutoRefresh();
@@ -716,6 +746,7 @@ function renderInspect(): void {
 function resetInspectGraphForSelection(pipeId: string | null): void {
   inspectGraphRequestSeq++;
   inspectGraphPipelineId = pipeId;
+  inspectGraphRenderedStateKey = null;
   const status = document.getElementById("inspect-graph-status");
   const container = document.getElementById("inspect-graph-container");
   if (status)
@@ -751,9 +782,9 @@ function renderInspectSummary(pipe: PipelineView | null): void {
     .join("");
 
   container.innerHTML = `<section class="border-base-content/10 bg-base-200 rounded-lg border p-3">
-        <div class="mb-2 flex items-center justify-between gap-2">
-            <h2 class="font-semibold">${escapeHtml(pipe.name)}</h2>
-            <span class="badge ${health.cls}">${health.label}</span>
+        <div class="mb-2 flex min-w-0 items-start justify-between gap-2">
+            <h2 class="min-w-0 truncate font-semibold">${escapeHtml(pipe.name)}</h2>
+            <span class="badge ${health.cls} shrink-0 whitespace-nowrap">${health.label}</span>
         </div>
         <dl class="grid grid-cols-2 gap-2 text-sm">
             <div><dt class="text-base-content/60">Input</dt><dd>${escapeHtml(pipe.input.status)}</dd></div>
@@ -803,6 +834,7 @@ function renderInspectDiagnostics(pipe: PipelineView | null): void {
 
 async function refreshInspectGraph(): Promise<void> {
   const pipe = getInspectPipeline();
+  const requestStateKey = inspectGraphStateKey(pipe);
   const status = document.getElementById("inspect-graph-status");
   const container = document.getElementById("inspect-graph-container");
   if (!pipe || !container) return;
@@ -829,6 +861,7 @@ async function refreshInspectGraph(): Promise<void> {
       return;
     }
     renderGraphInto(container, graph as Parameters<typeof renderGraphInto>[1]);
+    inspectGraphRenderedStateKey = requestStateKey;
     if (status) {
       const nodeCount = (graph as { nodes?: unknown[] }).nodes?.length || 0;
       const inputState =
@@ -843,6 +876,35 @@ async function refreshInspectGraph(): Promise<void> {
       inspectGraphInFlight = null;
     }
   }
+}
+
+function inspectGraphStateKey(pipe: PipelineView | null): string | null {
+  if (!pipe) return null;
+  const outputs = pipe.outs
+    .map((out) =>
+      [
+        out.id,
+        out.status,
+        out.desiredState,
+        out.encoding,
+        out.phase || "",
+        out.retrying ? "1" : "0",
+        out.lastError || "",
+      ].join(":"),
+    )
+    .join("|");
+  return [
+    pipe.id,
+    pipe.name,
+    pipe.input.status,
+    pipe.input.probeStatus,
+    pipe.input.readers,
+    pipe.input.audioTracks.length,
+    pipe.input.video?.codec || "",
+    pipe.hlsPreview?.active ? "1" : "0",
+    pipe.hlsPreview?.segments || 0,
+    outputs,
+  ].join("::");
 }
 
 function syncInspectGraphAutoRefresh(): void {

@@ -27,6 +27,7 @@ pub use crate::media::pipe_metrics::PipeMetrics;
 pub use crate::media::stage_metrics::StageMetrics;
 
 pub(crate) const EGRESS_PROGRESS_STALE_MS: u64 = 10_000;
+pub(crate) const INGEST_FLAP_WINDOW_MS: u64 = 30_000;
 
 /// Tracks HLS consumers for a pipeline. Persistent consumers (egress outputs)
 /// register/unregister explicitly. Transient consumers (browser preview) keep
@@ -279,6 +280,8 @@ pub struct ActiveEgress {
 pub struct RecentIngestOutcome {
     pub protocol: String,
     pub disconnected_at_ms: u64,
+    pub first_disconnect_at_ms: u64,
+    pub disconnect_count: u32,
     pub reason: Option<String>,
     pub failure_phase: Option<String>,
     pub had_error: bool,
@@ -720,6 +723,52 @@ impl MediaEngine {
         recent.get(pipeline_id).is_some_and(|outcome| {
             Self::now_epoch_ms().saturating_sub(outcome.disconnected_at_ms) < grace_ms
         })
+    }
+
+    pub(crate) fn recent_ingest_flap_state(recent: Option<&RecentIngestOutcome>) -> (u32, bool) {
+        let Some(recent) = recent else {
+            return (0, false);
+        };
+        if Self::now_epoch_ms().saturating_sub(recent.disconnected_at_ms) > INGEST_FLAP_WINDOW_MS {
+            return (0, false);
+        }
+        (recent.disconnect_count, recent.disconnect_count >= 2)
+    }
+
+    fn build_recent_ingest_outcome(
+        previous: Option<&RecentIngestOutcome>,
+        protocol: String,
+        phase: Option<&str>,
+        reason: Option<String>,
+        had_error: bool,
+        remote_addr: Option<String>,
+        bytes_received: u64,
+    ) -> RecentIngestOutcome {
+        let disconnected_at_ms = Self::now_epoch_ms();
+        let (first_disconnect_at_ms, disconnect_count) = previous
+            .filter(|previous| {
+                disconnected_at_ms.saturating_sub(previous.disconnected_at_ms)
+                    <= INGEST_FLAP_WINDOW_MS
+            })
+            .map(|previous| {
+                (
+                    previous.first_disconnect_at_ms,
+                    previous.disconnect_count.saturating_add(1),
+                )
+            })
+            .unwrap_or((disconnected_at_ms, 1));
+
+        RecentIngestOutcome {
+            protocol,
+            disconnected_at_ms,
+            first_disconnect_at_ms,
+            disconnect_count,
+            reason,
+            failure_phase: phase.map(ToOwned::to_owned),
+            had_error,
+            remote_addr,
+            bytes_received,
+        }
     }
 
     pub async fn active_ingest_count(&self) -> usize {
@@ -1409,7 +1458,6 @@ impl MediaEngine {
             attempt_id,
         };
         tokens.insert(pipeline_id.to_string(), token.clone());
-        self.ingests.recent.write().await.remove(pipeline_id);
 
         let mut ingests = self.ingests.active.write().await;
         ingests.insert(
@@ -1465,15 +1513,16 @@ impl MediaEngine {
             return;
         };
 
-        let snapshot = RecentIngestOutcome {
-            protocol: ingest.protocol.clone(),
-            disconnected_at_ms: Self::now_epoch_ms(),
+        let previous = self.ingests.recent.read().await.get(pipeline_id).cloned();
+        let snapshot = Self::build_recent_ingest_outcome(
+            previous.as_ref(),
+            ingest.protocol.clone(),
+            phase,
             reason,
-            failure_phase: phase.map(ToOwned::to_owned),
             had_error,
-            remote_addr: ingest.remote_addr.clone(),
-            bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
-        };
+            ingest.remote_addr.clone(),
+            ingest.bytes_received.load(Ordering::Relaxed),
+        );
         drop(ingests);
 
         self.ingests
@@ -1499,15 +1548,16 @@ impl MediaEngine {
             return false;
         }
 
-        let snapshot = RecentIngestOutcome {
-            protocol: ingest.protocol.clone(),
-            disconnected_at_ms: Self::now_epoch_ms(),
+        let previous = self.ingests.recent.read().await.get(pipeline_id).cloned();
+        let snapshot = Self::build_recent_ingest_outcome(
+            previous.as_ref(),
+            ingest.protocol.clone(),
+            phase,
             reason,
-            failure_phase: phase.map(ToOwned::to_owned),
             had_error,
-            remote_addr: ingest.remote_addr.clone(),
-            bytes_received: ingest.bytes_received.load(Ordering::Relaxed),
-        };
+            ingest.remote_addr.clone(),
+            ingest.bytes_received.load(Ordering::Relaxed),
+        );
         drop(ingests);
 
         self.ingests
@@ -1539,6 +1589,8 @@ impl MediaEngine {
                 .or_insert_with(|| RecentIngestOutcome {
                     protocol: ingest.protocol,
                     disconnected_at_ms: Self::now_epoch_ms(),
+                    first_disconnect_at_ms: Self::now_epoch_ms(),
+                    disconnect_count: 1,
                     reason: None,
                     failure_phase: None,
                     had_error: false,
@@ -1589,6 +1641,8 @@ impl MediaEngine {
                 .or_insert_with(|| RecentIngestOutcome {
                     protocol: ingest.protocol,
                     disconnected_at_ms: Self::now_epoch_ms(),
+                    first_disconnect_at_ms: Self::now_epoch_ms(),
+                    disconnect_count: 1,
                     reason: None,
                     failure_phase: None,
                     had_error: false,
@@ -3705,6 +3759,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processing_graph_omits_stale_codec_edge_when_output_no_longer_needs_it() {
+        let engine = std::sync::Arc::new(MediaEngine::new());
+        let pipeline_id = "pipeline-graph-stale-codec";
+        engine
+            .try_register_ingest(pipeline_id, "stream-key", "file")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                pipeline_id,
+                Some(VideoMeta {
+                    codec: "hevc".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+
+        let output = crate::types::Output {
+            id: "out-graph-stale-codec".to_string(),
+            pipeline_id: pipeline_id.to_string(),
+            name: "Graph RTMP".to_string(),
+            url: "rtmp://example/live/test".to_string(),
+            monitoring_url: None,
+            desired_state: "running".to_string(),
+            encoding: "h264+atrack:1".to_string(),
+        };
+
+        let _ = crate::application::egress::prepare_output_ring(&engine, &output).await;
+        engine
+            .update_ingest_meta(
+                pipeline_id,
+                Some(VideoMeta {
+                    codec: "h264".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+
+        let stages = engine.active_transcoder_stages(pipeline_id).await;
+        assert!(
+            stages.iter().any(|(stage, live)| *stage
+                == StageKind::codec_edge(
+                    "hevc_to_h264",
+                    StageKind::audio_route("atrack:1", StageKind::video_preset("h264"))
+                )
+                && *live),
+            "test precondition: stale codec-edge stage should still exist in the engine registry"
+        );
+
+        let graph =
+            crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[output]).await;
+        let nodes = graph["nodes"].as_array().unwrap();
+
+        assert!(
+            nodes.iter().any(|node| node["stageKey"] == "video:h264"),
+            "current output path should still render its video stage"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["stageKey"] == "audio:atrack:1:from:video:h264"),
+            "current output path should still render its audio routing stage"
+        );
+        assert!(
+            !nodes
+                .iter()
+                .any(|node| node["stageKey"] == "hevc_to_h264:from:audio:atrack:1:from:video:h264"),
+            "graph should omit stale codec-edge stages that no longer belong to the output path"
+        );
+    }
+
+    #[tokio::test]
     async fn ingest_bytes_and_meta_on_nonexistent_pipeline_is_noop() {
         let engine = MediaEngine::new();
         // Should not panic
@@ -4618,6 +4748,8 @@ mod tests {
             RecentIngestOutcome {
                 protocol: "rtmp".to_string(),
                 disconnected_at_ms: now_ms,
+                first_disconnect_at_ms: now_ms,
+                disconnect_count: 1,
                 reason: Some("publisher disconnected".to_string()),
                 failure_phase: Some("disconnect".to_string()),
                 had_error: false,
@@ -4630,6 +4762,8 @@ mod tests {
             RecentIngestOutcome {
                 protocol: "srt".to_string(),
                 disconnected_at_ms: now_ms.saturating_sub(1_000),
+                first_disconnect_at_ms: now_ms.saturating_sub(1_000),
+                disconnect_count: 1,
                 reason: Some("receiver stopped".to_string()),
                 failure_phase: Some("receive".to_string()),
                 had_error: true,
@@ -4654,6 +4788,80 @@ mod tests {
             !engine.has_recent_ingest_disconnect("missing", 250).await,
             "pipelines without a recent disconnect record must not be treated as recent"
         );
+    }
+
+    #[test]
+    fn build_recent_ingest_outcome_resets_flap_streak_outside_window() {
+        let now_ms = MediaEngine::now_epoch_ms();
+        let previous = RecentIngestOutcome {
+            protocol: "rtmp".to_string(),
+            disconnected_at_ms: now_ms.saturating_sub(INGEST_FLAP_WINDOW_MS + 1),
+            first_disconnect_at_ms: now_ms.saturating_sub(INGEST_FLAP_WINDOW_MS + 10_000),
+            disconnect_count: 4,
+            reason: Some("publisher disconnected".to_string()),
+            failure_phase: Some("disconnect".to_string()),
+            had_error: false,
+            remote_addr: Some("127.0.0.1:1935".to_string()),
+            bytes_received: 2048,
+        };
+
+        let next = MediaEngine::build_recent_ingest_outcome(
+            Some(&previous),
+            "rtmp".to_string(),
+            Some("disconnect"),
+            Some("publisher disconnected".to_string()),
+            false,
+            Some("127.0.0.1:1935".to_string()),
+            4096,
+        );
+
+        assert_eq!(next.disconnect_count, 1);
+        assert_eq!(next.first_disconnect_at_ms, next.disconnected_at_ms);
+    }
+
+    #[tokio::test]
+    async fn health_snapshot_surfaces_flapping_after_repeated_reconnects() {
+        let engine = MediaEngine::new();
+        let pipelines = vec!["p1".to_string()];
+
+        for protocol in ["rtmp", "rtmp"] {
+            engine
+                .try_register_ingest("p1", "key", protocol)
+                .await
+                .expect("ingest registration should succeed");
+            engine
+                .record_ingest_disconnect(
+                    "p1",
+                    Some("disconnect"),
+                    Some("publisher disconnected".to_string()),
+                    false,
+                )
+                .await;
+            engine.unregister_ingest("p1").await;
+        }
+
+        let off_snapshot =
+            test_health_snapshot_with_disconnect_grace(&engine, &pipelines, &HashMap::new(), 5_000)
+                .await;
+        let off_input = &off_snapshot["pipelines"]["p1"]["input"];
+        assert_eq!(off_input["recentDisconnectCount"], 2);
+        assert_eq!(off_input["flapping"], true);
+
+        engine
+            .try_register_ingest("p1", "key", "rtmp")
+            .await
+            .expect("reconnect registration should succeed");
+
+        let on_snapshot = test_health_snapshot(&engine, &pipelines, &HashMap::new()).await;
+        let on_input = &on_snapshot["pipelines"]["p1"]["input"];
+        assert_eq!(on_input["status"], "on");
+        assert_eq!(on_input["recentDisconnectCount"], 2);
+        assert_eq!(on_input["flapping"], true);
+        assert!(on_input["lastSessionProtocol"].is_null());
+        assert!(on_input["lastDisconnectReason"].is_null());
+        assert!(on_input["lastFailurePhase"].is_null());
+        assert!(on_input["lastDisconnectAt"].is_null());
+        assert!(on_input["lastDisconnectAgeMs"].is_null());
     }
 
     #[tokio::test]

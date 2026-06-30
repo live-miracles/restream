@@ -250,6 +250,11 @@ recent classified output snapshot, including `status`, `phase`, `lastError`,
 `retrying`/`nextRetryAt`, so failure cleanup does not erase operator context.
 Returns `404` only when the output has no active or recent runtime state.
 
+`GET /api/v1/engine/health` carries the complementary ingest-side instability
+signal. In addition to `disconnectGraceActive` / `disconnectGraceRemainingMs`,
+the input snapshot now includes `recentDisconnectCount` and `flapping` so
+clients can distinguish a single recent drop from repeated reconnect churn.
+
 ## Probe, Graph, and Diagnostics
 
 ### `GET /api/v1/pipelines/:pipelineId/probe`

@@ -2272,6 +2272,8 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     );
     assert_eq!(disconnected_input["lastFailurePhase"], "disconnect");
     assert_eq!(disconnected_input["recentDisconnectError"], false);
+    assert_eq!(disconnected_input["recentDisconnectCount"], 1);
+    assert_eq!(disconnected_input["flapping"], false);
     assert_eq!(disconnected_input["disconnectGraceActive"], true);
     assert!(
         disconnected_input["disconnectGraceRemainingMs"]
@@ -2359,8 +2361,68 @@ async fn health_endpoint_clears_recent_disconnect_details_after_reconnect() {
     assert!(input["lastDisconnectAt"].is_null());
     assert!(input["lastDisconnectAgeMs"].is_null());
     assert_eq!(input["recentDisconnectError"], false);
+    assert_eq!(input["recentDisconnectCount"], 1);
+    assert_eq!(input["flapping"], false);
     assert_eq!(input["disconnectGraceActive"], false);
     assert!(input["disconnectGraceRemainingMs"].is_null());
+}
+
+#[tokio::test]
+async fn health_endpoint_surfaces_repeated_transient_disconnects_as_flapping() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13083"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    for _ in 0..2 {
+        engine
+            .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13083", "rtmp")
+            .await
+            .expect("ingest registration should succeed");
+        engine
+            .record_ingest_disconnect(
+                &pid,
+                Some("disconnect"),
+                Some("publisher disconnected".to_string()),
+                false,
+            )
+            .await;
+        engine.unregister_ingest(&pid).await;
+    }
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13083", "rtmp")
+        .await
+        .expect("reconnect registration should succeed");
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let input = &body["pipelines"][&pid]["input"];
+    assert_eq!(input["status"], "on");
+    assert_eq!(input["recentDisconnectCount"], 2);
+    assert_eq!(input["flapping"], true);
+    assert!(input["lastSessionProtocol"].is_null());
+    assert!(input["lastDisconnectReason"].is_null());
+    assert!(input["lastFailurePhase"].is_null());
+    assert!(input["lastDisconnectAt"].is_null());
+    assert!(input["lastDisconnectAgeMs"].is_null());
 }
 
 // --- Regression: Round 6 #2 — Security headers ---

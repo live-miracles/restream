@@ -181,6 +181,12 @@ function parsePipelinesInfo(
         recentDisconnectError: Boolean(
           healthByPipeline[p.id]?.input?.recentDisconnectError,
         ),
+        recentDisconnectCount:
+          typeof healthByPipeline[p.id]?.input?.recentDisconnectCount ===
+          "number"
+            ? Number(healthByPipeline[p.id].input.recentDisconnectCount)
+            : 0,
+        flapping: Boolean(healthByPipeline[p.id]?.input?.flapping),
         disconnectGraceActive,
         disconnectGraceRemainingMs,
         lastRemoteAddr: healthByPipeline[p.id]?.input?.lastRemoteAddr || null,
@@ -252,6 +258,8 @@ function parsePipelinesInfo(
           lastDisconnectReason: null,
           lastFailurePhase: null,
           recentDisconnectError: false,
+          recentDisconnectCount: 0,
+          flapping: false,
           disconnectGraceActive: false,
           disconnectGraceRemainingMs: null,
           lastRemoteAddr: null,

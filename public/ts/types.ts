@@ -189,6 +189,8 @@ export interface InputHealth {
   lastDisconnectReason?: string | null;
   lastFailurePhase?: string | null;
   recentDisconnectError?: boolean;
+  recentDisconnectCount?: number;
+  flapping?: boolean;
   disconnectGraceActive?: boolean;
   disconnectGraceRemainingMs?: number | null;
   lastRemoteAddr?: string | null;
@@ -310,6 +312,8 @@ export interface InputView {
   lastDisconnectReason: string | null;
   lastFailurePhase: string | null;
   recentDisconnectError: boolean;
+  recentDisconnectCount: number;
+  flapping: boolean;
   disconnectGraceActive: boolean;
   disconnectGraceRemainingMs: number | null;
   lastRemoteAddr: string | null;

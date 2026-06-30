@@ -325,7 +325,9 @@ function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
     mediaUrl: inputLive ? localPreviewUrl : null,
     emptyMessage:
       pipe.input.status === "on"
-        ? "Waiting for the first HLS segments."
+        ? pipe.input.flapping
+          ? "Publisher is reconnecting repeatedly. Preview may flicker until the ingest stabilizes."
+          : "Waiting for the first HLS segments."
         : pipe.input.status === "warning" && pipe.input.disconnectGraceActive
           ? "Publisher recently dropped. Waiting for reconnect before grace expires."
           : pipe.input.status === "warning"
@@ -339,7 +341,9 @@ function buildLocalCard(pipe: PipelineView): ControlRoomCardDescriptor {
     monitoringUrl: localPreviewUrl,
     statusLabel:
       pipe.input.status === "on"
-        ? "Live"
+        ? pipe.input.flapping
+          ? "Flapping"
+          : "Live"
         : pipe.input.status === "warning"
           ? pipe.input.disconnectGraceActive
             ? "Recovering"

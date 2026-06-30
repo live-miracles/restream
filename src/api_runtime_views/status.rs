@@ -70,6 +70,7 @@ pub(crate) async fn health_snapshot(
         let input_json = if let Some(ingest) = ingest_opt {
             api_view_models::active_pipeline_input_json(
                 ingest,
+                recent_ingests.get(pipeline_id.as_str()),
                 total_bytes_sent,
                 readers_count,
                 reader_metrics,

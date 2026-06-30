@@ -299,6 +299,7 @@ pub(crate) fn reader_snapshot_json(
 
 pub(crate) fn active_pipeline_input_json(
     ingest: &ActiveIngest,
+    recent: Option<&RecentIngestOutcome>,
     total_bytes_sent: u64,
     readers_count: usize,
     reader_metrics: Vec<serde_json::Value>,
@@ -330,6 +331,7 @@ pub(crate) fn active_pipeline_input_json(
     let probe_ready = ingest.video.is_some() || !audio_tracks.is_empty();
     let probe_status = if probe_ready { "ready" } else { "pending" };
     let probe_pending_ms = (!probe_ready).then_some((elapsed_secs * 1000.0).round() as u64);
+    let (recent_disconnect_count, flapping) = MediaEngine::recent_ingest_flap_state(recent);
 
     serde_json::json!({
         "status": "on",
@@ -353,6 +355,8 @@ pub(crate) fn active_pipeline_input_json(
         "lastDisconnectReason": null,
         "lastFailurePhase": null,
         "recentDisconnectError": false,
+        "recentDisconnectCount": recent_disconnect_count,
+        "flapping": flapping,
         "disconnectGraceActive": false,
         "disconnectGraceRemainingMs": null,
         "lastRemoteAddr": null,
@@ -374,6 +378,7 @@ pub(crate) fn inactive_pipeline_input_json(
     } else {
         last_disconnect_age_ms.and_then(|age_ms| disconnect_grace_ms.checked_sub(age_ms))
     };
+    let (recent_disconnect_count, flapping) = MediaEngine::recent_ingest_flap_state(recent);
     serde_json::json!({
         "status": "off",
         "probeReady": false,
@@ -391,6 +396,8 @@ pub(crate) fn inactive_pipeline_input_json(
         "lastDisconnectReason": recent.and_then(|recent| recent.reason.clone()),
         "lastFailurePhase": recent.and_then(|recent| recent.failure_phase.clone()),
         "recentDisconnectError": recent.is_some_and(|recent| recent.had_error),
+        "recentDisconnectCount": recent_disconnect_count,
+        "flapping": flapping,
         "disconnectGraceActive": disconnect_grace_remaining_ms.is_some(),
         "disconnectGraceRemainingMs": disconnect_grace_remaining_ms,
         "lastRemoteAddr": recent.and_then(|recent| recent.remote_addr.clone()),
@@ -803,6 +810,7 @@ mod tests {
     use crate::domain::stage::StageKind;
     use crate::media::engine::RecentIngestOutcome;
     use crate::media::srt::serialize_pipeline_srt_ingest_policy;
+    use crate::media::stage_metrics::StageMetrics;
 
     #[test]
     fn pipeline_response_helpers_preserve_pipeline_and_file_ingest_shape() {
@@ -906,6 +914,8 @@ mod tests {
         let recent = RecentIngestOutcome {
             protocol: "srt".to_string(),
             disconnected_at_ms: MediaEngine::now_epoch_ms() - 2_000,
+            first_disconnect_at_ms: MediaEngine::now_epoch_ms() - 2_000,
+            disconnect_count: 1,
             reason: Some("socket closed".to_string()),
             failure_phase: Some("ingest".to_string()),
             had_error: true,
@@ -926,7 +936,50 @@ mod tests {
         assert_eq!(value["bytesSent"], 5678);
         assert_eq!(value["disconnectGraceActive"], true);
         assert!(value["disconnectGraceRemainingMs"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(value["recentDisconnectCount"], 1);
+        assert_eq!(value["flapping"], false);
         assert_eq!(value["lastSessionProtocol"], "srt");
+    }
+
+    #[test]
+    fn active_pipeline_input_surfaces_recent_flapping_without_old_disconnect_fields() {
+        let ingest = ActiveIngest {
+            attempt_id: 1,
+            stream_key: "stream".to_string(),
+            start_time: std::time::Instant::now(),
+            protocol: "rtmp".to_string(),
+            bytes_received: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            metrics: std::sync::Arc::new(StageMetrics::new()),
+            remote_addr: Some("127.0.0.1:1935".to_string()),
+            video: None,
+            audio: None,
+            audio_tracks: std::sync::Mutex::new(std::sync::Arc::new(Vec::new())),
+            quality: crate::media::engine::PublisherQuality::default(),
+            keyframe_times: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            video_sequence_header: std::sync::Mutex::new(None),
+            audio_sequence_header: std::sync::Mutex::new(None),
+        };
+        let recent = RecentIngestOutcome {
+            protocol: "rtmp".to_string(),
+            disconnected_at_ms: MediaEngine::now_epoch_ms(),
+            first_disconnect_at_ms: MediaEngine::now_epoch_ms() - 3_000,
+            disconnect_count: 2,
+            reason: Some("publisher disconnected".to_string()),
+            failure_phase: Some("disconnect".to_string()),
+            had_error: false,
+            remote_addr: Some("127.0.0.1:1935".to_string()),
+            bytes_received: 2048,
+        };
+
+        let value = active_pipeline_input_json(&ingest, Some(&recent), 0, 0, Vec::new());
+
+        assert_eq!(value["status"], "on");
+        assert_eq!(value["recentDisconnectCount"], 2);
+        assert_eq!(value["flapping"], true);
+        assert!(value["lastSessionProtocol"].is_null());
+        assert!(value["lastDisconnectReason"].is_null());
+        assert!(value["lastFailurePhase"].is_null());
+        assert!(value["lastDisconnectAt"].is_null());
     }
 
     #[test]
