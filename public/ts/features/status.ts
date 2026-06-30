@@ -12,6 +12,7 @@ import {
   showCopiedNotification,
   showErrorAlert,
 } from "../core/utils.js";
+import { handleDashboardRuntimeLifecycleLog } from "./dashboard.js";
 import { updateRestreamProcessIndicatorFromLog } from "./restream-process-indicator.js";
 import type { AppLogRow } from "../types.js";
 
@@ -102,6 +103,20 @@ function syncProcessIndicatorFromLogs(logs: AppLogRow[]): void {
   for (const log of logs) {
     updateRestreamProcessIndicatorFromLog(log);
   }
+}
+
+function latestStatusProcessLog(logs: AppLogRow[]): AppLogRow | null {
+  let latest: AppLogRow | null = null;
+  let latestId = Number.NEGATIVE_INFINITY;
+  for (const log of logs) {
+    const id = Number(log?.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    if (id > latestId) {
+      latest = log;
+      latestId = id;
+    }
+  }
+  return latest;
 }
 
 function valueOrDash(value: unknown): string {
@@ -584,7 +599,7 @@ function openStatusStream(): void {
         const data = JSON.parse((event as MessageEvent).data) as AppLogRow;
         rememberStatusProcessLogId(data);
         mergeStatusProcessLogs([data]);
-        syncProcessIndicatorFromLogs([data]);
+        handleDashboardRuntimeLifecycleLog(data);
         renderStatusSnapshot();
       } catch {
         // Ignore malformed frames and wait for reconnect/backfill.
@@ -639,6 +654,10 @@ export async function loadStatus(): Promise<void> {
     ? (processHistory?.logs as AppLogRow[])
     : [];
   syncProcessIndicatorFromLogs([...statusProcessLogs].reverse());
+  const latestLog = latestStatusProcessLog(statusProcessLogs);
+  if (latestLog) {
+    handleDashboardRuntimeLifecycleLog(latestLog);
+  }
   statusStreamLastEventId = latestStatusProcessLogId();
   renderStatusSnapshot();
   closeStatusStream();

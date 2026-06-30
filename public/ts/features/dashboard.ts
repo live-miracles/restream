@@ -48,7 +48,6 @@ const DASHBOARD_RUNTIME_LIFECYCLE_STREAM_MODES = new Set([
   "control",
   "media",
   "settings",
-  "status",
 ]);
 const DASHBOARD_CONFIG_MODES = new Set([
   "overview",

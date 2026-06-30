@@ -128,7 +128,9 @@ The dashboard runtime surface now prefers a single `/api/v1/dashboard/runtime`
 snapshot whenever a refresh needs both engine health and host metrics; only
 metrics-only modes still hit `/metrics/system` directly. Output start/stop,
 recording, and file-ingest controls now reuse runtime-only refreshes so they do
-not pull dashboard settings again after every toggle.
+not pull dashboard settings again after every toggle. Status mode now reuses
+its own restream log SSE instead of opening a second lifecycle-only dashboard
+stream on top.
 
 ## Testing
 

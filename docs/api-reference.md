@@ -253,15 +253,16 @@ Pipeline, inspect, control-room, and publisher-health runtime surfaces
 subscribe to this SSE endpoint with `event_class=lifecycle` so they refresh
 immediately on process lifecycle transitions instead of waiting for the next
 periodic poll.
-Settings, media, and status also keep a narrower restream-scoped
-`event_class=lifecycle` feed open so the global Rust-process indicator can
-react to shutdown/fault/ready events without waking the heavier runtime health
-polls in those modes.
+Settings and media also keep a narrower restream-scoped `event_class=lifecycle`
+feed open so the global Rust-process indicator can react to
+shutdown/fault/ready events without waking the heavier runtime health polls in
+those modes.
 The output-history and pipeline-history "Live" views use the same SSE endpoint
 with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
 resume cursors instead of periodic history re-polls.
-Status mode also layers the same `scope=restream` stream over its initial
-snapshot so restream process activity can update live without repeated log GETs.
+Status mode reuses its own `scope=restream` stream over the initial snapshot so
+restream process activity can update live without repeated log GETs or a second
+lifecycle-only SSE connection.
 Hidden dashboard tabs now close these SSE feeds and resume from the last seen
 event id when visible again, falling back to slower snapshot polling only while
 the tab is backgrounded.

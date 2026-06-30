@@ -954,6 +954,169 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
   }
 });
 
+test("status mode reuses its own restream log SSE without opening a second lifecycle stream", async () => {
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=status";
+  appendRoot(document, "div", "dashboard-grid");
+  appendRoot(document, "div", "overview-mode-panel");
+  appendRoot(document, "div", "inspect-mode-panel");
+  appendRoot(document, "div", "control-mode-panel");
+  appendRoot(document, "div", "media-mode-panel");
+  appendRoot(document, "div", "settings-mode-panel");
+  appendRoot(document, "div", "status-mode-panel");
+  appendRoot(document, "div", "status-mode-content");
+  appendRoot(document, "div", "status-versions");
+  appendRoot(document, "div", "workspace-mode-summary");
+  appendRoot(document, "div", "restream-process-indicator");
+  appendRoot(document, "span", "restream-process-dot");
+  appendRoot(document, "span", "restream-process-text");
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === "/api/v1/audio-caps") {
+      return new Response(
+        JSON.stringify({ caps: {}, platformLabels: {} }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/metrics/system" || href === "/metrics/system?view=summary") {
+      return new Response(
+        JSON.stringify({
+          generatedAt: "2026-06-30T00:00:00Z",
+          cpu: { usagePercent: 12 },
+          memory: { usedPercent: 20 },
+          disk: { usedPercent: 40 },
+          network: { downloadKbps: 1, uploadKbps: 2 },
+          engine: {
+            cpuPercent: 3,
+            totalMemoryBytes: 1234,
+            cpuSampleReady: true,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/api/v1/engine") {
+      return new Response(
+        JSON.stringify({
+          restream: { version: "0.1.0" },
+          sbom: { endpoint: "/api/v1/engine/sbom" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (href === "/api/v1/logs?scope=restream&limit=80&order=desc") {
+      return new Response(
+        JSON.stringify({
+          logs: [
+            {
+              id: 91,
+              ts: "2026-06-30T00:00:01Z",
+              level: "INFO",
+              target: "restream::api",
+              message: "dashboard api server listening",
+              fields: "{}",
+              pipelineId: null,
+              outputId: null,
+              eventType: "restream.http.ready",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const streams = [];
+  class FakeEventSource {
+    constructor(url) {
+      this.url = String(url);
+      this.handlers = new Map();
+      this.closed = false;
+      streams.push(this);
+    }
+
+    addEventListener(type, handler) {
+      const handlers = this.handlers.get(type) || [];
+      handlers.push(handler);
+      this.handlers.set(type, handlers);
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+
+  const originalEventSource = globalThis.EventSource;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  Object.defineProperty(globalThis, "EventSource", {
+    value: FakeEventSource,
+    configurable: true,
+  });
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  try {
+    const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+    const modes = await loadCompiledFrontendModule("features/modes.js");
+
+    dashboard.startDashboardRuntime();
+    modes.renderDashboardModes();
+    await flushAsyncWork();
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    assert.equal(
+      requests.filter((href) => href === "/api/v1/engine").length,
+      1,
+      "status mode should fetch the engine status snapshot once",
+    );
+    assert.equal(
+      requests.filter(
+        (href) => href === "/api/v1/logs?scope=restream&limit=80&order=desc",
+      ).length,
+      1,
+      "status mode should fetch its log snapshot once",
+    );
+    assert.equal(
+      streams.length,
+      1,
+      "status mode should keep only its restream log stream open",
+    );
+    assert.equal(
+      streams[0].url,
+      "/api/v1/logs/stream?scope=restream&last_event_id=91",
+    );
+    assert.equal(
+      streams.some((stream) =>
+        String(stream.url).includes("event_class=lifecycle"),
+      ),
+      false,
+      "status mode should not open a second lifecycle-only SSE stream",
+    );
+  } finally {
+    for (const stream of streams) {
+      stream.close?.();
+    }
+    if (originalEventSource === undefined) {
+      delete globalThis.EventSource;
+    } else {
+      Object.defineProperty(globalThis, "EventSource", {
+        value: originalEventSource,
+        configurable: true,
+      });
+    }
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
 test("pipeline runtime mode keeps the full health contract", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeWithFullMetricsUrl =

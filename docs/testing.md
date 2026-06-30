@@ -350,6 +350,7 @@ Frontend transport/control layering now has explicit Node-scope coverage for:
 - output toggle responsiveness while start/stop API requests are in flight
 - restream process-indicator transitions driven by lifecycle logs and health recovery
 - non-runtime mode lifecycle SSE behavior that keeps process state live without re-enabling health polls
+- status mode avoiding a duplicate lifecycle-only SSE by reusing its restream log stream
 
 ## Code Coverage
 
