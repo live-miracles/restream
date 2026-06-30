@@ -4849,14 +4849,9 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     let sys = System::new_all();
     status["os"] = system_status(&sys);
 
-    let server_name = db::get_meta(&state.db, "server_name")
+    let settings = load_settings_snapshot(&state.db, &state.security)
         .await
-        .unwrap_or(Some("Name".to_string()))
-        .unwrap_or("Name".to_string());
-    let ingest_host = db::get_ingest_host(&state.db)
-        .await
-        .unwrap_or_default()
-        .unwrap_or_default();
+        .ok();
     let custom_encoding_len = db::get_meta(&state.db, "custom_encoding")
         .await
         .ok()
@@ -4864,10 +4859,22 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
         .map(|value| value.len())
         .unwrap_or(0);
     let configuration = serde_json::json!({
-        "serverName": server_name,
-        "ingestHost": ingest_host,
-        "ingestSecurity": state.security.get_config(),
-        "transcodeProfiles": crate::media::profiles::cache().read().await.clone(),
+        "serverName": settings
+            .as_ref()
+            .map(|settings| settings.server_name.clone())
+            .unwrap_or_else(|| "Name".to_string()),
+        "ingestHost": settings
+            .as_ref()
+            .map(|settings| settings.ingest_host.clone())
+            .unwrap_or_default(),
+        "ingestSecurity": settings
+            .as_ref()
+            .map(|settings| settings.ingest_security.clone())
+            .unwrap_or_else(|| state.security.get_config()),
+        "transcodeProfiles": settings
+            .as_ref()
+            .map(|settings| settings.transcode_profiles.clone())
+            .unwrap_or_else(crate::media::profiles::built_in_defaults),
         "customEncoding": {
             "configured": custom_encoding_len > 0,
             "byteLength": custom_encoding_len,
