@@ -1,5 +1,8 @@
-//! Shared domain types mapped to SQLite tables via `sqlx::FromRow`.
-//! All structs use `#[serde(rename_all = "camelCase")]` for the JSON API.
+//! Shared DTOs and persistence row shapes that are still used across storage,
+//! orchestration, and API layers.
+//! This file is intentionally narrower than the domain modules: reusable policy
+//! configs are re-exported from `crate::domain`, while these structs remain the
+//! cross-layer records that still back SQLite rows and JSON payloads.
 
 pub use crate::domain::ingest_security::IngestSecurityConfig;
 pub use crate::domain::srt_ingest::{

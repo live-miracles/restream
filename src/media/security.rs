@@ -21,6 +21,8 @@ pub struct IngestSecurityService {
 
 impl IngestSecurityService {
     pub fn new(config: IngestSecurityConfig) -> Self {
+        let mut config = config;
+        config.normalize();
         Self {
             config: RwLock::new(config),
             state: RwLock::new(HashMap::new()),
@@ -41,6 +43,8 @@ impl IngestSecurityService {
     }
 
     pub fn update_config(&self, new_config: IngestSecurityConfig) {
+        let mut new_config = new_config;
+        new_config.normalize();
         if let Ok(mut config) = self.config.write() {
             *config = new_config;
         }

@@ -891,6 +891,39 @@ async fn config_patch_ingest_security_persists() {
     assert_eq!(json["ingestSecurity"]["failureLimit"], 3);
 }
 
+#[tokio::test]
+async fn config_patch_rejects_invalid_ingest_security() {
+    let (app, pool) = test_app().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "PATCH",
+            "/api/v1/settings",
+            &cookie,
+            Some(
+                r#"{"ingestSecurity":{"failureLimit":0,"failureWindowMs":15000,"banMs":45000,"trackedIpLimit":64}}"#,
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        std::str::from_utf8(&body_bytes(resp).await).unwrap(),
+        "ingestSecurity.failureLimit must be >= 1"
+    );
+
+    let stored = restream::application::ingest_security::load_ingest_security_config(
+        &restream::application::ports::SqliteMetaStore::new(pool.clone()),
+    )
+    .await;
+    assert_eq!(
+        stored.failure_limit,
+        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG.failure_limit
+    );
+}
+
 // --- Audio caps ---
 
 #[tokio::test]

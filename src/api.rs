@@ -994,9 +994,13 @@ async fn config_patch_handler(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    if let Some(ref sec) = payload.ingest_security {
+    if let Some(mut sec) = payload.ingest_security.clone() {
+        if let Err(error) = sec.validate() {
+            return (StatusCode::BAD_REQUEST, error).into_response();
+        }
+        sec.normalize();
         state.security.update_config(sec.clone());
-        if save_ingest_security_config(&SqliteMetaStore::new(state.db.clone()), sec)
+        if save_ingest_security_config(&SqliteMetaStore::new(state.db.clone()), &sec)
             .await
             .is_err()
         {
