@@ -19,7 +19,13 @@ import {
 import { renderPipelines, renderMetrics } from "./render.js";
 import { syncHistoryPollingWithVisibility } from "../history/controller.js";
 import { state } from "../core/state.js";
-import type { AppLogRow, ConfigOutput, PipelineView } from "../types.js";
+import type {
+  AppLogRow,
+  ConfigOutput,
+  ConfigPipeline,
+  PipelineFileIngestState,
+  PipelineView,
+} from "../types.js";
 
 interface DashboardHooks {
   afterRender: (() => void) | null;
@@ -419,6 +425,98 @@ export function upsertDashboardOutputConfig(output: ConfigOutput): void {
   state.config = {
     ...state.config,
     outputs: nextOutputs,
+  };
+  rerenderDashboardFromState();
+}
+
+export function removeDashboardOutputConfig(
+  pipelineId: string,
+  outputId: string,
+): void {
+  const nextOutputs = Array.isArray(state.config.outputs)
+    ? state.config.outputs.filter(
+        (candidate) =>
+          !(candidate.pipelineId === pipelineId && candidate.id === outputId),
+      )
+    : [];
+  const nextJobs = Array.isArray(state.config.jobs)
+    ? state.config.jobs.filter(
+        (candidate) =>
+          !(
+            candidate.pipelineId === pipelineId &&
+            candidate.outputId === outputId
+          ),
+      )
+    : [];
+  state.config = {
+    ...state.config,
+    outputs: nextOutputs,
+    jobs: nextJobs,
+  };
+  rerenderDashboardFromState();
+}
+
+function upsertPipelineFileIngestState(
+  pipeline: ConfigPipeline,
+  fileIngest: PipelineFileIngestState | null,
+): ConfigPipeline {
+  return {
+    ...pipeline,
+    fileIngest,
+  };
+}
+
+export function upsertDashboardPipelineConfig(
+  pipeline: ConfigPipeline,
+  fileIngest: PipelineFileIngestState | null = pipeline.fileIngest || null,
+): void {
+  const nextPipelines = Array.isArray(state.config.pipelines)
+    ? [...state.config.pipelines]
+    : [];
+  const nextPipeline = upsertPipelineFileIngestState(pipeline, fileIngest);
+  const existingIndex = nextPipelines.findIndex(
+    (candidate) => candidate.id === pipeline.id,
+  );
+  if (existingIndex >= 0) {
+    nextPipelines[existingIndex] = {
+      ...nextPipelines[existingIndex],
+      ...nextPipeline,
+    };
+  } else {
+    nextPipelines.push(nextPipeline);
+  }
+  state.config = {
+    ...state.config,
+    pipelines: nextPipelines,
+  };
+  rerenderDashboardFromState();
+}
+
+export function removeDashboardPipelineConfig(pipelineId: string): void {
+  const nextPipelines = Array.isArray(state.config.pipelines)
+    ? state.config.pipelines.filter((candidate) => candidate.id !== pipelineId)
+    : [];
+  const nextOutputs = Array.isArray(state.config.outputs)
+    ? state.config.outputs.filter(
+        (candidate) => candidate.pipelineId !== pipelineId,
+      )
+    : [];
+  const nextJobs = Array.isArray(state.config.jobs)
+    ? state.config.jobs.filter(
+        (candidate) => candidate.pipelineId !== pipelineId,
+      )
+    : [];
+  const nextHealthPipelines = { ...(state.health.pipelines || {}) };
+  delete nextHealthPipelines[pipelineId];
+  state.config = {
+    ...state.config,
+    pipelines: nextPipelines,
+    outputs: nextOutputs,
+    jobs: nextJobs,
+  };
+  state.health = {
+    ...state.health,
+    pipelines: nextHealthPipelines,
   };
   rerenderDashboardFromState();
 }

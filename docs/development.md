@@ -133,9 +133,10 @@ its own restream log SSE instead of opening a second lifecycle-only dashboard
 stream on top. Settings and media modes also use their existing metrics refresh
 to mark the Rust process indicator as running immediately, rather than waiting
 for a later lifecycle event to clear the initial "Connecting" state. Output
-create/update flows and control-room monitoring URL edits now reuse the API's
-returned `output` payload to patch dashboard state locally instead of following
-each mutation with another `/api/v1/settings?view=dashboard` fetch.
+create/update flows, output deletes, pipeline create/update flows, and pipeline
+deletes now reuse returned mutation payloads or apply targeted local removals to
+patch dashboard state immediately instead of following each mutation with
+another `/api/v1/settings?view=dashboard` fetch.
 
 ## Testing
 

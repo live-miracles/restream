@@ -153,6 +153,12 @@ built-in key is selected.
 `inputSource` and pipeline-level `encoding` are persisted but are not used to
 pull remote media or transform the active native ingest path.
 
+Create and update responses include a normalized `pipeline` object plus the
+mutation message so clients can patch dashboard pipeline state locally without
+an immediate follow-up settings fetch. Pipeline deletes intentionally return a
+simple acknowledgement because the client can remove the matching pipeline,
+outputs, jobs, and cached health rows locally.
+
 Deletion cancels configured output tasks, the active ingest, and any
 file-ingest FFmpeg subprocesses whose `streamKey` matches the pipeline's
 stream key before removing the pipeline row. Shared transcoder, HLS, and

@@ -52,8 +52,10 @@ import type { AudioCaps, AudioProtocol } from "../core/audio-caps.js";
 import { isOutputManagedActive } from "../core/output-status.js";
 import { state } from "../core/state.js";
 import {
-  refreshDashboard,
+  removeDashboardOutputConfig,
+  removeDashboardPipelineConfig,
   refreshDashboardRuntime,
+  upsertDashboardPipelineConfig,
   upsertDashboardOutputConfig,
 } from "./dashboard.js";
 import {
@@ -62,6 +64,7 @@ import {
 } from "./output-control-state.js";
 import type {
   AudioTrack,
+  ConfigPipeline,
   PipelineView,
   OutputView,
   SrtPipelineIngestConfig,
@@ -1331,7 +1334,17 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     1,
   );
 
-  let savedPipeId = pipeId;
+  let savedPipeline: ConfigPipeline | null = currentPipeModalPipeline
+    ? {
+        id: currentPipeModalPipeline.id,
+        name: currentPipeModalPipeline.name,
+        streamKey: currentPipeModalPipeline.key || "",
+        inputSource: currentPipeModalPipeline.inputSource,
+        srtIngestPolicy: currentPipeModalPipeline.srtIngestPolicy || null,
+        ingestUrls: currentPipeModalPipeline.ingestUrls,
+        fileIngest: currentPipeModalPipeline.fileIngest,
+      }
+    : null;
   if (
     currentPipeModalMode === "edit" &&
     currentPipeModalPipeline?.key !== streamKey &&
@@ -1341,16 +1354,14 @@ export async function pipeFormBtn(event: Event): Promise<void> {
   }
 
   if (currentPipeModalMode === "create") {
-    const response = (await createPipeline({
+    const response = await createPipeline({
       name,
       streamKey,
       inputSource,
       srtIngestPolicy,
-    })) as {
-      pipeline?: { id: string };
-    } | null;
+    });
     if (response === null) return;
-    savedPipeId = response.pipeline?.id || "";
+    savedPipeline = response.pipeline;
   } else {
     const response = await updatePipeline(pipeId, {
       name,
@@ -1359,9 +1370,12 @@ export async function pipeFormBtn(event: Event): Promise<void> {
       srtIngestPolicy,
     });
     if (response === null) return;
+    savedPipeline = response.pipeline;
   }
 
-  if (!savedPipeId) return;
+  const savedPipeId = savedPipeline?.id || "";
+  if (!savedPipeId || !savedPipeline) return;
+  let savedFileIngest = savedPipeline.fileIngest || null;
   if (sourceType === "file") {
     const response = await putPipelineFileIngest(savedPipeId, {
       filename,
@@ -1371,15 +1385,17 @@ export async function pipeFormBtn(event: Event): Promise<void> {
       targetGopSeconds,
     });
     if (response === null) return;
+    savedFileIngest = response;
   } else {
     await deletePipelineFileIngest(savedPipeId);
+    savedFileIngest = null;
   }
 
+  upsertDashboardPipelineConfig(savedPipeline, savedFileIngest);
   modal?.close();
   if (currentPipeModalMode === "create") {
     setUrlParam("p", savedPipeId);
   }
-  await refreshDashboard();
 }
 
 async function openOutModal(
@@ -1758,7 +1774,7 @@ export async function deleteOutBtn(
     return;
   }
 
-  await refreshDashboard();
+  removeDashboardOutputConfig(pipeId, outId);
 }
 
 export async function addOutBtn(): Promise<void> {
@@ -1825,7 +1841,7 @@ export async function deletePipeBtn(): Promise<void> {
   if (res === null) return;
 
   setUrlParam("p", null);
-  await refreshDashboard();
+  removeDashboardPipelineConfig(pipeId);
 }
 
 window.pipeFormBtn = pipeFormBtn;

@@ -2,6 +2,7 @@ import { showLoading, hideLoading, showErrorAlert } from "./utils.js";
 import { withBasePath } from "./base-path.js";
 import type {
   ConfigOutput,
+  ConfigPipeline,
   ConfigData,
   HealthData,
   IngestSecurityConfig,
@@ -237,6 +238,11 @@ interface CreatePipelineArgs {
   srtIngestPolicy?: SrtPipelineIngestConfig | null;
 }
 
+export interface PipelineMutationResponse {
+  message?: string;
+  pipeline: ConfigPipeline;
+}
+
 export interface OutputMutationResponse {
   message?: string;
   desiredState?: string;
@@ -245,13 +251,13 @@ export interface OutputMutationResponse {
 
 async function createPipeline(
   args: CreatePipelineArgs,
-): Promise<unknown | null> {
+): Promise<PipelineMutationResponse | null> {
   if (!args.name) {
     showErrorAlert("Invalid pipeline name");
     return;
   }
 
-  return apiRequest("/api/v1/pipelines", {
+  return apiRequest<PipelineMutationResponse>("/api/v1/pipelines", {
     method: "POST",
     body: args,
   });
@@ -260,16 +266,19 @@ async function createPipeline(
 async function updatePipeline(
   pipeId: string,
   data: unknown,
-): Promise<unknown | null> {
+): Promise<PipelineMutationResponse | null> {
   if (!pipeId) {
     showErrorAlert("Pipeline id is required");
     return null;
   }
 
-  return apiRequest(`/api/v1/pipelines/${encodeURIComponent(pipeId)}`, {
-    method: "PATCH",
-    body: data,
-  });
+  return apiRequest<PipelineMutationResponse>(
+    `/api/v1/pipelines/${encodeURIComponent(pipeId)}`,
+    {
+      method: "PATCH",
+      body: data,
+    },
+  );
 }
 
 async function deletePipeline(pipeId: string): Promise<unknown | null> {

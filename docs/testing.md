@@ -349,6 +349,8 @@ Frontend transport/control layering now has explicit Node-scope coverage for:
 - recording and file-ingest mutations reusing runtime-only refreshes instead of refetching dashboard settings
 - output toggle responsiveness while start/stop API requests are in flight
 - output create/update mutations reusing returned payloads instead of refetching dashboard settings
+- pipeline create/update mutations reusing returned payloads instead of refetching dashboard settings
+- pipeline and output deletes patching dashboard state locally instead of refetching dashboard settings
 - restream process-indicator transitions driven by lifecycle logs and health recovery
 - restream process-indicator reachability updates from metrics-only non-runtime modes
 - non-runtime mode lifecycle SSE behavior that keeps process state live without re-enabling health polls
