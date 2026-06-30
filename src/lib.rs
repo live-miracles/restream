@@ -1089,13 +1089,9 @@ pub async fn run_app() {
                     .await;
 
             // Reconcile recordings
-            let rec_key = format!("recording_enabled:{}", pipeline.id);
-            let rec_enabled = db::get_meta(&pool, &rec_key)
-                .await
-                .ok()
-                .flatten()
-                .map(|v| v == "1")
-                .unwrap_or(false);
+            let rec_enabled =
+                crate::application::recording::load_recording_enabled(&meta_store, &pipeline.id)
+                    .await;
             let rec_active = engine.is_recording_active(&pipeline.id).await;
 
             match decide_recording_action(rec_enabled, effective_has_ingest, rec_active) {

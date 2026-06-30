@@ -32,6 +32,7 @@ use tracing::{error, warn};
 
 use crate::alerts;
 use crate::application::ports::SqliteMetaStore;
+use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::srt_ingest::{
     SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config,
 };
@@ -3086,17 +3087,7 @@ async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
         Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
         Err(_) => vec![],
     };
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
+    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
     state
         .engine
         .health_snapshot_with_disconnect_grace(
@@ -4172,15 +4163,7 @@ async fn pipeline_alerts_handler(
         return response;
     }
 
-    let mut recording_enabled = std::collections::HashMap::new();
-    let rec_key = format!("recording_enabled:{}", pipeline_id);
-    let rec = db::get_meta(&state.db, &rec_key)
-        .await
-        .ok()
-        .flatten()
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    recording_enabled.insert(pipeline_id.clone(), rec);
+    let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
     let snapshot = state
         .engine
@@ -4211,17 +4194,7 @@ async fn aggregate_alerts_handler(
         Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
         Err(_) => vec![],
     };
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
+    let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
     let snapshot = state
         .engine
         .health_snapshot(&pipeline_ids, &recording_enabled)
@@ -4283,17 +4256,7 @@ async fn v1_overview_handler(
 
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
     let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in &pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
+    let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
     let snapshot = state
         .engine
         .health_snapshot(&pipeline_ids, &recording_enabled)
@@ -5790,23 +5753,12 @@ async fn build_agent_plan(
     crate::agent_plane::plan_response(request, &pipelines, &outputs, current_graph.as_ref())
 }
 
-#[cfg(feature = "agent-plane")]
 async fn recording_enabled_map(
     state: &AppState,
     pipeline_ids: &[String],
 ) -> std::collections::HashMap<String, bool> {
-    let mut recording_enabled = std::collections::HashMap::new();
-    for pid in pipeline_ids {
-        let rec_key = format!("recording_enabled:{}", pid);
-        let rec = db::get_meta(&state.db, &rec_key)
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        recording_enabled.insert(pid.clone(), rec);
-    }
-    recording_enabled
+    let meta_store = SqliteMetaStore::new(state.db.clone());
+    load_recording_enabled_map(&meta_store, pipeline_ids).await
 }
 
 #[cfg(not(feature = "agent-plane"))]
@@ -5889,15 +5841,7 @@ async fn v1_pipeline_summary_handler(
         return response;
     }
 
-    let rec_key = format!("recording_enabled:{}", pipeline_id);
-    let rec = db::get_meta(&state.db, &rec_key)
-        .await
-        .ok()
-        .flatten()
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    let mut recording_enabled = std::collections::HashMap::new();
-    recording_enabled.insert(pipeline_id.clone(), rec);
+    let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
     let snapshot = state
         .engine
@@ -6105,7 +6049,7 @@ async fn recording_start_handler(
         }
     };
 
-    let meta_key = format!("recording_enabled:{}", pipeline_id);
+    let meta_key = recording_enabled_meta_key(&pipeline_id);
     let _ = db::set_meta(&state.db, &meta_key, "1").await;
 
     let has_ingest = state
@@ -6169,7 +6113,7 @@ async fn recording_stop_handler(
         }
     };
 
-    let meta_key = format!("recording_enabled:{}", pipeline_id);
+    let meta_key = recording_enabled_meta_key(&pipeline_id);
     let _ = db::set_meta(&state.db, &meta_key, "0").await;
 
     state.engine.unregister_recording(&pipeline_id).await;
