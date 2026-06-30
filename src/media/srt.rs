@@ -57,12 +57,13 @@ use tracing::{error, info, warn};
 
 use crate::application::ingest::authenticate_srt_stream_key;
 use crate::application::ports::PipelineStore;
+use crate::domain::srt_ingest::{
+    ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtPipelineIngestConfig,
+};
 use crate::media::engine::{EgressRegistration, MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
-use crate::types::{
-    Pipeline, ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtPipelineIngestConfig,
-};
+use crate::types::Pipeline;
 
 // 256 slots covers the mux wakeup → SRT socket-write latency (sub-millisecond
 // to single-digit milliseconds in practice). The SRT protocol's own send buffer

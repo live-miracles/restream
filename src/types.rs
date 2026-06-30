@@ -4,11 +4,6 @@
 //! configs are re-exported from `crate::domain`, while these structs remain the
 //! cross-layer records that still back SQLite rows and JSON payloads.
 
-pub use crate::domain::ingest_security::IngestSecurityConfig;
-pub use crate::domain::srt_ingest::{
-    DEFAULT_SRT_PBKEYLEN, ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtGlobalIngestMode,
-    SrtPipelineIngestConfig, SrtPipelineIngestMode,
-};
 pub use crate::logging::types::{AppLogEntry, AppLogFilters, AppLogRow};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;

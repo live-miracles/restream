@@ -4,6 +4,7 @@
 
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
+use restream::domain::srt_ingest::SrtGlobalIngestConfig;
 use restream::domain::stage::{StageKey, StageKind};
 use restream::logging::types::AppLogEntry;
 use restream::media::engine::{AudioMeta, MediaEngine, VideoMeta};
@@ -32,7 +33,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
         restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
     ));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
-        restream::types::SrtGlobalIngestConfig::default(),
+        SrtGlobalIngestConfig::default(),
         &[],
     ));
     let (log_broadcast, _) = broadcast::channel(32);
@@ -77,7 +78,7 @@ async fn authenticated_app_with_temp_media()
         restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
     ));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
-        restream::types::SrtGlobalIngestConfig::default(),
+        SrtGlobalIngestConfig::default(),
         &[],
     ));
     let (log_broadcast, _) = broadcast::channel(32);
@@ -127,7 +128,7 @@ async fn authenticated_app_with_temp_media_and_engine() -> (
         restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
     ));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
-        restream::types::SrtGlobalIngestConfig::default(),
+        SrtGlobalIngestConfig::default(),
         &[],
     ));
     let (log_broadcast, _) = broadcast::channel(32);
@@ -1823,7 +1824,7 @@ async fn health_shows_registered_egress() {
             restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
         ));
         let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
-            restream::types::SrtGlobalIngestConfig::default(),
+            SrtGlobalIngestConfig::default(),
             &[],
         ));
         let (log_broadcast, _) = broadcast::channel(32);

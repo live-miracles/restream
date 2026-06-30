@@ -799,10 +799,10 @@ pub(crate) fn processing_graph_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::srt_ingest::{SrtPipelineIngestConfig, SrtPipelineIngestMode};
     use crate::domain::stage::StageKind;
     use crate::media::engine::RecentIngestOutcome;
     use crate::media::srt::serialize_pipeline_srt_ingest_policy;
-    use crate::types::{SrtPipelineIngestConfig, SrtPipelineIngestMode};
 
     #[test]
     fn pipeline_response_helpers_preserve_pipeline_and_file_ingest_shape() {
