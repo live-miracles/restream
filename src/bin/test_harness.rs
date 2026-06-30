@@ -10244,6 +10244,43 @@ async fn fault_srt_egress_sink_disappear(
     }))
 }
 
+async fn create_pipeline_with_stream_key(
+    api: &RampApi,
+    name: &str,
+    stream_key: &str,
+) -> Result<String, String> {
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": name, "streamKey": stream_key}),
+        )
+        .await?;
+    pipeline["pipeline"]["id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing pipeline id for {name}"))
+}
+
+async fn delete_pipeline_v1(api: &RampApi, pipeline_id: &str) -> Result<(), String> {
+    let delete_url = format!("{}/api/v1/pipelines/{pipeline_id}", api.base_url);
+    let mut request = api.client.delete(&delete_url);
+    if let Some(cookie) = &api.cookie {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("delete pipeline {pipeline_id}: {e}"))?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(format!(
+            "delete pipeline {pipeline_id}: unexpected status {}",
+            response.status()
+        ))
+    }
+}
+
 async fn fault_egress_retry() -> Result<Value, String> {
     let work_dir = artifact_path("fault-egress-retry");
     std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
@@ -11505,6 +11542,250 @@ async fn recovery_live_cases(
         if let Some(server) = sink_server.take() {
             stop_generalized_sink_server(server);
         }
+    }
+
+    // ── 6. Transient SRT sink flaps surface recovered output instability ──
+    {
+        let pid =
+            create_pipeline_with_stream_key(api, "fault-srt-sink-flap", "fault-srt-sink-flap")
+                .await?;
+        let sink_stream_key = "fault-srt-sink-flap-target";
+        let mut sink_pid =
+            create_pipeline_with_stream_key(api, "srt-sink-flap-target-1", sink_stream_key).await?;
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "srt-sink-flap",
+                    "url": format!(
+                        "srt://127.0.0.1:{}?streamid=publish:live/{}&pkt_size=1316",
+                        ports.srt,
+                        sink_stream_key
+                    ),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let mut pub_child = spawn_publisher(
+            fixture_h264,
+            &format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/fault-srt-sink-flap&pkt_size=1316",
+                ports.srt
+            ),
+            "mpegts",
+            true,
+        )
+        .await?;
+        wait_for_api_input_live(api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        wait_for_api_input_media_ready(api, &sink_pid, Duration::from_secs(25)).await?;
+
+        let mut first_retry_status_visible = false;
+        let mut first_retry_health_visible = false;
+        let mut first_retry_has_error = false;
+        delete_pipeline_v1(api, &sink_pid).await?;
+        let first_retry_deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < first_retry_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                first_retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                first_retry_has_error = status["lastError"]
+                    .as_str()
+                    .map(|message| !message.is_empty())
+                    .unwrap_or(false);
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                first_retry_health_visible = output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true);
+            }
+            if first_retry_status_visible && first_retry_health_visible && first_retry_has_error {
+                break;
+            }
+        }
+
+        sink_pid =
+            create_pipeline_with_stream_key(api, "srt-sink-flap-target-2", sink_stream_key).await?;
+        let first_recovery_ready =
+            wait_for_api_input_media_ready(api, &sink_pid, Duration::from_secs(25)).await;
+        let first_recovery_deadline = Instant::now() + Duration::from_secs(25);
+        let mut first_recovered = false;
+        while Instant::now() < first_recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let status_running = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+                .ok()
+                .is_some_and(|status| {
+                    status["status"].as_str() == Some("running")
+                        && !status["retrying"].as_bool().unwrap_or(false)
+                });
+            if status_running {
+                first_recovered = true;
+                break;
+            }
+        }
+
+        let mut second_retry_status_visible = false;
+        let mut second_retry_health_visible = false;
+        let mut second_retry_has_error = false;
+        delete_pipeline_v1(api, &sink_pid).await?;
+        let second_retry_deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < second_retry_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                second_retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                second_retry_has_error = status["lastError"]
+                    .as_str()
+                    .map(|message| !message.is_empty())
+                    .unwrap_or(false);
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                second_retry_health_visible = output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true);
+            }
+            if second_retry_status_visible && second_retry_health_visible && second_retry_has_error
+            {
+                break;
+            }
+        }
+
+        sink_pid =
+            create_pipeline_with_stream_key(api, "srt-sink-flap-target-3", sink_stream_key).await?;
+        let second_recovery_ready =
+            wait_for_api_input_media_ready(api, &sink_pid, Duration::from_secs(25)).await;
+        let second_recovery_deadline = Instant::now() + Duration::from_secs(25);
+        let mut second_recovered = false;
+        while Instant::now() < second_recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let status_running = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+                .ok()
+                .is_some_and(|status| {
+                    status["status"].as_str() == Some("running")
+                        && !status["retrying"].as_bool().unwrap_or(false)
+                });
+            if status_running {
+                second_recovered = true;
+                break;
+            }
+        }
+
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_output_health = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["outputs"][&oid].clone())
+            .unwrap_or(Value::Null);
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_error_cleared = final_status
+            .as_ref()
+            .is_some_and(|status| status["lastError"].is_null());
+        let final_recent_failure_count = final_status
+            .as_ref()
+            .and_then(|status| status["recentFailureCount"].as_u64())
+            .unwrap_or(0);
+        let final_flapping = final_status
+            .as_ref()
+            .and_then(|status| status["flapping"].as_bool())
+            .unwrap_or(false);
+        let health_recent_failure_count = final_output_health["recentFailureCount"]
+            .as_u64()
+            .unwrap_or(0);
+        let health_flapping = final_output_health["flapping"].as_bool().unwrap_or(false);
+        let passed = first_retry_status_visible
+            && first_retry_health_visible
+            && first_retry_has_error
+            && first_recovery_ready.is_ok()
+            && first_recovered
+            && second_retry_status_visible
+            && second_retry_health_visible
+            && second_retry_has_error
+            && second_recovery_ready.is_ok()
+            && second_recovered
+            && final_status_running
+            && !final_retrying
+            && final_error_cleared
+            && final_recent_failure_count >= 2
+            && final_flapping
+            && health_recent_failure_count >= 2
+            && health_flapping;
+        println!(
+            "[fault] SRT sink flaps surface recovered-output instability: {} (firstRetrying={} secondRetrying={} firstRecovered={} secondRecovered={} finalRetrying={} finalFlapping={} recentFailureCount={})",
+            if passed { "PASS" } else { "FAIL" },
+            first_retry_status_visible,
+            second_retry_status_visible,
+            first_recovered,
+            second_recovered,
+            final_retrying,
+            final_flapping,
+            final_recent_failure_count,
+        );
+        results.push(json!({
+            "test": "srt-sink-flaps-surface-output-instability",
+            "passed": passed,
+            "firstRetrying": first_retry_status_visible,
+            "firstHealthRetrying": first_retry_health_visible,
+            "firstRetryError": first_retry_has_error,
+            "firstRecoveryReady": first_recovery_ready.is_ok(),
+            "firstRecoveryReadyError": first_recovery_ready.err(),
+            "firstRecovered": first_recovered,
+            "secondRetrying": second_retry_status_visible,
+            "secondHealthRetrying": second_retry_health_visible,
+            "secondRetryError": second_retry_has_error,
+            "secondRecoveryReady": second_recovery_ready.is_ok(),
+            "secondRecoveryReadyError": second_recovery_ready.err(),
+            "secondRecovered": second_recovered,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalErrorCleared": final_error_cleared,
+            "finalRecentFailureCount": final_recent_failure_count,
+            "finalFlapping": final_flapping,
+            "healthRecentFailureCount": health_recent_failure_count,
+            "healthFlapping": health_flapping,
+            "finalStatus": final_status,
+            "finalHealthOutput": final_output_health,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut pub_child).await;
+        let _ = delete_pipeline_v1(api, &sink_pid).await;
     }
 
     Ok(results)

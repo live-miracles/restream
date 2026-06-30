@@ -39,7 +39,8 @@ Use the narrowest proof that can actually catch the bug:
    - Current live contract slices: `fault-resilience` and `recovery`.
      `recovery` also covers hung HLS PUT destinations timing out, surfacing
      retry/error state, recovering after the sink restarts, and repeated RTMP
-     downstream sink flaps surfacing as recovered-but-unstable output health.
+     and SRT downstream sink flaps surfacing as recovered-but-unstable output
+     health.
 
 5. Benchmarks
    - Use only for hot-path or end-to-end performance-sensitive changes.
@@ -153,4 +154,4 @@ current gate set. Remaining high-value areas include:
 
 - More model-checked coverage for lifecycle registries beyond the TS muxer seam
 - Property tests for lifecycle permutations where loom is not the right tool
-- More live chaos cases for slow-sink isolation and broader repeated downstream flaps across protocols beyond RTMP
+- More live chaos cases for slow-sink isolation and any remaining repeated downstream flap scenarios beyond the current RTMP/SRT coverage
