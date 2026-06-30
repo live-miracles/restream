@@ -161,6 +161,8 @@ function parsePipelinesInfo(
         probeStatus,
         probePendingMs,
         video: inputVideo,
+        videoTrackSelection:
+          healthByPipeline[p.id]?.input?.videoTrackSelection || null,
         audio: inputAudioTracks[0] || null,
         audioTracks: inputAudioTracks,
         bytesReceived: inputBytesReceived,
@@ -227,6 +229,7 @@ function parsePipelinesInfo(
     const status = outHealth?.status || "off";
     const retrying =
       status === "retrying" || Boolean(outHealth?.retrying || false);
+    const flapping = Boolean(outHealth?.flapping || false);
 
     if (!pipe) {
       console.error("Not found pipeline for output: ", out);
@@ -244,6 +247,7 @@ function parsePipelinesInfo(
           probeStatus: "off",
           probePendingMs: null,
           video: null,
+          videoTrackSelection: null,
           audio: null,
           audioTracks: [],
           bitrateKbps: null,
@@ -323,6 +327,11 @@ function parsePipelinesInfo(
         typeof outHealth?.lastProgressAgeMs === "number"
           ? outHealth.lastProgressAgeMs
           : null,
+      recentFailureCount:
+        typeof outHealth?.recentFailureCount === "number"
+          ? outHealth.recentFailureCount
+          : 0,
+      flapping,
       retrying,
       retryAttempts:
         typeof outHealth?.retryAttempts === "number"

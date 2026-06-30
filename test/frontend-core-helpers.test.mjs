@@ -18,6 +18,7 @@ function makeOutputStatus(overrides = {}) {
   return {
     desiredState: "started",
     status: "off",
+    flapping: false,
     retrying: false,
     ...overrides,
   };
@@ -87,6 +88,10 @@ test("output status helpers distinguish intent, running, retrying, and unexpecte
   );
   assert.equal(
     status.isOutputManagedActive(makeOutputStatus({ retrying: true })),
+    true,
+  );
+  assert.equal(
+    status.isOutputFlapping(makeOutputStatus({ flapping: true })),
     true,
   );
   assert.equal(

@@ -129,6 +129,8 @@ pub(crate) fn egress_runtime_json(
         "lastError": egress.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         "lastErrorAt": MediaEngine::epoch_ms_to_rfc3339(last_error_ms),
         "failurePhase": egress.failure_phase.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        "recentFailureCount": 0,
+        "flapping": false,
         "retrying": false,
         "retryAttempts": serde_json::Value::Null,
         "retryBackoffMs": serde_json::Value::Null,
@@ -163,6 +165,8 @@ pub(crate) fn recent_egress_runtime_json(
         "lastError": outcome.last_error,
         "lastErrorAt": MediaEngine::epoch_ms_to_rfc3339(outcome.last_error_ms),
         "failurePhase": outcome.failure_phase,
+        "recentFailureCount": 0,
+        "flapping": false,
         "retrying": false,
         "retryAttempts": serde_json::Value::Null,
         "retryBackoffMs": serde_json::Value::Null,
@@ -177,6 +181,15 @@ pub(crate) fn recent_egress_runtime_json(
         value["targetUrl"] = serde_json::Value::String(outcome.target_url.clone());
     }
     value
+}
+
+pub(crate) fn apply_recent_egress_instability_json(
+    value: &mut serde_json::Value,
+    recent: Option<&RecentEgressOutcome>,
+) {
+    let (recent_failure_count, flapping) = MediaEngine::recent_egress_flap_state(recent);
+    value["recentFailureCount"] = serde_json::json!(recent_failure_count);
+    value["flapping"] = serde_json::Value::Bool(flapping);
 }
 
 pub(crate) fn apply_egress_retry_state_json(
@@ -248,6 +261,8 @@ pub(crate) fn probe_snapshot(pipeline_id: &str, ingest: &ActiveIngest) -> serde_
         }
     };
 
+    let video_track_selection = ingest_video_track_selection_json(ingest);
+
     serde_json::json!({
         "pipelineId": pipeline_id,
         "ingest": {
@@ -258,8 +273,22 @@ pub(crate) fn probe_snapshot(pipeline_id: &str, ingest: &ActiveIngest) -> serde_
             "bitrateKbps": bitrate_kbps.map(|b| (b * 10.0).round() / 10.0),
         },
         "video": ingest.video,
+        "videoTrackSelection": video_track_selection,
         "audioTracks": audio_tracks,
         "gop": gop,
+    })
+}
+
+fn ingest_video_track_selection_json(ingest: &ActiveIngest) -> serde_json::Value {
+    if ingest.video_track_count == 0 {
+        return serde_json::Value::Null;
+    }
+
+    serde_json::json!({
+        "mode": "firstVideoOnly",
+        "selectedTrackIndex": ingest.selected_video_track_index,
+        "availableTrackCount": ingest.video_track_count,
+        "ignoredTrackCount": ingest.video_track_count.saturating_sub(1),
     })
 }
 
@@ -332,6 +361,7 @@ pub(crate) fn active_pipeline_input_json(
     let probe_status = if probe_ready { "ready" } else { "pending" };
     let probe_pending_ms = (!probe_ready).then_some((elapsed_secs * 1000.0).round() as u64);
     let (recent_disconnect_count, flapping) = MediaEngine::recent_ingest_flap_state(recent);
+    let video_track_selection = ingest_video_track_selection_json(ingest);
 
     serde_json::json!({
         "status": "on",
@@ -345,6 +375,7 @@ pub(crate) fn active_pipeline_input_json(
         "readerMetrics": reader_metrics,
         "bitrateKbps": bitrate_kbps,
         "video": ingest.video,
+        "videoTrackSelection": video_track_selection,
         "audio": ingest.audio,
         "audioTracks": audio_tracks,
         "publisher": publisher_json,
@@ -696,6 +727,7 @@ pub(crate) fn processing_graph_ingest_details(ingest: &ActiveIngest) -> serde_js
         "protocol": ingest.protocol,
         "remoteAddr": ingest.remote_addr,
         "video": ingest.video,
+        "videoTrackSelection": ingest_video_track_selection_json(ingest),
         "audio": ingest.audio,
         "bytesReceived": bytes_received,
         "bitrateKbps": bitrate_kbps,
@@ -706,6 +738,7 @@ pub(crate) fn processing_graph_demux_details(ingest: &ActiveIngest) -> serde_jso
     serde_json::json!({
         "protocol": ingest.protocol,
         "video": ingest.video,
+        "videoTrackSelection": ingest_video_track_selection_json(ingest),
         "audio": ingest.audio,
         "audioTracks": ingest
             .audio_tracks
@@ -900,6 +933,42 @@ mod tests {
     }
 
     #[test]
+    fn apply_recent_egress_instability_surfaces_flapping_window() {
+        let mut value = serde_json::json!({
+            "status": "running",
+            "recentFailureCount": 0,
+            "flapping": false,
+        });
+        let recent = RecentEgressOutcome {
+            output_id: "out-1".to_string(),
+            pipeline_id: "pipe-1".to_string(),
+            protocol: "rtmp".to_string(),
+            target_url: "rtmp://example/live/key".to_string(),
+            target_addr: None,
+            status: "failed".to_string(),
+            raw_status: "running".to_string(),
+            phase: "failed".to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            uptime_secs: 1.5,
+            bytes_sent: 2048,
+            last_progress_ms: 0,
+            last_error: Some("connection reset by peer".to_string()),
+            last_error_ms: MediaEngine::now_epoch_ms(),
+            failure_phase: Some("send".to_string()),
+            first_failure_at_ms: MediaEngine::now_epoch_ms() - 2_000,
+            failure_count: 2,
+            quality: Default::default(),
+            metrics: serde_json::json!({}),
+            ended_at_ms: MediaEngine::now_epoch_ms() - 1_000,
+        };
+
+        apply_recent_egress_instability_json(&mut value, Some(&recent));
+
+        assert_eq!(value["recentFailureCount"], 2);
+        assert_eq!(value["flapping"], true);
+    }
+
+    #[test]
     fn ring_payload_stats_reports_zero_average_for_empty_ring() {
         let ring = RingBuffer::new(8);
 
@@ -952,6 +1021,8 @@ mod tests {
             metrics: std::sync::Arc::new(StageMetrics::new()),
             remote_addr: Some("127.0.0.1:1935".to_string()),
             video: None,
+            selected_video_track_index: None,
+            video_track_count: 0,
             audio: None,
             audio_tracks: std::sync::Mutex::new(std::sync::Arc::new(Vec::new())),
             quality: crate::media::engine::PublisherQuality::default(),
@@ -980,6 +1051,38 @@ mod tests {
         assert!(value["lastDisconnectReason"].is_null());
         assert!(value["lastFailurePhase"].is_null());
         assert!(value["lastDisconnectAt"].is_null());
+    }
+
+    #[test]
+    fn active_pipeline_input_surfaces_single_video_selection_policy() {
+        let ingest = ActiveIngest {
+            attempt_id: 1,
+            stream_key: "stream".to_string(),
+            start_time: std::time::Instant::now(),
+            protocol: "srt".to_string(),
+            bytes_received: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            metrics: std::sync::Arc::new(StageMetrics::new()),
+            remote_addr: Some("127.0.0.1:9000".to_string()),
+            video: Some(crate::media::engine::VideoMeta {
+                codec: "h264".to_string(),
+                ..Default::default()
+            }),
+            selected_video_track_index: Some(0),
+            video_track_count: 2,
+            audio: None,
+            audio_tracks: std::sync::Mutex::new(std::sync::Arc::new(Vec::new())),
+            quality: crate::media::engine::PublisherQuality::default(),
+            keyframe_times: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            video_sequence_header: std::sync::Mutex::new(None),
+            audio_sequence_header: std::sync::Mutex::new(None),
+        };
+
+        let value = active_pipeline_input_json(&ingest, None, 0, 0, Vec::new());
+
+        assert_eq!(value["videoTrackSelection"]["mode"], "firstVideoOnly");
+        assert_eq!(value["videoTrackSelection"]["selectedTrackIndex"], 0);
+        assert_eq!(value["videoTrackSelection"]["availableTrackCount"], 2);
+        assert_eq!(value["videoTrackSelection"]["ignoredTrackCount"], 1);
     }
 
     #[test]

@@ -109,6 +109,14 @@ function buildOutputIssue(output: OutputView): {
       title: escapeHtml(buildRetryIssueTitle(output)),
     };
   }
+  if (output.flapping) {
+    const recentFailureCount = Math.max(output.recentFailureCount || 0, 2);
+    return {
+      label: "flap",
+      text: `${recentFailureCount}x`,
+      title: `Output recovered but saw ${recentFailureCount} recent sink failures.`,
+    };
+  }
   if (output.lastError) {
     return {
       label: "error",
@@ -395,7 +403,9 @@ function syncOutputCard(
 
   const statusColor =
     output.status === "on" || output.status === "running"
-      ? "status-primary"
+      ? output.flapping
+        ? "status-warning"
+        : "status-primary"
       : output.retrying || output.status === "retrying"
         ? "status-warning"
         : output.status === "stalled"

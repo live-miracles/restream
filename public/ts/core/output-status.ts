@@ -16,6 +16,10 @@ function isOutputRetrying(output: OutputView | null | undefined): boolean {
   return output?.status === "retrying" || output?.retrying === true;
 }
 
+function isOutputFlapping(output: OutputView | null | undefined): boolean {
+  return output?.flapping === true;
+}
+
 function isOutputManagedActive(output: OutputView | null | undefined): boolean {
   return isOutputRunning(output) || isOutputRetrying(output);
 }
@@ -28,6 +32,7 @@ function isOutputUnexpectedlyDown(
 
 export {
   isOutputIntentStopped,
+  isOutputFlapping,
   isOutputManagedActive,
   isOutputRunning,
   isOutputRetrying,

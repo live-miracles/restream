@@ -14,17 +14,19 @@ pub(crate) async fn output_status(
     output_id: &str,
 ) -> Option<serde_json::Value> {
     let retry = engine.egresses.retry.read().await.get(output_id).cloned();
+    let recent = engine.egresses.recent.read().await.get(output_id).cloned();
     let egresses = engine.egresses.active.read().await;
     if let Some(egress) = egresses.get(output_id) {
         let mut value = api_view_models::egress_runtime_json(egress, false, true);
+        api_view_models::apply_recent_egress_instability_json(&mut value, recent.as_ref());
         api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
         return Some(value);
     }
     drop(egresses);
 
-    let recent = engine.egresses.recent.read().await;
-    recent.get(output_id).map(|outcome| {
+    recent.as_ref().map(|outcome| {
         let mut value = api_view_models::recent_egress_runtime_json(outcome, false);
+        api_view_models::apply_recent_egress_instability_json(&mut value, Some(outcome));
         api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
         value
     })
@@ -97,6 +99,10 @@ pub(crate) async fn health_snapshot(
 
                 let mut output_json =
                     api_view_models::egress_runtime_json(egress, false, has_ingest);
+                api_view_models::apply_recent_egress_instability_json(
+                    &mut output_json,
+                    recent_egresses.get(output_id),
+                );
                 api_view_models::apply_egress_retry_state_json(
                     &mut output_json,
                     retry_egresses.get(output_id),
@@ -110,6 +116,10 @@ pub(crate) async fn health_snapshot(
         for (output_id, outcome) in recent_egresses.iter() {
             if outcome.pipeline_id == *pipeline_id && !outputs_json.contains_key(output_id) {
                 let mut output_json = api_view_models::recent_egress_runtime_json(outcome, false);
+                api_view_models::apply_recent_egress_instability_json(
+                    &mut output_json,
+                    Some(outcome),
+                );
                 api_view_models::apply_egress_retry_state_json(
                     &mut output_json,
                     retry_egresses.get(output_id),

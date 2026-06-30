@@ -250,6 +250,8 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
               lastProgressAgeMs: 1200,
               totalSize: 4096,
               bitrateKbps: 512.8,
+              recentFailureCount: 2,
+              flapping: true,
               retrying: true,
               retryAttempts: 2,
               retryBackoffMs: 20000,
@@ -275,6 +277,8 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
   assert.equal(pipelines[0].outs[0].lastErrorAt, "2026-06-29T00:00:05Z");
   assert.equal(pipelines[0].outs[0].lastProgressAt, "2026-06-29T00:00:04Z");
   assert.equal(pipelines[0].outs[0].lastProgressAgeMs, 1200);
+  assert.equal(pipelines[0].outs[0].recentFailureCount, 2);
+  assert.equal(pipelines[0].outs[0].flapping, true);
   assert.equal(pipelines[0].outs[0].retrying, true);
   assert.equal(pipelines[0].outs[0].retryAttempts, 2);
   assert.equal(pipelines[0].outs[0].retryBackoffMs, 20000);
@@ -282,8 +286,13 @@ test("pipeline parsing preserves probe and runtime fault status fields", async (
   assert.equal(pipelines[0].outs[0].retryRemainingMs, 15000);
 });
 
-test("retrying outputs are not treated as unexpectedly down", async () => {
-  const { isOutputRetrying, isOutputRunning, isOutputUnexpectedlyDown } =
+test("retrying and flapping outputs are not treated as unexpectedly down", async () => {
+  const {
+    isOutputFlapping,
+    isOutputRetrying,
+    isOutputRunning,
+    isOutputUnexpectedlyDown,
+  } =
     await loadCompiledModule("core/output-status.js");
 
   const retryingOutput = {
@@ -295,4 +304,14 @@ test("retrying outputs are not treated as unexpectedly down", async () => {
   assert.equal(isOutputRetrying(retryingOutput), true);
   assert.equal(isOutputRunning(retryingOutput), false);
   assert.equal(isOutputUnexpectedlyDown(retryingOutput), false);
+
+  const flappingOutput = {
+    desiredState: "started",
+    status: "running",
+    flapping: true,
+  };
+
+  assert.equal(isOutputFlapping(flappingOutput), true);
+  assert.equal(isOutputRunning(flappingOutput), true);
+  assert.equal(isOutputUnexpectedlyDown(flappingOutput), false);
 });

@@ -909,6 +909,58 @@ struct SinkProbeResult {
     output_id: String,
 }
 
+struct GeneralizedSinkServer {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+    reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+async fn start_generalized_sink_server(
+    sink_port: u16,
+    metrics: Arc<GeneralizedSinkMetrics>,
+) -> Result<GeneralizedSinkServer, String> {
+    let listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+        .await
+        .map_err(|e| format!("sink bind {sink_port}: {e}"))?;
+    let cancel = CancellationToken::new();
+    let reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let reader_handles_inner = reader_handles.clone();
+    let metrics_inner = metrics.clone();
+    let cancel_inner = cancel.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    if let Ok((socket, _)) = result {
+                        let metrics = metrics_inner.clone();
+                        let handle = tokio::spawn(async move {
+                            let _ = handle_generalized_sink_client(socket, metrics).await;
+                        });
+                        reader_handles_inner.lock().unwrap().push(handle);
+                    }
+                }
+                _ = cancel_inner.cancelled() => break,
+            }
+        }
+    });
+
+    Ok(GeneralizedSinkServer {
+        cancel,
+        task,
+        reader_handles,
+    })
+}
+
+fn stop_generalized_sink_server(server: GeneralizedSinkServer) {
+    server.cancel.cancel();
+    server.task.abort();
+    let handles = server.reader_handles.lock().unwrap();
+    for handle in handles.iter() {
+        handle.abort();
+    }
+}
+
 async fn run_sink_probe(
     api: &RampApi,
     pipeline_id: &str,
@@ -11201,6 +11253,258 @@ async fn recovery_live_cases(
         stop_child(&mut pub_child).await;
         sink_cancel.cancel();
         let _ = sink_handle.await;
+    }
+
+    // ── 5. Transient RTMP sink flaps surface recovered output instability ──
+    {
+        let pipeline = api
+            .post_json(
+                "/api/v1/pipelines",
+                json!({"name": "fault-rtmp-sink-flap", "streamKey": "fault-rtmp-sink-flap"}),
+            )
+            .await?;
+        let pid = pipeline["pipeline"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": "rtmp-sink-flap",
+                    "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-rtmp-sink-flap"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing output id")?
+            .to_string();
+
+        let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let mut sink_server =
+            Some(start_generalized_sink_server(sink_port, sink_metrics.clone()).await?);
+
+        let mut pub_child = spawn_publisher(
+            fixture_h264,
+            &format!("rtmp://127.0.0.1:{}/live/fault-rtmp-sink-flap", ports.rtmp),
+            "flv",
+            false,
+        )
+        .await?;
+        wait_for_api_input_live(api, &pid, timeout).await?;
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+            json!({}),
+        )
+        .await?;
+
+        let warm_deadline = Instant::now() + Duration::from_secs(15);
+        while sink_metrics.video_count.load(Ordering::Relaxed) < 10 {
+            if Instant::now() >= warm_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let baseline_video = sink_metrics.video_count.load(Ordering::Relaxed);
+
+        let mut first_retry_status_visible = false;
+        let mut first_retry_health_visible = false;
+        let mut first_retry_has_error = false;
+        if let Some(server) = sink_server.take() {
+            stop_generalized_sink_server(server);
+        }
+        let first_retry_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < first_retry_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                first_retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                first_retry_has_error = status["lastError"]
+                    .as_str()
+                    .map(|message| !message.is_empty())
+                    .unwrap_or(false);
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                first_retry_health_visible = output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true);
+            }
+            if first_retry_status_visible && first_retry_health_visible && first_retry_has_error {
+                break;
+            }
+        }
+
+        sink_server = Some(start_generalized_sink_server(sink_port, sink_metrics.clone()).await?);
+        let first_recovery_deadline = Instant::now() + Duration::from_secs(25);
+        let mut first_recovered = false;
+        while Instant::now() < first_recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let recovered_video =
+                sink_metrics.video_count.load(Ordering::Relaxed) > baseline_video + 10;
+            let status_running = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+                .ok()
+                .is_some_and(|status| {
+                    status["status"].as_str() == Some("running")
+                        && !status["retrying"].as_bool().unwrap_or(false)
+                });
+            if recovered_video && status_running {
+                first_recovered = true;
+                break;
+            }
+        }
+
+        let mut second_retry_status_visible = false;
+        let mut second_retry_health_visible = false;
+        let mut second_retry_has_error = false;
+        if let Some(server) = sink_server.take() {
+            stop_generalized_sink_server(server);
+        }
+        let second_retry_deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < second_retry_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Ok(status) = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+            {
+                second_retry_status_visible = status["status"].as_str() == Some("retrying")
+                    && status["retrying"].as_bool() == Some(true);
+                second_retry_has_error = status["lastError"]
+                    .as_str()
+                    .map(|message| !message.is_empty())
+                    .unwrap_or(false);
+            }
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+                let output = &health["pipelines"][&pid]["outputs"][&oid];
+                second_retry_health_visible = output["status"].as_str() == Some("retrying")
+                    && output["retrying"].as_bool() == Some(true);
+            }
+            if second_retry_status_visible && second_retry_health_visible && second_retry_has_error
+            {
+                break;
+            }
+        }
+
+        sink_server = Some(start_generalized_sink_server(sink_port, sink_metrics.clone()).await?);
+        let second_recovery_deadline = Instant::now() + Duration::from_secs(25);
+        let mut second_recovered = false;
+        while Instant::now() < second_recovery_deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let recovered_video =
+                sink_metrics.video_count.load(Ordering::Relaxed) > baseline_video + 20;
+            let status_running = api
+                .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+                .await
+                .ok()
+                .is_some_and(|status| {
+                    status["status"].as_str() == Some("running")
+                        && !status["retrying"].as_bool().unwrap_or(false)
+                });
+            if recovered_video && status_running {
+                second_recovered = true;
+                break;
+            }
+        }
+
+        let final_status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await
+            .ok();
+        let final_health = api.get_json("/api/v1/engine/health").await.ok();
+        let final_output_health = final_health
+            .as_ref()
+            .map(|health| health["pipelines"][&pid]["outputs"][&oid].clone())
+            .unwrap_or(Value::Null);
+        let final_status_running = final_status
+            .as_ref()
+            .and_then(|status| status["status"].as_str())
+            == Some("running");
+        let final_retrying = final_status
+            .as_ref()
+            .and_then(|status| status["retrying"].as_bool())
+            .unwrap_or(false);
+        let final_error_cleared = final_status
+            .as_ref()
+            .is_some_and(|status| status["lastError"].is_null());
+        let final_recent_failure_count = final_status
+            .as_ref()
+            .and_then(|status| status["recentFailureCount"].as_u64())
+            .unwrap_or(0);
+        let final_flapping = final_status
+            .as_ref()
+            .and_then(|status| status["flapping"].as_bool())
+            .unwrap_or(false);
+        let health_recent_failure_count = final_output_health["recentFailureCount"]
+            .as_u64()
+            .unwrap_or(0);
+        let health_flapping = final_output_health["flapping"].as_bool().unwrap_or(false);
+        let passed = baseline_video >= 10
+            && first_retry_status_visible
+            && first_retry_health_visible
+            && first_retry_has_error
+            && first_recovered
+            && second_retry_status_visible
+            && second_retry_health_visible
+            && second_retry_has_error
+            && second_recovered
+            && final_status_running
+            && !final_retrying
+            && final_error_cleared
+            && final_recent_failure_count >= 2
+            && final_flapping
+            && health_recent_failure_count >= 2
+            && health_flapping;
+        println!(
+            "[fault] RTMP sink flaps surface recovered-output instability: {} (firstRetrying={} secondRetrying={} firstRecovered={} secondRecovered={} finalRetrying={} finalFlapping={} recentFailureCount={})",
+            if passed { "PASS" } else { "FAIL" },
+            first_retry_status_visible,
+            second_retry_status_visible,
+            first_recovered,
+            second_recovered,
+            final_retrying,
+            final_flapping,
+            final_recent_failure_count,
+        );
+        results.push(json!({
+            "test": "rtmp-sink-flaps-surface-output-instability",
+            "passed": passed,
+            "baselineVideo": baseline_video,
+            "firstRetrying": first_retry_status_visible,
+            "firstHealthRetrying": first_retry_health_visible,
+            "firstRetryError": first_retry_has_error,
+            "firstRecovered": first_recovered,
+            "secondRetrying": second_retry_status_visible,
+            "secondHealthRetrying": second_retry_health_visible,
+            "secondRetryError": second_retry_has_error,
+            "secondRecovered": second_recovered,
+            "finalStatusRunning": final_status_running,
+            "finalRetrying": final_retrying,
+            "finalErrorCleared": final_error_cleared,
+            "finalRecentFailureCount": final_recent_failure_count,
+            "finalFlapping": final_flapping,
+            "healthRecentFailureCount": health_recent_failure_count,
+            "healthFlapping": health_flapping,
+            "finalStatus": final_status,
+            "finalHealthOutput": final_output_health,
+        }));
+
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+                json!({}),
+            )
+            .await;
+        stop_child(&mut pub_child).await;
+        if let Some(server) = sink_server.take() {
+            stop_generalized_sink_server(server);
+        }
     }
 
     Ok(results)

@@ -31,6 +31,7 @@ interface ControlRoomOutputOption {
   outputName: string;
   monitoringUrl: string | null;
   status: string;
+  flapping: boolean;
 }
 
 interface ControlRoomCardDescriptor {
@@ -151,6 +152,7 @@ function listMonitoringOutputsForPipeline(
       outputName: out.name,
       monitoringUrl: out.monitoringUrl,
       status: out.status,
+      flapping: out.flapping,
     }))
     .sort((a, b) =>
       controlRoomNameCollator.compare(a.outputName, b.outputName),
@@ -359,15 +361,20 @@ function buildOutputCard(
   const previewable = isPreviewableOutputStatus(output.status);
   const normalizedStatus = (output.status || "off").trim().toLowerCase();
   const statusLabel =
-    normalizedStatus === "running" || normalizedStatus === "on"
-      ? "Live"
-      : normalizedStatus === "retrying"
-        ? "Recovering"
-        : normalizedStatus === "warning"
-          ? "Unstable"
-          : normalizedStatus === "failed"
-            ? "Down"
-            : "Stopped";
+    output.flapping &&
+    (normalizedStatus === "running" ||
+      normalizedStatus === "on" ||
+      normalizedStatus === "warning")
+      ? "Flapping"
+      : normalizedStatus === "running" || normalizedStatus === "on"
+        ? "Live"
+        : normalizedStatus === "retrying"
+          ? "Recovering"
+          : normalizedStatus === "warning"
+            ? "Unstable"
+            : normalizedStatus === "failed"
+              ? "Down"
+              : "Stopped";
   return {
     id: `output:${output.outputId}`,
     title: output.outputName,

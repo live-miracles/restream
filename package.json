@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "scripts": {
     "prepare:frontend-assets": "node ./scripts/ensure-frontend-assets.mjs",
     "build:frontend": "npm run prepare:frontend-assets && npx tsc -p tsconfig.json && npx tailwindcss -i public/input.css -o public/output.css",

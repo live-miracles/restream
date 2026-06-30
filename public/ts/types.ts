@@ -28,6 +28,13 @@ export interface AudioTrack {
   profile?: string;
 }
 
+export interface VideoTrackSelection {
+  mode: "firstVideoOnly";
+  selectedTrackIndex?: number | null;
+  availableTrackCount: number;
+  ignoredTrackCount: number;
+}
+
 export interface IngestUrls {
   rtmp: string | null;
   srt: string | null;
@@ -179,6 +186,7 @@ export interface InputHealth {
   probeStatus?: string;
   probePendingMs?: number | null;
   video?: VideoTrack;
+  videoTrackSelection?: VideoTrackSelection | null;
   audio?: AudioTrack;
   audioTracks?: AudioTrack[];
   publisher?: Publisher;
@@ -208,6 +216,8 @@ export interface OutputHealth {
   lastError?: string | null;
   lastErrorAt?: string | null;
   failurePhase?: string | null;
+  recentFailureCount?: number;
+  flapping?: boolean;
   retrying?: boolean;
   retryAttempts?: number | null;
   retryBackoffMs?: number | null;
@@ -298,6 +308,7 @@ export interface InputView {
   probeStatus: string;
   probePendingMs: number | null;
   video: VideoTrack | null;
+  videoTrackSelection: VideoTrackSelection | null;
   audio: AudioTrack | null;
   audioTracks: AudioTrack[];
   bytesReceived: number;
@@ -336,6 +347,8 @@ export interface OutputView {
   lastErrorAt: string | null;
   lastProgressAt: string | null;
   lastProgressAgeMs: number | null;
+  recentFailureCount: number;
+  flapping: boolean;
   retrying: boolean;
   retryAttempts: number | null;
   retryBackoffMs: number | null;

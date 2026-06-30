@@ -13,6 +13,7 @@ import { renderMediaLibraryMode } from "./media-library.js";
 import { loadSettings, renderSettingsPanel } from "./settings.js";
 import { loadStatus } from "./status.js";
 import {
+  isOutputFlapping,
   isOutputIntentStopped,
   isOutputRunning,
   isOutputRetrying,
@@ -340,6 +341,14 @@ function pipelineHealthLabel(pipe: PipelineView): {
       detail: "recovering",
     };
   }
+  if (pipe.outs.some(isOutputFlapping)) {
+    return {
+      label: "Output flapping",
+      cls: badgeClassForTone("warning"),
+      tone: "warning",
+      detail: "recent sink drops",
+    };
+  }
   if (pipe.outs.some((out) => out.status === "warning")) {
     return {
       label: "Output warning",
@@ -371,6 +380,7 @@ function outputStateLabel(out: OutputView): { label: string; cls: string } {
   if (out.status === "stalled")
     return { label: "Stalled", cls: "badge-warning" };
   if (isOutputRetrying(out)) return { label: "Retrying", cls: "badge-warning" };
+  if (isOutputFlapping(out)) return { label: "Flapping", cls: "badge-warning" };
   if (isOutputRunning(out)) return { label: "Running", cls: "badge-success" };
   if (out.status === "warning")
     return { label: "Warning", cls: "badge-warning" };
@@ -395,6 +405,7 @@ function summaryCounts() {
     ).length,
     runningOutputs: outputs.filter(isOutputRunning).length,
     retryingOutputs: outputs.filter(isOutputRetrying).length,
+    flappingOutputs: outputs.filter(isOutputFlapping).length,
     stoppedOutputs: outputs.filter(isOutputIntentStopped).length,
     downOutputs: outputs.filter(isOutputUnexpectedlyDown).length,
     recording: state.pipelines.filter((pipe) => pipe.recording.active).length,
@@ -457,6 +468,7 @@ function outputsOverviewPill(pipe: PipelineView): string {
   const total = pipe.outs.length;
   const running = pipe.outs.filter(isOutputRunning).length;
   const retrying = pipe.outs.filter(isOutputRetrying).length;
+  const flapping = pipe.outs.filter(isOutputFlapping).length;
   const stopped = pipe.outs.filter(isOutputIntentStopped).length;
   const down = pipe.outs.filter(isOutputUnexpectedlyDown).length;
   if (!total) return statusPill("No outputs", "neutral", "not configured");
@@ -472,6 +484,13 @@ function outputsOverviewPill(pipe: PipelineView): string {
   if (retrying > 0) {
     return statusPill(
       `${retrying} retrying`,
+      "warning",
+      `${running}/${total} running`,
+    );
+  }
+  if (flapping > 0) {
+    return statusPill(
+      `${flapping} flapping`,
       "warning",
       `${running}/${total} running`,
     );
@@ -559,7 +578,7 @@ function renderOverview(): void {
             ${overviewMetric("Inputs Live", `${counts.liveInputs}/${counts.pipelines}`, counts.warningInputs ? `${counts.warningInputs} warning` : "All quiet", "inputs")}
             ${overviewMetric("Throughput In", formatBitrate(counts.inputKbps), "Across active publishers", "inputKbps")}
             ${overviewMetric("Engine Memory", formatBytes(engineMemory), engineMemoryDetail, "engineMemory")}
-            ${overviewMetric("Outputs Running", `${counts.runningOutputs}`, `${counts.retryingOutputs} retrying / ${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, "outputs")}
+            ${overviewMetric("Outputs Running", `${counts.runningOutputs}`, `${counts.retryingOutputs} retrying / ${counts.flappingOutputs} flapping / ${counts.downOutputs} down / ${counts.stoppedOutputs} stopped`, "outputs")}
             ${overviewMetric("Throughput Out", formatBitrate(counts.outputKbps), `${counts.recording} active recording${counts.recording === 1 ? "" : "s"}`, "outputKbps")}
         </div>
         <section class="border-base-content/10 bg-base-200/80 rounded-lg border">
@@ -814,7 +833,12 @@ function renderInspectDiagnostics(pipe: PipelineView | null): void {
     blockers.push("Publisher protocol is not known yet.");
   const downOutputs = pipe.outs.filter(isOutputUnexpectedlyDown);
   const retryingOutputs = pipe.outs.filter(isOutputRetrying);
-  const faultCandidates = [...downOutputs, ...retryingOutputs];
+  const flappingOutputs = pipe.outs.filter(isOutputFlapping);
+  const faultCandidates = [
+    ...downOutputs,
+    ...retryingOutputs,
+    ...flappingOutputs,
+  ];
 
   container.innerHTML = `<div class="grid gap-3 md:grid-cols-3">
         <div class="bg-base-100 rounded-lg p-3">
@@ -827,7 +851,7 @@ function renderInspectDiagnostics(pipe: PipelineView | null): void {
         </div>
         <div class="bg-base-100 rounded-lg p-3">
             <div class="text-base-content/60 text-xs font-semibold uppercase">Suggested Next Step</div>
-            <div class="mt-2 text-sm">${pipe.input.status === "on" ? (retryingOutputs.length ? "Inspect recent errors and retry backoff before forcing a restart." : "Run diagnostics, then inspect graph edges with zero packet output.") : "Start or reconnect the publisher before probing."}</div>
+            <div class="mt-2 text-sm">${pipe.input.status === "on" ? (retryingOutputs.length ? "Inspect recent errors and retry backoff before forcing a restart." : flappingOutputs.length ? "Inspect recent sink failures before forcing a restart." : "Run diagnostics, then inspect graph edges with zero packet output.") : "Start or reconnect the publisher before probing."}</div>
         </div>
     </div>`;
 }
@@ -889,6 +913,7 @@ function inspectGraphStateKey(pipe: PipelineView | null): string | null {
         out.encoding,
         out.phase || "",
         out.retrying ? "1" : "0",
+        out.flapping ? "1" : "0",
         out.lastError || "",
       ].join(":"),
     )
@@ -994,7 +1019,7 @@ function applyMode(mode: DashboardMode): void {
     const counts = summaryCounts();
     summary.textContent =
       mode === "overview"
-        ? `${counts.liveInputs} live inputs / ${counts.runningOutputs} running outputs${counts.retryingOutputs ? ` / ${counts.retryingOutputs} retrying` : ""}`
+        ? `${counts.liveInputs} live inputs / ${counts.runningOutputs} running outputs${counts.retryingOutputs ? ` / ${counts.retryingOutputs} retrying` : ""}${counts.flappingOutputs ? ` / ${counts.flappingOutputs} flapping` : ""}`
         : mode === "pipeline"
           ? "Pipeline workflow"
           : mode === "inspect"

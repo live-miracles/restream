@@ -131,6 +131,8 @@ Active native egresses appear in `pipelines[id].outputs`:
 | `lastProgressAt` | Last successful protocol send or HLS PUT completion |
 | `lastProgressAgeMs` | Age of the last successful send/upload sample |
 | `lastError`, `lastErrorAt`, `failurePhase` | Last structured sender failure. These fields are preserved in recent output status after teardown so cleanup does not erase the cause. |
+| `recentFailureCount` | Number of recent egress failures still inside the short downstream flap window. Carries forward onto the recovered active attempt so operators can see repeated sink churn even after the output is running again. |
+| `flapping` | `true` when repeated downstream failures happened inside that flap window, even if the output has already recovered and resumed sending. |
 | `retrying`, `retryAttempts`, `retryBackoffMs`, `nextRetryAt`, `retryRemainingMs` | Present while reconciler backoff is actively delaying the next automatic egress start. During this window the output `status` is promoted to `retrying` even though the preserved runtime phase remains `failed`. |
 | `quality` | Egress transport quality. RTMP/RTMPS expose sender-side `TCP_INFO`/`SO_MEMINFO`; SRT exposes sender-side `srt_bistats()` and bonded group member state when available. |
 | `endedAt`, `endedAgeMs` | Present on recent output snapshots after unregister/cleanup so operators can tell when the last classified egress state ended |
@@ -142,6 +144,12 @@ state after cleanup. That means the dashboard can keep showing `failed` or
 When a desired-running output is still inside destination retry backoff, the
 same preserved snapshot also shows when the next retry is due instead of
 looking like a static terminal failure.
+
+Recovered outputs now retain a short-lived instability signal too. After two
+recent downstream failures, the active output returns to `status=running` once
+bytes flow again, but `recentFailureCount` and `flapping=true` stay visible for
+the flap window so dashboards can distinguish "healthy again" from "healthy but
+still churning against the destination."
 
 Input lifecycle snapshots also expose transient upstream grace explicitly:
 

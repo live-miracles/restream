@@ -2048,6 +2048,8 @@ async fn active_output_status_ignores_stale_retry_state_after_restart() {
     let status = body_json(resp).await;
     assert_eq!(status["status"], "running");
     assert_eq!(status["phase"], "sending");
+    assert_eq!(status["recentFailureCount"], 1);
+    assert_eq!(status["flapping"], false);
     assert_eq!(status["retrying"], false);
     assert!(status["retryAttempts"].is_null());
     assert!(status["retryBackoffMs"].is_null());
@@ -2063,10 +2065,102 @@ async fn active_output_status_ignores_stale_retry_state_after_restart() {
     let output = &health["pipelines"][&pid]["outputs"][&oid];
     assert_eq!(output["status"], "running");
     assert_eq!(output["phase"], "sending");
+    assert_eq!(output["recentFailureCount"], 1);
+    assert_eq!(output["flapping"], false);
     assert_eq!(output["retrying"], false);
     assert!(output["retryAttempts"].is_null());
     assert!(output["retryBackoffMs"].is_null());
     assert!(output["retryRemainingMs"].is_null());
+}
+
+#[tokio::test]
+async fn recovered_output_surfaces_flapping_after_repeated_sink_failures() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13085"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13085", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    engine
+        .record_egress_error(&oid, "send", "attempt 1 failed")
+        .await;
+    engine.unregister_egress(&oid).await;
+
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    engine
+        .record_egress_error(&oid, "connect", "attempt 2 failed")
+        .await;
+    engine.unregister_egress(&oid).await;
+
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    engine.update_egress_phase(&oid, "sending").await;
+    engine.record_egress_progress(&oid, 4096).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status = body_json(resp).await;
+    assert_eq!(status["status"], "running");
+    assert!(status["lastError"].is_null());
+    assert_eq!(status["recentFailureCount"], 2);
+    assert_eq!(status["flapping"], true);
+    assert_eq!(status["retrying"], false);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = body_json(resp).await;
+    let output = &health["pipelines"][&pid]["outputs"][&oid];
+    assert_eq!(output["status"], "running");
+    assert_eq!(output["recentFailureCount"], 2);
+    assert_eq!(output["flapping"], true);
 }
 
 #[tokio::test]
