@@ -4122,10 +4122,13 @@ async fn build_file_diagnostics_context(
         .await
         .ok()
         .flatten()?;
-    let ingest = db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key)
-        .await
-        .ok()
-        .flatten()?;
+    let ingest = load_configured_file_ingest(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &pipeline.stream_key,
+    )
+    .await
+    .ok()
+    .flatten()?;
     let path = expected_media_path(&state.media_dir, &ingest.filename);
     let metadata = std::fs::metadata(&path).ok();
     let file_exists = metadata.is_some();
