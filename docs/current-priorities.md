@@ -32,8 +32,8 @@ Continue only where there is still real coupling to remove:
 Primary references:
 
 - [architecture.md](architecture.md)
-- [rust-layering-roadmap.md](rust-layering-roadmap.md)
-- [agent-guidance/skills/rust-layering-audit/SKILL.md](agent-guidance/skills/rust-layering-audit/SKILL.md)
+- [layering-roadmap.md](layering-roadmap.md)
+- [agent-guidance/skills/layering-audit/SKILL.md](agent-guidance/skills/layering-audit/SKILL.md)
 
 ### 2. Finish runtime/view separation
 
@@ -103,5 +103,5 @@ These older themes should not drive work by themselves:
 Use this file as the replacement for the old top-level planning/status docs.
 
 - For current architecture truth: read [architecture.md](architecture.md)
-- For layering decisions: read [rust-layering-roadmap.md](rust-layering-roadmap.md)
+- For layering decisions: read [layering-roadmap.md](layering-roadmap.md)
 - For testing/proof gates: read [testing.md](testing.md) and [AGENTS.md](../AGENTS.md)
