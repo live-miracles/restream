@@ -1,5 +1,6 @@
-use crate::application::ports::MetaStore;
+use crate::application::ports::{MetaStore, PipelineCatalog, PipelineCatalogError};
 use crate::domain::srt_ingest::{DEFAULT_SRT_PBKEYLEN, SrtGlobalIngestConfig, SrtGlobalIngestMode};
+use crate::media::srt::SrtIngestPolicyStore;
 use tracing::warn;
 
 pub const SRT_INGEST_GLOBAL_CONFIG_META_KEY: &str = "srt_ingest_global_config";
@@ -21,6 +22,26 @@ pub async fn load_global_srt_ingest_config(meta_store: &dyn MetaStore) -> SrtGlo
     config
 }
 
+pub async fn load_policy_store(
+    meta_store: &dyn MetaStore,
+    pipeline_catalog: &dyn PipelineCatalog,
+) -> Result<SrtIngestPolicyStore, PipelineCatalogError> {
+    let global = load_global_srt_ingest_config(meta_store).await;
+    let pipelines = pipeline_catalog.list_pipelines().await?;
+    Ok(SrtIngestPolicyStore::new(global, &pipelines))
+}
+
+pub async fn refresh_policy_store(
+    policy_store: &SrtIngestPolicyStore,
+    meta_store: &dyn MetaStore,
+    pipeline_catalog: &dyn PipelineCatalog,
+) -> Result<(), PipelineCatalogError> {
+    let global = load_global_srt_ingest_config(meta_store).await;
+    let pipelines = pipeline_catalog.list_pipelines().await?;
+    policy_store.replace(global, &pipelines);
+    Ok(())
+}
+
 fn legacy_srt_global_config_from_env() -> Option<SrtGlobalIngestConfig> {
     let passphrase = std::env::var("RESTREAM_SRT_PASSPHRASE").ok()?;
     if passphrase.is_empty() {
@@ -40,7 +61,12 @@ fn legacy_srt_global_config_from_env() -> Option<SrtGlobalIngestConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::ports::{MetaLookupError, MetaLookupFuture, MetaStore};
+    use crate::application::ports::{
+        MetaLookupError, MetaLookupFuture, MetaStore, PipelineCatalog, PipelineCatalogFuture,
+    };
+    use crate::domain::srt_ingest::ResolvedSrtIngestConfig;
+    use crate::media::srt::serialize_pipeline_srt_ingest_policy;
+    use crate::types::Pipeline;
 
     struct FakeMetaStore {
         value: Option<String>,
@@ -54,6 +80,16 @@ mod tests {
                 }
                 Ok(self.value.clone())
             })
+        }
+    }
+
+    struct FakePipelineCatalog {
+        pipelines: Vec<Pipeline>,
+    }
+
+    impl PipelineCatalog for FakePipelineCatalog {
+        fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a> {
+            Box::pin(async move { Ok(self.pipelines.clone()) })
         }
     }
 
@@ -93,5 +129,102 @@ mod tests {
         let config = load_global_srt_ingest_config(&store).await;
 
         assert_eq!(config, SrtGlobalIngestConfig::default());
+    }
+
+    #[tokio::test]
+    async fn load_policy_store_builds_store_from_meta_and_catalog() {
+        let store = FakeMetaStore {
+            value: Some(
+                serde_json::json!({
+                    "mode": "encrypted",
+                    "passphrase": "global-pass-123",
+                    "pbkeylen": 24
+                })
+                .to_string(),
+            ),
+        };
+        let catalog = FakePipelineCatalog {
+            pipelines: vec![Pipeline {
+                id: "pipeline-1".to_string(),
+                name: "Pipeline One".to_string(),
+                stream_key: "stream-one".to_string(),
+                input_source: None,
+                encoding: None,
+                srt_ingest_policy: Some(
+                    serialize_pipeline_srt_ingest_policy(
+                        &crate::domain::srt_ingest::SrtPipelineIngestConfig::default(),
+                    )
+                    .unwrap(),
+                ),
+            }],
+        };
+
+        let policy_store = load_policy_store(&store, &catalog).await.unwrap();
+
+        assert_eq!(
+            policy_store.global_config().mode,
+            SrtGlobalIngestMode::Encrypted
+        );
+        assert_eq!(
+            policy_store.resolved_policy("stream-one"),
+            Some(ResolvedSrtIngestConfig::Encrypted {
+                passphrase: "global-pass-123".to_string(),
+                pbkeylen: 24,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_policy_store_replaces_existing_policies() {
+        let initial_store = FakeMetaStore {
+            value: Some(
+                serde_json::json!({
+                    "mode": "plaintext"
+                })
+                .to_string(),
+            ),
+        };
+        let updated_store = FakeMetaStore {
+            value: Some(
+                serde_json::json!({
+                    "mode": "encrypted",
+                    "passphrase": "updated-pass-123",
+                    "pbkeylen": 32
+                })
+                .to_string(),
+            ),
+        };
+        let catalog = FakePipelineCatalog {
+            pipelines: vec![Pipeline {
+                id: "pipeline-1".to_string(),
+                name: "Pipeline One".to_string(),
+                stream_key: "stream-one".to_string(),
+                input_source: None,
+                encoding: None,
+                srt_ingest_policy: Some(
+                    serialize_pipeline_srt_ingest_policy(
+                        &crate::domain::srt_ingest::SrtPipelineIngestConfig::default(),
+                    )
+                    .unwrap(),
+                ),
+            }],
+        };
+        let policy_store = load_policy_store(&initial_store, &catalog).await.unwrap();
+
+        refresh_policy_store(&policy_store, &updated_store, &catalog)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            policy_store.global_config().mode,
+            SrtGlobalIngestMode::Encrypted
+        );
+        assert_eq!(
+            policy_store.resolved_policy("stream-one"),
+            Some(ResolvedSrtIngestConfig::Encrypted {
+                passphrase: "updated-pass-123".to_string(),
+                pbkeylen: 32,
+            })
+        );
     }
 }

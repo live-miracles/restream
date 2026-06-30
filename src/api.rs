@@ -32,10 +32,10 @@ use tracing::{error, warn};
 
 use crate::alerts;
 use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
-use crate::application::ports::SqliteMetaStore;
+use crate::application::ports::{SqliteMetaStore, SqlitePipelineLookup};
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::srt_ingest::{
-    SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config,
+    SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config, refresh_policy_store,
 };
 use crate::db;
 use crate::diag;
@@ -213,9 +213,13 @@ async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
 }
 
 async fn refresh_srt_ingest_policy_store(state: &AppState) {
-    let global = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
-    let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
-    state.ingest_policy_store.replace(global, &pipelines);
+    let meta_store = SqliteMetaStore::new(state.db.clone());
+    let pipeline_store = SqlitePipelineLookup::new(state.db.clone());
+    if let Err(error) =
+        refresh_policy_store(&state.ingest_policy_store, &meta_store, &pipeline_store).await
+    {
+        warn!(err = %error, "failed to refresh SRT ingest policy store");
+    }
 }
 
 fn pipeline_response_json(

@@ -172,6 +172,7 @@ Progress so far:
 - started: `application::recording` recording task launch orchestration shared by lib/api
 - started: `application::reconcile` output retry/stop, recording plan, and stage-sweep decisions
 - started: `application::srt_ingest` global config lookup via port
+- started: `application::srt_ingest` shared policy-store load/refresh orchestration for lib/api
 - done: `application::output_path` for source/video/audio/codec-edge planning
 - next: move more spawn/wiring orchestration from `lib.rs` into `application::reconcile`
 

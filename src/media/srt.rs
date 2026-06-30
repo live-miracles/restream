@@ -103,7 +103,7 @@ impl SrtIngestPolicyStore {
             .clone()
     }
 
-    fn resolved_policy(&self, stream_key: &str) -> Option<ResolvedSrtIngestConfig> {
+    pub(crate) fn resolved_policy(&self, stream_key: &str) -> Option<ResolvedSrtIngestConfig> {
         self.inner
             .read()
             .unwrap_or_else(|e| e.into_inner())

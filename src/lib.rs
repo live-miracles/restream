@@ -357,16 +357,26 @@ pub async fn run_app() {
     let security = Arc::new(crate::media::security::IngestSecurityService::new(
         sec_config,
     ));
-    let srt_ingest_global =
-        crate::application::srt_ingest::load_global_srt_ingest_config(&meta_store).await;
     let pipeline_store = crate::application::ports::SqlitePipelineLookup::new(pool.clone());
     let pipeline_catalog: Arc<dyn crate::application::ports::PipelineCatalog> =
         Arc::new(pipeline_store.clone());
-    let srt_ingest_pipelines = pipeline_catalog.list_pipelines().await.unwrap_or_default();
-    let srt_ingest_policy_store = Arc::new(crate::media::srt::SrtIngestPolicyStore::new(
-        srt_ingest_global,
-        &srt_ingest_pipelines,
-    ));
+    let srt_ingest_policy_store = Arc::new(
+        match crate::application::srt_ingest::load_policy_store(&meta_store, &pipeline_store).await
+        {
+            Ok(store) => store,
+            Err(error) => {
+                warn!(
+                    err = %error,
+                    "pipeline catalog error initializing SRT ingest policy store"
+                );
+                crate::media::srt::SrtIngestPolicyStore::new(
+                    crate::application::srt_ingest::load_global_srt_ingest_config(&meta_store)
+                        .await,
+                    &[],
+                )
+            }
+        },
+    );
     let sessions = Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()));
     crate::api::initialize_auth(&pool, &sessions).await;
     crate::media::profiles::load_from_db(&pool).await;
