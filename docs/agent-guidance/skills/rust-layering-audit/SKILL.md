@@ -78,7 +78,7 @@ When auditing a candidate seam:
 - run focused tests first for the touched seam
 - prefer application-level tests for orchestration extractions
 - keep API contract tests when edge behavior still depends on the seam
-- if the change touches hot runtime code, follow the benchmark/proof rules in `CLAUDE.md`
+- if the change touches hot runtime code, follow the benchmark/proof rules in `AGENTS.md`
 
 ## Read This Reference
 

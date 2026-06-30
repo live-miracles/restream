@@ -1,7 +1,7 @@
 //! **Decision benchmark** — run on demand, not in the routine bench loop.
 //!
 //! Compares `memchr` / `pulp` / `wide` / scalar for byte search and memcpy.
-//! Per CLAUDE.md SIMD rules this is a one-time decision to pick an implementation,
+//! Per AGENTS.md SIMD rules this is a one-time decision to pick an implementation,
 //! not a continuous regression guard. The scalar oracle for the chosen path lives
 //! in unit tests.
 //!

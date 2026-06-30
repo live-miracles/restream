@@ -44,7 +44,7 @@ in-memory edges gone, there is only one live mode, so there is no switch to main
 
 The one capability genuinely lost is **fault injection into the running engine** — feeding
 malformed, reordered, or gapped packets to prove the engine isolates faults and never
-crashes (`CLAUDE.md`: "no internal or external failure path may crash the engine").
+crashes (`AGENTS.md`: "no internal or external failure path may crash the engine").
 ffmpeg will not emit malformed data on demand. This belongs as **targeted unit/component
 tests of the demuxer and ring buffer with crafted bytes** — the tier we are keeping
 anyway — not as a full-pipeline subsystem.
@@ -174,7 +174,7 @@ to the default suite.
 Benchmarks measure speed, not correctness; they are not a third test tier. Two cleanups:
 
 - **`benches/simd_alternatives.rs`** compares `memchr`/`pulp`/`wide`/`scalar`. Per the
-  SIMD rules in `CLAUDE.md` this is a **one-time decision benchmark** to pick an
+  SIMD rules in `AGENTS.md` this is a **one-time decision benchmark** to pick an
   implementation, not a continuous regression guard. Run on demand, not in the routine
   bench loop; the scalar oracle for the chosen path lives in unit tests.
 - **`benches/matrix_throughput.rs`** (throughput) and the `matrix` correctness logic

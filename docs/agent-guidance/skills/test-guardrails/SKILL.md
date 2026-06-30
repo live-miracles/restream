@@ -50,5 +50,5 @@ Run the broad quiet-log gate before sign-off on test-heavy changes:
 ## Read These References
 
 - [../../testing.md](../../testing.md)
-- [../../../CLAUDE.md](../../../CLAUDE.md)
+- [../../../../AGENTS.md](../../../../AGENTS.md)
 - [../../../src/test_fixtures.rs](../../../src/test_fixtures.rs)

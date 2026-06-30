@@ -1408,7 +1408,7 @@ impl SrtServer {
         let _server_sock_guard = SrtSockGuard(server_sock);
 
         // Blocking accept thread — srt_accept in sync mode blocks until a connection arrives.
-        // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
+        // Wrapped in catch_unwind so a panic cannot crash the process (AGENTS.md).
         let accept_handle = std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
@@ -1968,7 +1968,7 @@ impl SrtServer {
         let out_queue = Arc::new(crate::media::avio::MemoryQueue::new());
 
         // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
-        // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
+        // Wrapped in catch_unwind so a panic cannot crash the process (AGENTS.md).
         // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
         // try_acquire_owned returns Err if the semaphore is exhausted; in that
         // case we reject the play connection gracefully rather than spawning a
@@ -3860,7 +3860,7 @@ pub async fn start_srt_egress(
             .unwrap_or((None, None, None, None, None, None, None, None))
     };
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
-    // Wrapped in catch_unwind so a panic cannot crash the process (CLAUDE.md).
+    // Wrapped in catch_unwind so a panic cannot crash the process (AGENTS.md).
     // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
     let permit = match engine.sender_semaphore_handle().try_acquire_owned() {
         Ok(p) => p,

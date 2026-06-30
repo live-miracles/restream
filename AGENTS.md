@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Instructions for AI coding agents in this repository.
 
@@ -14,7 +14,7 @@ Instructions for AI coding agents in this repository.
 - Concurrency, lifecycle, and thread-hop changes must ship with proof: deterministic unit tests, loom/proptest where feasible, a live harness fault case for recovery behavior, and either a benchmark or an explicit note that the change is off the hot path.
 - Update docs when changing commands, configuration, architecture, protocols, or user-visible behavior.
 - Prefer targeted fixes over rewrites. Add abstractions only when they remove real complexity.
-- For Rust layering or module-boundary refactors, use `docs/skills/rust-layering-audit/SKILL.md` and stop when the next split would add more indirection than ownership clarity.
+- For Rust layering or module-boundary refactors, use `docs/agent-guidance/skills/rust-layering-audit/SKILL.md` and stop when the next split would add more indirection than ownership clarity.
 
 ## Repository Map
 
@@ -169,9 +169,8 @@ a lower tier, tell the user (e.g. "This is a simple task — you could switch to
 - Performance: `docs/high-performance-data-path.md`
 - Testing: `docs/testing.md`
 - Concurrency proofing: `docs/concurrency-proofing.md`
-- Layering audit skill: `docs/skills/rust-layering-audit/SKILL.md` — use for Rust layering/module-boundary refactors so abstractions stay justified
+- Layering audit skill: `docs/agent-guidance/skills/rust-layering-audit/SKILL.md` — use for Rust layering/module-boundary refactors so abstractions stay justified
 - Configuration: `docs/configuration.md`
 - Observability: `docs/observability.md`
 - Logging: `docs/logging.md` (level policy, callsite audit, sink architecture)
-- Log audit skill: `.claude/skills/log-audit.md` — run with `/log-audit` to audit and fix callsite levels
 - API: `docs/api-reference.md`
