@@ -38,9 +38,8 @@ use crate::application::ports::{
     IngestLookup, PipelineStore, SqliteIngestLookup, SqliteMetaStore, SqlitePipelineStore,
 };
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
-use crate::application::srt_ingest::{
-    SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config, refresh_policy_store,
-};
+use crate::application::settings::load_settings_snapshot;
+use crate::application::srt_ingest::{SRT_INGEST_GLOBAL_CONFIG_META_KEY, refresh_policy_store};
 use crate::db;
 use crate::diag;
 use crate::domain::ingest_security::IngestSecurityConfig;
@@ -930,26 +929,18 @@ async fn config_get_handler(
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
-    let server_name = db::get_meta(&state.db, "server_name")
-        .await
-        .unwrap_or(Some("Name".to_string()))
-        .unwrap_or("Name".to_string());
-    let sec = state.security.get_config();
-    let meta_store = SqliteMetaStore::new(state.db.clone());
-    let srt_ingest = load_global_srt_ingest_config(&meta_store).await;
-    let recording_settings =
-        crate::application::recording::load_recording_settings(&meta_store).await;
-
-    // Transcode profiles from runtime cache, with built-ins exposed when unset.
-    let transcode_profiles = crate::media::profiles::current_effective().await;
+    let settings = match load_settings_snapshot(&state.db, &state.security).await {
+        Ok(settings) => settings,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     Json(serde_json::json!({
-        "serverName": server_name,
-        "ingestHost": ingest_host,
-        "ingestSecurity": sec,
-        "recordingSettings": recording_settings,
-        "srtIngest": srt_ingest,
-        "transcodeProfiles": transcode_profiles,
+        "serverName": settings.server_name,
+        "ingestHost": settings.ingest_host,
+        "ingestSecurity": settings.ingest_security,
+        "recordingSettings": settings.recording_settings,
+        "srtIngest": settings.srt_ingest,
+        "transcodeProfiles": settings.transcode_profiles,
         "pipelines": pipelines,
         "outputs": api_view_models::output_response_json_list(&outputs),
         "jobs": api_view_models::job_response_json_list(&jobs)
@@ -1056,29 +1047,18 @@ async fn config_patch_handler(
         }
     }
 
-    let server_name = db::get_meta(&state.db, "server_name")
-        .await
-        .unwrap_or(Some("Name".to_string()))
-        .unwrap_or("Name".to_string());
-    let ingest_host = match db::get_ingest_host(&state.db).await {
-        Ok(host) => host.unwrap_or_default(),
+    let settings = match load_settings_snapshot(&state.db, &state.security).await {
+        Ok(settings) => settings,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sec = state.security.get_config();
-    let recording_settings = crate::application::recording::load_recording_settings(
-        &SqliteMetaStore::new(state.db.clone()),
-    )
-    .await;
-    let srt_ingest = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
-    let transcode_profiles = crate::media::profiles::current_effective().await;
 
     Json(serde_json::json!({
-        "serverName": server_name,
-        "ingestHost": ingest_host,
-        "ingestSecurity": sec,
-        "recordingSettings": recording_settings,
-        "srtIngest": srt_ingest,
-        "transcodeProfiles": transcode_profiles
+        "serverName": settings.server_name,
+        "ingestHost": settings.ingest_host,
+        "ingestSecurity": settings.ingest_security,
+        "recordingSettings": settings.recording_settings,
+        "srtIngest": settings.srt_ingest,
+        "transcodeProfiles": settings.transcode_profiles
     }))
     .into_response()
 }
