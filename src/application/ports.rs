@@ -52,3 +52,40 @@ impl PipelineLookup for SqlitePipelineLookup {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = crate::db::create_pool("sqlite::memory:").await.unwrap();
+        crate::db::setup_database_schema(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn sqlite_pipeline_lookup_returns_pipeline_for_stream_key() {
+        let pool = test_pool().await;
+        crate::db::create_pipeline(&pool, "p1", "Pipeline", "stream-key", None, None, None)
+            .await
+            .unwrap();
+        let lookup = SqlitePipelineLookup::new(pool);
+
+        let pipeline = lookup
+            .get_pipeline_by_stream_key("stream-key")
+            .await
+            .unwrap();
+
+        assert_eq!(pipeline.unwrap().id, "p1");
+    }
+
+    #[tokio::test]
+    async fn sqlite_pipeline_lookup_returns_none_for_missing_stream_key() {
+        let pool = test_pool().await;
+        let lookup = SqlitePipelineLookup::new(pool);
+
+        let pipeline = lookup.get_pipeline_by_stream_key("missing").await.unwrap();
+
+        assert!(pipeline.is_none());
+    }
+}

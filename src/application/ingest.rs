@@ -133,6 +133,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_auth_surfaces_lookup_error_and_records_failure() {
+        let lookup = FakePipelineLookup {
+            pipelines: HashMap::new(),
+            error: Some("db unavailable"),
+        };
+        let security = IngestSecurityService::new(test_security_config());
+        let ip = "10.0.0.3";
+
+        let result = authenticate_publish_stream_key(&lookup, &security, "live", ip).await;
+
+        assert!(matches!(result, Err(IngestAuthError::LookupFailed(_))));
+        assert!(security.is_ip_banned(ip).is_none());
+        assert!(security.record_failure(ip));
+    }
+
+    #[tokio::test]
     async fn srt_auth_clears_failure_state_after_success() {
         let lookup = FakePipelineLookup::success("live");
         let security = Arc::new(IngestSecurityService::new(test_security_config()));
