@@ -640,8 +640,8 @@ normalize once → share video → carry all audio → select audio late
 
 ## Code Gaps
 
-These are tracked in [REWRITE-STATUS.md](../REWRITE-STATUS.md) as release
-blockers or hardening work:
+These remain useful hardening themes even though the rewrite-status document is
+gone:
 
 - **Internal transcoder**: built-in video profiles run decode/scale/encode;
   non-built-in/custom profiles require explicit profiling and matrix evidence

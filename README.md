@@ -76,7 +76,7 @@ npm run build:frontend
 - [API Reference](docs/api-reference.md): route-level behavior
 - [Testing](docs/testing.md): verification strategy and live test entry points
 - [Observability](docs/observability.md): health, diagnostics, telemetry
-- [Rewrite Status](REWRITE-STATUS.md): current implementation status and open gaps
+- [Current Priorities](docs/current-priorities.md): current platform priorities and still-relevant follow-up work
 
 ## Expectations
 

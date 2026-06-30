@@ -163,7 +163,7 @@ a lower tier, tell the user (e.g. "This is a simple task — you could switch to
 ## Key References
 
 - Overview/setup: `README.md`
-- Status/limits: `REWRITE-STATUS.md`
+- Current priorities: `docs/current-priorities.md`
 - Architecture: `docs/architecture.md`
 - Media pipeline: `docs/media-pipeline.md`
 - Performance: `docs/high-performance-data-path.md`
