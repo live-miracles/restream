@@ -2,7 +2,8 @@
 //! file-ingest context, and validates stream access before media processing begins.
 
 use crate::application::ports::{
-    IngestLookup, IngestLookupError, PipelineStore, PipelineStoreError,
+    IngestLookup, IngestLookupError, IngestWriteError, IngestWriter, PipelineStore,
+    PipelineStoreError,
 };
 use crate::media::engine::MediaEngine;
 use crate::media::security::IngestSecurityService;
@@ -37,6 +38,22 @@ pub enum ResolveFileIngestError {
     IngestLookup(IngestLookupError),
     PipelineStore(PipelineStoreError),
     MissingPipelineForStreamKey(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct FileIngestConfig {
+    pub filename: String,
+    pub loop_flag: bool,
+    pub start_time: String,
+    pub live_optimized: bool,
+    pub target_gop_seconds: u32,
+}
+
+#[derive(Debug)]
+pub enum PersistFileIngestError {
+    IngestLookup(IngestLookupError),
+    IngestWrite(IngestWriteError),
+    PipelineStore(PipelineStoreError),
 }
 
 pub async fn resolve_file_ingest_context(
@@ -105,6 +122,85 @@ pub async fn clear_stream_key_file_ingests(
     Ok(())
 }
 
+pub async fn persist_pipeline_file_ingest(
+    ingest_lookup: &dyn IngestLookup,
+    ingest_writer: &dyn IngestWriter,
+    pipeline_store: &dyn PipelineStore,
+    pipeline: &Pipeline,
+    config: &FileIngestConfig,
+    id_factory: impl FnOnce() -> String,
+) -> Result<Ingest, PersistFileIngestError> {
+    let existing = ingest_lookup
+        .get_ingest_by_stream_key(&pipeline.stream_key)
+        .await
+        .map_err(PersistFileIngestError::IngestLookup)?;
+
+    let saved = match existing {
+        Some(ingest) => ingest_writer
+            .update_ingest(
+                &ingest.id,
+                &config.filename,
+                &pipeline.stream_key,
+                config.loop_flag,
+                &config.start_time,
+                config.live_optimized,
+                config.target_gop_seconds,
+            )
+            .await
+            .map_err(PersistFileIngestError::IngestWrite)?,
+        None => ingest_writer
+            .create_ingest(
+                &id_factory(),
+                &config.filename,
+                &pipeline.stream_key,
+                config.loop_flag,
+                &config.start_time,
+                config.live_optimized,
+                config.target_gop_seconds,
+            )
+            .await
+            .map_err(PersistFileIngestError::IngestWrite)?,
+    };
+
+    let ingests = ingest_lookup
+        .list_ingests_for_stream_key(&pipeline.stream_key)
+        .await
+        .map_err(PersistFileIngestError::IngestLookup)?;
+    for ingest in ingests.into_iter().filter(|ingest| ingest.id != saved.id) {
+        let _ = ingest_writer.delete_ingest(&ingest.id).await;
+    }
+
+    let input_source = format!("file:{}", config.filename);
+    pipeline_store
+        .update_pipeline_input_source(pipeline, Some(&input_source))
+        .await
+        .map_err(PersistFileIngestError::PipelineStore)?;
+
+    Ok(saved)
+}
+
+pub async fn remove_pipeline_file_ingest(
+    ingest_lookup: &dyn IngestLookup,
+    ingest_writer: &dyn IngestWriter,
+    pipeline_store: &dyn PipelineStore,
+    pipeline: &Pipeline,
+) -> Result<(), PersistFileIngestError> {
+    let ingests = ingest_lookup
+        .list_ingests_for_stream_key(&pipeline.stream_key)
+        .await
+        .map_err(PersistFileIngestError::IngestLookup)?;
+    for ingest in ingests {
+        let _ = ingest_writer.delete_ingest(&ingest.id).await;
+    }
+
+    pipeline_store
+        .update_pipeline_input_source(pipeline, None)
+        .await
+        .map_err(PersistFileIngestError::PipelineStore)?;
+
+    Ok(())
+}
+
 pub async fn authenticate_publish_stream_key(
     pipeline_lookup: &dyn PipelineStore,
     security: &IngestSecurityService,
@@ -140,7 +236,8 @@ pub async fn authenticate_srt_stream_key(
 mod tests {
     use super::*;
     use crate::application::ports::{
-        IngestCatalogFuture, IngestLookupFuture, PipelineLookupFuture,
+        IngestCatalogFuture, IngestDeleteFuture, IngestLookupFuture, IngestWriteFuture,
+        PipelineLookupFuture,
     };
     use crate::domain::ingest_security::IngestSecurityConfig;
     use crate::media::security::IngestSecurityService;
@@ -198,12 +295,97 @@ mod tests {
         fn list_pipelines<'a>(&'a self) -> crate::application::ports::PipelineListFuture<'a> {
             Box::pin(async move { Ok(self.pipelines.values().cloned().collect()) })
         }
+
+        fn update_pipeline_input_source<'a>(
+            &'a self,
+            pipeline: &'a Pipeline,
+            input_source: Option<&'a str>,
+        ) -> crate::application::ports::PipelineUpdateFuture<'a> {
+            Box::pin(async move {
+                let mut updated = pipeline.clone();
+                updated.input_source = input_source.map(ToOwned::to_owned);
+                Ok(Some(updated))
+            })
+        }
     }
 
     struct FakeIngestLookup {
         by_id: HashMap<String, Ingest>,
         by_stream_key: HashMap<String, Vec<Ingest>>,
         error: Option<&'static str>,
+    }
+
+    struct FakeIngestWriter {
+        created: std::sync::Mutex<Vec<Ingest>>,
+        deleted: std::sync::Mutex<Vec<String>>,
+        fail: Option<&'static str>,
+    }
+
+    impl IngestWriter for FakeIngestWriter {
+        fn create_ingest<'a>(
+            &'a self,
+            id: &'a str,
+            filename: &'a str,
+            stream_key: &'a str,
+            loop_flag: bool,
+            start_time: &'a str,
+            live_optimized: bool,
+            target_gop_seconds: u32,
+        ) -> IngestWriteFuture<'a> {
+            Box::pin(async move {
+                if let Some(message) = self.fail {
+                    return Err(IngestWriteError::new(message));
+                }
+                let ingest = Ingest {
+                    id: id.to_string(),
+                    filename: filename.to_string(),
+                    stream_key: stream_key.to_string(),
+                    loop_flag,
+                    start_time: start_time.to_string(),
+                    live_optimized,
+                    target_gop_seconds,
+                };
+                self.created
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(ingest.clone());
+                Ok(ingest)
+            })
+        }
+
+        fn update_ingest<'a>(
+            &'a self,
+            id: &'a str,
+            filename: &'a str,
+            stream_key: &'a str,
+            loop_flag: bool,
+            start_time: &'a str,
+            live_optimized: bool,
+            target_gop_seconds: u32,
+        ) -> IngestWriteFuture<'a> {
+            self.create_ingest(
+                id,
+                filename,
+                stream_key,
+                loop_flag,
+                start_time,
+                live_optimized,
+                target_gop_seconds,
+            )
+        }
+
+        fn delete_ingest<'a>(&'a self, id: &'a str) -> IngestDeleteFuture<'a> {
+            Box::pin(async move {
+                if let Some(message) = self.fail {
+                    return Err(IngestWriteError::new(message));
+                }
+                self.deleted
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(id.to_string());
+                Ok(true)
+            })
+        }
     }
 
     impl FakeIngestLookup {
@@ -458,5 +640,62 @@ mod tests {
 
         assert!(!engine.has_active_ingest(&pipeline.id).await);
         assert!(!engine.is_file_ingest_running(&ingest.id).await);
+    }
+
+    #[tokio::test]
+    async fn persist_pipeline_file_ingest_updates_pipeline_and_deletes_stale_ingests() {
+        let current = FakeIngestLookup::ingest("ingest-current", "stream-key");
+        let stale = FakeIngestLookup::ingest("ingest-stale", "stream-key");
+        let pipeline = Pipeline {
+            id: "pipeline-1".to_string(),
+            name: "Pipeline".to_string(),
+            stream_key: "stream-key".to_string(),
+            input_source: None,
+            encoding: None,
+            srt_ingest_policy: None,
+        };
+        let ingest_lookup = FakeIngestLookup {
+            by_id: HashMap::new(),
+            by_stream_key: HashMap::from([(
+                "stream-key".to_string(),
+                vec![stale.clone(), current.clone()],
+            )]),
+            error: None,
+        };
+        let pipeline_store = FakePipelineStore {
+            pipelines: HashMap::from([("stream-key".to_string(), pipeline.clone())]),
+            error: None,
+        };
+        let ingest_writer = FakeIngestWriter {
+            created: std::sync::Mutex::new(Vec::new()),
+            deleted: std::sync::Mutex::new(Vec::new()),
+            fail: None,
+        };
+
+        let saved = persist_pipeline_file_ingest(
+            &ingest_lookup,
+            &ingest_writer,
+            &pipeline_store,
+            &pipeline,
+            &FileIngestConfig {
+                filename: "updated.mp4".to_string(),
+                loop_flag: false,
+                start_time: "00:00:10".to_string(),
+                live_optimized: false,
+                target_gop_seconds: 2,
+            },
+            || "generated".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(saved.id, "ingest-current");
+        assert_eq!(saved.filename, "updated.mp4");
+        let deleted = ingest_writer
+            .deleted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(deleted, vec!["ingest-stale".to_string()]);
     }
 }

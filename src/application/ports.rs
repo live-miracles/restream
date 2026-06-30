@@ -15,10 +15,16 @@ pub type IngestLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Ingest>, IngestLookupError>> + Send + 'a>>;
 pub type IngestCatalogFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<Ingest>, IngestLookupError>> + Send + 'a>>;
+pub type IngestWriteFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Ingest, IngestWriteError>> + Send + 'a>>;
+pub type IngestDeleteFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<bool, IngestWriteError>> + Send + 'a>>;
 pub type MetaLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<String>, MetaLookupError>> + Send + 'a>>;
 pub type MetaWriteFuture<'a> =
     Pin<Box<dyn Future<Output = Result<String, MetaLookupError>> + Send + 'a>>;
+pub type PipelineUpdateFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Pipeline>, PipelineStoreError>> + Send + 'a>>;
 
 #[derive(Debug, Clone)]
 pub struct PipelineStoreError {
@@ -63,6 +69,27 @@ impl fmt::Display for IngestLookupError {
 impl std::error::Error for IngestLookupError {}
 
 #[derive(Debug, Clone)]
+pub struct IngestWriteError {
+    message: String,
+}
+
+impl IngestWriteError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for IngestWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IngestWriteError {}
+
+#[derive(Debug, Clone)]
 pub struct MetaLookupError {
     message: String,
 }
@@ -86,12 +113,41 @@ impl std::error::Error for MetaLookupError {}
 pub trait PipelineStore: Send + Sync {
     fn get_pipeline_by_stream_key<'a>(&'a self, stream_key: &'a str) -> PipelineLookupFuture<'a>;
     fn list_pipelines<'a>(&'a self) -> PipelineListFuture<'a>;
+    fn update_pipeline_input_source<'a>(
+        &'a self,
+        pipeline: &'a Pipeline,
+        input_source: Option<&'a str>,
+    ) -> PipelineUpdateFuture<'a>;
 }
 
 pub trait IngestLookup: Send + Sync {
     fn get_ingest<'a>(&'a self, id: &'a str) -> IngestLookupFuture<'a>;
     fn get_ingest_by_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestLookupFuture<'a>;
     fn list_ingests_for_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestCatalogFuture<'a>;
+}
+
+pub trait IngestWriter: Send + Sync {
+    fn create_ingest<'a>(
+        &'a self,
+        id: &'a str,
+        filename: &'a str,
+        stream_key: &'a str,
+        loop_flag: bool,
+        start_time: &'a str,
+        live_optimized: bool,
+        target_gop_seconds: u32,
+    ) -> IngestWriteFuture<'a>;
+    fn update_ingest<'a>(
+        &'a self,
+        id: &'a str,
+        filename: &'a str,
+        stream_key: &'a str,
+        loop_flag: bool,
+        start_time: &'a str,
+        live_optimized: bool,
+        target_gop_seconds: u32,
+    ) -> IngestWriteFuture<'a>;
+    fn delete_ingest<'a>(&'a self, id: &'a str) -> IngestDeleteFuture<'a>;
 }
 
 pub trait MetaStore: Send + Sync {
@@ -151,6 +207,26 @@ impl PipelineStore for SqlitePipelineStore {
                 .map_err(|err| PipelineStoreError::new(err.to_string()))
         })
     }
+
+    fn update_pipeline_input_source<'a>(
+        &'a self,
+        pipeline: &'a Pipeline,
+        input_source: Option<&'a str>,
+    ) -> PipelineUpdateFuture<'a> {
+        Box::pin(async move {
+            crate::db::update_pipeline(
+                &self.pool,
+                &pipeline.id,
+                &pipeline.name,
+                &pipeline.stream_key,
+                input_source,
+                pipeline.encoding.as_deref(),
+                pipeline.srt_ingest_policy.as_deref(),
+            )
+            .await
+            .map_err(|err| PipelineStoreError::new(err.to_string()))
+        })
+    }
 }
 
 impl IngestLookup for SqliteIngestLookup {
@@ -175,6 +251,69 @@ impl IngestLookup for SqliteIngestLookup {
             crate::db::list_ingests_for_stream_key(&self.pool, stream_key)
                 .await
                 .map_err(|err| IngestLookupError::new(err.to_string()))
+        })
+    }
+}
+
+impl IngestWriter for SqliteIngestLookup {
+    fn create_ingest<'a>(
+        &'a self,
+        id: &'a str,
+        filename: &'a str,
+        stream_key: &'a str,
+        loop_flag: bool,
+        start_time: &'a str,
+        live_optimized: bool,
+        target_gop_seconds: u32,
+    ) -> IngestWriteFuture<'a> {
+        Box::pin(async move {
+            crate::db::create_ingest(
+                &self.pool,
+                id,
+                filename,
+                stream_key,
+                loop_flag,
+                start_time,
+                live_optimized,
+                target_gop_seconds,
+            )
+            .await
+            .map_err(|err| IngestWriteError::new(err.to_string()))
+        })
+    }
+
+    fn update_ingest<'a>(
+        &'a self,
+        id: &'a str,
+        filename: &'a str,
+        stream_key: &'a str,
+        loop_flag: bool,
+        start_time: &'a str,
+        live_optimized: bool,
+        target_gop_seconds: u32,
+    ) -> IngestWriteFuture<'a> {
+        Box::pin(async move {
+            crate::db::update_ingest(
+                &self.pool,
+                id,
+                filename,
+                stream_key,
+                loop_flag,
+                start_time,
+                live_optimized,
+                target_gop_seconds,
+            )
+            .await
+            .map_err(|err| IngestWriteError::new(err.to_string()))?
+            .ok_or_else(|| IngestWriteError::new("ingest not found"))
+        })
+    }
+
+    fn delete_ingest<'a>(&'a self, id: &'a str) -> IngestDeleteFuture<'a> {
+        Box::pin(async move {
+            crate::db::delete_ingest(&self.pool, id)
+                .await
+                .map_err(|err| IngestWriteError::new(err.to_string()))
         })
     }
 }

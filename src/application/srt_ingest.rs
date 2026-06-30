@@ -107,6 +107,18 @@ mod tests {
         fn list_pipelines<'a>(&'a self) -> PipelineListFuture<'a> {
             Box::pin(async move { Ok(self.pipelines.clone()) })
         }
+
+        fn update_pipeline_input_source<'a>(
+            &'a self,
+            pipeline: &'a Pipeline,
+            input_source: Option<&'a str>,
+        ) -> crate::application::ports::PipelineUpdateFuture<'a> {
+            Box::pin(async move {
+                let mut updated = pipeline.clone();
+                updated.input_source = input_source.map(ToOwned::to_owned);
+                Ok(Some(updated))
+            })
+        }
     }
 
     #[tokio::test]

@@ -33,8 +33,9 @@ use tracing::{error, warn};
 use crate::alerts;
 use crate::api_view_models;
 use crate::application::ingest::{
-    ResolveFileIngestError, clear_stream_key_file_ingests, load_pipeline_file_ingest_state,
-    resolve_file_ingest_context,
+    FileIngestConfig, PersistFileIngestError, ResolveFileIngestError,
+    clear_stream_key_file_ingests, load_pipeline_file_ingest_state, persist_pipeline_file_ingest,
+    remove_pipeline_file_ingest, resolve_file_ingest_context,
 };
 use crate::application::ingest_security::save_ingest_security_config;
 use crate::application::ports::{
@@ -2387,78 +2388,31 @@ async fn pipeline_file_ingest_put_handler(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    let loop_val = payload.loop_flag.unwrap_or(false);
-    let start_time = payload.start_time.unwrap_or_default();
-    let live_optimized = payload.live_optimized.unwrap_or(false);
-    let target_gop_seconds = sanitize_target_gop_seconds(payload.target_gop_seconds);
-    let existing = match SqliteIngestLookup::new(state.db.clone())
-        .get_ingest_by_stream_key(&pipeline.stream_key)
-        .await
-    {
-        Ok(ingest) => ingest,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let saved = match existing {
-        Some(ingest) => match db::update_ingest(
-            &state.db,
-            &ingest.id,
-            &payload.filename,
-            &pipeline.stream_key,
-            loop_val,
-            &start_time,
-            live_optimized,
-            target_gop_seconds,
-        )
-        .await
-        {
-            Ok(Some(updated)) => updated,
-            _ => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let ingest_store = SqliteIngestLookup::new(state.db.clone());
+    let pipeline_store = SqlitePipelineStore::new(state.db.clone());
+    let saved = match persist_pipeline_file_ingest(
+        &ingest_store,
+        &ingest_store,
+        &pipeline_store,
+        &pipeline,
+        &FileIngestConfig {
+            filename: payload.filename.clone(),
+            loop_flag: payload.loop_flag.unwrap_or(false),
+            start_time: payload.start_time.unwrap_or_default(),
+            live_optimized: payload.live_optimized.unwrap_or(false),
+            target_gop_seconds: sanitize_target_gop_seconds(payload.target_gop_seconds),
         },
-        None => {
-            let id = format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>()));
-            match db::create_ingest(
-                &state.db,
-                &id,
-                &payload.filename,
-                &pipeline.stream_key,
-                loop_val,
-                &start_time,
-                live_optimized,
-                target_gop_seconds,
-            )
-            .await
-            {
-                Ok(created) => created,
-                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            }
-        }
-    };
-
-    if let Ok(ingests) = SqliteIngestLookup::new(state.db.clone())
-        .list_ingests_for_stream_key(&pipeline.stream_key)
-        .await
-    {
-        for ingest in ingests.into_iter().filter(|ingest| ingest.id != saved.id) {
-            let _ = db::delete_ingest(&state.db, &ingest.id).await;
-        }
-    }
-
-    let input_source = format!("file:{}", payload.filename);
-    if db::update_pipeline(
-        &state.db,
-        &pipeline.id,
-        &pipeline.name,
-        &pipeline.stream_key,
-        Some(&input_source),
-        pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy.as_deref(),
+        || format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>())),
     )
     .await
-    .is_err()
     {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+        Ok(saved) => saved,
+        Err(PersistFileIngestError::IngestLookup(_))
+        | Err(PersistFileIngestError::IngestWrite(_))
+        | Err(PersistFileIngestError::PipelineStore(_)) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     Json(api_view_models::file_ingest_response(Some(saved), false)).into_response()
 }
@@ -2492,26 +2446,11 @@ async fn pipeline_file_ingest_delete_handler(
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    if let Ok(ingests) = SqliteIngestLookup::new(state.db.clone())
-        .list_ingests_for_stream_key(&pipeline.stream_key)
+    let ingest_store = SqliteIngestLookup::new(state.db.clone());
+    let pipeline_store = SqlitePipelineStore::new(state.db.clone());
+    if remove_pipeline_file_ingest(&ingest_store, &ingest_store, &pipeline_store, &pipeline)
         .await
-    {
-        for ingest in ingests {
-            let _ = db::delete_ingest(&state.db, &ingest.id).await;
-        }
-    }
-
-    if db::update_pipeline(
-        &state.db,
-        &pipeline.id,
-        &pipeline.name,
-        &pipeline.stream_key,
-        None,
-        pipeline.encoding.as_deref(),
-        pipeline.srt_ingest_policy.as_deref(),
-    )
-    .await
-    .is_err()
+        .is_err()
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
