@@ -2,7 +2,7 @@
 //! Schema is created via `CREATE TABLE IF NOT EXISTS` at startup (no migrations).
 //! WAL mode is enabled for concurrent reader/writer access.
 
-use crate::types::*;
+use crate::types::{Ingest, Job, JobStatus, Output, Pipeline};
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::time::SystemTime;
 
