@@ -2520,9 +2520,18 @@ async fn pump_file_ingest_stdout(
         if !probe_sent && let Some(probe) = demuxer.take_probe() {
             probe_sent = true;
             let first_audio = probe.audio_tracks.first().cloned();
+            let selected_video_track_index = probe.video.as_ref().map(|_| 0);
             state
                 .engine
                 .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                .await;
+            state
+                .engine
+                .update_ingest_video_track_selection(
+                    &pipeline.id,
+                    probe.video_track_count,
+                    selected_video_track_index,
+                )
                 .await;
             if !probe.audio_tracks.is_empty() {
                 state
@@ -6247,6 +6256,40 @@ fn build_hls_master_playlist(
     audio_tracks: &[crate::media::engine::AudioMeta],
 ) -> String {
     let mut playlist = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n".to_string();
+    if !audio_tracks.is_empty() {
+        for (ordinal, track) in audio_tracks.iter().enumerate() {
+            let mut media_attrs = vec![
+                "TYPE=AUDIO".to_string(),
+                format!("GROUP-ID={}", quote_hls_attr("audio")),
+                format!(
+                    "NAME={}",
+                    quote_hls_attr(&build_hls_audio_track_name(track, ordinal))
+                ),
+                format!("DEFAULT={}", if ordinal == 0 { "YES" } else { "NO" }),
+                "AUTOSELECT=YES".to_string(),
+                format!(
+                    "URI={}",
+                    quote_hls_attr(&format!("audio/{}/index.m3u8", track.track_index))
+                ),
+            ];
+            if let Some(language) = track
+                .language
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                media_attrs.push(format!("LANGUAGE={}", quote_hls_attr(language)));
+            }
+            if track.channels > 0 {
+                media_attrs.push(format!(
+                    "CHANNELS={}",
+                    quote_hls_attr(&track.channels.to_string())
+                ));
+            }
+            playlist.push_str(&format!("#EXT-X-MEDIA:{}\n", media_attrs.join(",")));
+        }
+    }
+
     let bandwidth = estimate_hls_master_bandwidth(video, audio_tracks);
     let mut stream_attrs = vec![
         format!("BANDWIDTH={bandwidth}"),
@@ -6263,9 +6306,39 @@ fn build_hls_master_playlist(
     if let Some(codecs) = build_hls_codec_list(video, audio_tracks) {
         stream_attrs.push(format!("CODECS={}", quote_hls_attr(&codecs)));
     }
+    if !audio_tracks.is_empty() {
+        stream_attrs.push(format!("AUDIO={}", quote_hls_attr("audio")));
+    }
     playlist.push_str(&format!("#EXT-X-STREAM-INF:{}\n", stream_attrs.join(",")));
-    playlist.push_str("index.m3u8\n");
+    if video.is_some() {
+        playlist.push_str("video/index.m3u8\n");
+    } else if let Some(track) = audio_tracks.first() {
+        playlist.push_str(&format!("audio/{}/index.m3u8\n", track.track_index));
+    } else {
+        playlist.push_str("index.m3u8\n");
+    }
     playlist
+}
+
+fn build_hls_audio_track_name(track: &crate::media::engine::AudioMeta, ordinal: usize) -> String {
+    if let Some(title) = track
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return title.to_string();
+    }
+    let base = format!("Track {}", ordinal + 1);
+    match track
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(language) => format!("{base} ({language})"),
+        None => base,
+    }
 }
 
 fn estimate_hls_master_bandwidth(
@@ -6689,7 +6762,7 @@ mod tests {
     }
 
     #[test]
-    fn hls_master_playlist_points_to_combined_media_playlist() {
+    fn hls_master_playlist_emits_audio_renditions_and_video_variant() {
         let video = crate::media::engine::VideoMeta {
             codec: "h264".to_string(),
             width: 1920,
@@ -6731,11 +6804,14 @@ mod tests {
         let playlist = build_hls_master_playlist(Some(&video), &audio_tracks);
 
         assert!(playlist.starts_with("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n"));
+        assert!(playlist.contains("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Track 1 (eng)\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio/0/index.m3u8\",LANGUAGE=\"eng\",CHANNELS=\"1\""));
+        assert!(playlist.contains("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Track 2 (spa)\",DEFAULT=NO,AUTOSELECT=YES,URI=\"audio/15/index.m3u8\",LANGUAGE=\"spa\",CHANNELS=\"2\""));
         assert!(playlist.contains("#EXT-X-STREAM-INF:"));
         assert!(playlist.contains("AVERAGE-BANDWIDTH="));
+        assert!(playlist.contains("AUDIO=\"audio\""));
         assert!(playlist.contains("CODECS=\"avc1.640028,mp4a.40.2\""));
         assert!(playlist.contains("RESOLUTION=1920x1080"));
-        assert!(playlist.ends_with("index.m3u8\n"));
+        assert!(playlist.ends_with("video/index.m3u8\n"));
     }
 
     #[test]

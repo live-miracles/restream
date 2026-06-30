@@ -598,9 +598,17 @@ fn maybe_publish_probe(
     };
     *probe_sent = true;
     let first_audio = probe.audio_tracks.first().cloned();
+    let selected_video_track_index = probe.video.as_ref().map(|_| 0);
     runtime_handle.block_on(async {
         engine
             .update_ingest_meta(pipeline_id, probe.video, first_audio, None)
+            .await;
+        engine
+            .update_ingest_video_track_selection(
+                pipeline_id,
+                probe.video_track_count,
+                selected_video_track_index,
+            )
             .await;
         if !probe.audio_tracks.is_empty() {
             engine

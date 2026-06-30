@@ -1861,8 +1861,16 @@ impl SrtServer {
                     );
                 }
                 let first_audio = probe.audio_tracks.first().cloned();
+                let selected_video_track_index = probe.video.as_ref().map(|_| 0);
                 self.engine
                     .update_ingest_meta(&pipeline.id, probe.video, first_audio, None)
+                    .await;
+                self.engine
+                    .update_ingest_video_track_selection(
+                        &pipeline.id,
+                        probe.video_track_count,
+                        selected_video_track_index,
+                    )
                     .await;
                 if !probe.audio_tracks.is_empty() {
                     self.engine

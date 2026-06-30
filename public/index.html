@@ -432,12 +432,14 @@
     </dialog>
 
     <dialog id="edit-out-modal" class="modal">
-      <div class="modal-box max-w-230">
+      <div class="modal-box flex max-h-[calc(100vh-3rem)] max-w-230 flex-col">
         <input type="text" id="out-mode-input" class="hidden" />
         <input type="text" id="out-pipe-id-input" class="hidden" />
         <input type="text" id="out-id-input" class="hidden" />
 
-        <div class="focus mx-auto mt-2 space-y-3 px-4">
+        <div
+          class="focus mx-auto mt-2 min-h-0 flex-1 space-y-3 overflow-y-auto px-4"
+        >
           <h2 class="text-lg font-semibold" id="out-modal-title">
             Edit Output
           </h2>
@@ -578,7 +580,7 @@
           </div>
 
           <div
-            class="border-base-300 bg-base-200/40 rounded-box border p-3"
+            class="border-base-300 bg-base-200/40 rounded-box flex min-h-0 flex-col border p-3"
             id="out-audio-section"
           >
             <div class="flex flex-wrap items-center gap-2">
@@ -586,7 +588,7 @@
               <div class="flex flex-wrap gap-1" id="out-audio-caps"></div>
             </div>
             <p
-              class="text-base-content/60 mt-1 text-xs"
+              class="text-base-content/60 mt-1 max-h-24 overflow-y-auto pr-1 text-xs"
               id="out-audio-ingest"
             ></p>
             <p
@@ -597,23 +599,23 @@
               <span class="font-semibold">720p</span> and track 2 produces
               <code>720p+atrack:1</code>.
             </p>
-            <div id="out-audio-controls">
+            <div class="min-h-0" id="out-audio-controls">
               <fieldset class="fieldset">
                 <legend class="fieldset-legend">Track Mode</legend>
-                <div class="join" id="out-audio-mode">
+                <div class="join flex flex-wrap" id="out-audio-mode">
                   <button
                     type="button"
                     class="btn btn-sm join-item"
-                    data-amode="auto"
+                    data-amode="all"
                   >
-                    Auto
+                    All
                   </button>
                   <button
                     type="button"
                     class="btn btn-sm join-item"
-                    data-amode="pass"
+                    data-amode="subset"
                   >
-                    Passthrough
+                    Subset
                   </button>
                   <button
                     type="button"
@@ -632,22 +634,22 @@
                 </div>
               </fieldset>
               <div
-                class="mt-2 hidden space-y-1"
+                class="mt-2 hidden max-h-80 grid grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3"
                 id="out-audio-track-pick"
               ></div>
-              <div class="hidden" id="out-remap-fields">
+              <div class="hidden flex-wrap gap-2" id="out-remap-fields">
                 <fieldset
-                  class="fieldset hidden inline-block w-24"
+                  class="fieldset hidden w-28"
                   id="out-remap-track-field"
                 >
                   <legend class="fieldset-legend">Audio Track</legend>
                   <select class="select" id="out-remap-track-input"></select>
                 </fieldset>
-                <fieldset class="fieldset ml-2 inline-block w-16">
+                <fieldset class="fieldset w-20">
                   <legend class="fieldset-legend">Left Ch</legend>
                   <select class="select" id="out-remap-left-input"></select>
                 </fieldset>
-                <fieldset class="fieldset ml-2 inline-block w-16">
+                <fieldset class="fieldset w-20">
                   <legend class="fieldset-legend">Right Ch</legend>
                   <select class="select" id="out-remap-right-input"></select>
                 </fieldset>
@@ -657,7 +659,7 @@
           </div>
         </div>
 
-        <div class="modal-action">
+        <div class="modal-action shrink-0">
           <form method="dialog">
             <button class="btn mx-2">Cancel</button>
             <button
@@ -1225,6 +1227,14 @@
               <div class="stat hidden p-3" id="input-video-pid-stat">
                 <div class="stat-title">PID</div>
                 <div class="stat-value text-sm" id="input-video-pid"></div>
+              </div>
+
+              <div class="stat hidden p-3" id="input-video-selection-stat">
+                <div class="stat-title">Track Selection</div>
+                <div
+                  class="stat-value text-sm"
+                  id="input-video-selection"
+                ></div>
               </div>
             </div>
 

@@ -109,6 +109,7 @@ struct StreamInfo {
 #[derive(Debug, Clone)]
 pub struct DemuxProbe {
     pub video: Option<VideoMeta>,
+    pub video_track_count: usize,
     pub audio_tracks: Vec<AudioMeta>,
 }
 
@@ -157,6 +158,7 @@ pub struct TsDemuxer {
     remainder: Vec<u8>,
     output: Vec<MediaPacket>,
     audio_track_counter: u32,
+    video_track_count: usize,
     probe_payloads: Vec<Option<Vec<u8>>>,
     pmt_buf: Vec<u8>,
     pmt_expected: usize,
@@ -182,6 +184,7 @@ impl TsDemuxer {
             remainder: Vec::new(),
             output: Vec::with_capacity(16),
             audio_track_counter: 0,
+            video_track_count: 0,
             probe_payloads: Vec::new(),
             pmt_buf: Vec::new(),
             pmt_expected: 0,
@@ -503,6 +506,7 @@ impl TsDemuxer {
             self.streams.drain(..).map(|s| (s.pid, s.pes)).collect();
         self.pid_to_stream.fill(NO_STREAM);
         self.audio_track_counter = 0;
+        self.video_track_count = 0;
         self.probe_payloads.clear();
 
         let program_info_len = ((data[10] as usize & 0x0F) << 8) | data[11] as usize;
@@ -523,6 +527,7 @@ impl TsDemuxer {
             if let Some(kind) = StreamKind::from_stream_type(stream_type) {
                 let track_index = match kind.media_type() {
                     MediaType::Video => {
+                        self.video_track_count += 1;
                         if has_video {
                             continue; // Single video program
                         }
@@ -603,10 +608,12 @@ impl TsDemuxer {
             }
         }
 
+        let has_video_meta = video_meta.is_some();
         self.probed = true;
         self.probe_payloads.clear();
         self.probe_result = Some(DemuxProbe {
             video: video_meta,
+            video_track_count: self.video_track_count.max(usize::from(has_video_meta)),
             audio_tracks,
         });
     }
@@ -2704,6 +2711,7 @@ mod tests {
             probe.video.is_some(),
             "fixture should contain a video stream"
         );
+        assert_eq!(probe.video_track_count, 1);
         assert_eq!(
             probe.audio_tracks.len(),
             16,

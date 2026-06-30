@@ -51,6 +51,7 @@ function makePipeline(overrides = {}) {
       probeStatus: "ready",
       probePendingMs: null,
       video: null,
+      videoTrackSelection: null,
       audio: null,
       audioTracks: [],
       bytesReceived: 0,
@@ -424,6 +425,8 @@ runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", as
   appendRoot(document, "div", "input-video-profile");
   appendRoot(document, "div", "input-video-pid-stat");
   appendRoot(document, "div", "input-video-pid");
+  appendRoot(document, "div", "input-video-selection-stat");
+  appendRoot(document, "div", "input-video-selection");
   appendRoot(document, "div", "input-audio-tracks");
   appendRoot(document, "div", "input-total-bw");
   appendRoot(document, "div", "output-total-bw");
@@ -467,6 +470,12 @@ runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", as
           profile: "High",
           pid: 256,
         },
+        videoTrackSelection: {
+          mode: "firstVideoOnly",
+          selectedTrackIndex: 0,
+          availableTrackCount: 2,
+          ignoredTrackCount: 1,
+        },
         audioTracks: [
           {
             index: 0,
@@ -503,6 +512,10 @@ runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", as
     "1920x1080",
   );
   assert.equal(document.getElementById("input-video-pid").textContent, "0x100");
+  assert.equal(
+    document.getElementById("input-video-selection").textContent,
+    "Track 1 of 2",
+  );
   assert.match(document.getElementById("input-audio-tracks").innerHTML, /Main Mix/);
   assert.match(document.getElementById("input-audio-tracks").innerHTML, /Stereo/);
   assert.equal(document.getElementById("input-reader-count").textContent, "3");

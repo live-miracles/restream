@@ -406,6 +406,7 @@ function renderAudioTracksTable(
 
 function renderVideoTrackDetails(
   video: Partial<NonNullable<PipelineView["input"]["video"]>>,
+  selection: PipelineView["input"]["videoTrackSelection"] | null | undefined,
 ): void {
   const pidStat = document.getElementById("input-video-pid-stat");
   const pidValue = document.getElementById("input-video-pid");
@@ -415,6 +416,24 @@ function renderVideoTrackDetails(
     setTextIfChanged(
       pidValue,
       hasPid ? `0x${Number(video.pid).toString(16).toUpperCase()}` : "",
+    );
+  }
+
+  const selectionStat = document.getElementById("input-video-selection-stat");
+  const selectionValue = document.getElementById("input-video-selection");
+  const availableTrackCount = Number(selection?.availableTrackCount || 0);
+  const selectedTrackIndex =
+    typeof selection?.selectedTrackIndex === "number"
+      ? selection.selectedTrackIndex
+      : null;
+  const showSelection = availableTrackCount > 1 && selectedTrackIndex !== null;
+  selectionStat?.classList.toggle("hidden", !showSelection);
+  if (selectionValue) {
+    setTextIfChanged(
+      selectionValue,
+      showSelection
+        ? `Track ${selectedTrackIndex + 1} of ${availableTrackCount}`
+        : "",
     );
   }
 }
@@ -814,7 +833,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     );
     setTextContent("input-video-level", video.level || "--");
     setTextContent("input-video-profile", video.profile || "--");
-    renderVideoTrackDetails(video);
+    renderVideoTrackDetails(video, pipe.input.videoTrackSelection);
 
     renderAudioTracksTable(pipe.id, pipe.input.audioTracks || []);
 
