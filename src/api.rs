@@ -1918,7 +1918,7 @@ async fn output_status_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    match crate::media::engine_views::output_status(&state.engine, &output_id).await {
+    match crate::api_runtime_views::output_status(&state.engine, &output_id).await {
         Some(status) => Json(status).into_response(),
         None => (
             StatusCode::NOT_FOUND,
@@ -3098,7 +3098,7 @@ async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
         Err(_) => vec![],
     };
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    crate::media::engine_views::health_snapshot(
+    crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -4224,7 +4224,7 @@ async fn pipeline_graph_handler(
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let graph =
-        crate::media::engine_views::processing_graph(&state.engine, &pipeline_id, &outputs).await;
+        crate::api_runtime_views::processing_graph(&state.engine, &pipeline_id, &outputs).await;
     Json(graph).into_response()
 }
 
@@ -4240,7 +4240,7 @@ async fn pipeline_alerts_handler(
 
     let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
-    let snapshot = crate::media::engine_views::health_snapshot(
+    let snapshot = crate::api_runtime_views::health_snapshot(
         &state.engine,
         std::slice::from_ref(&pipeline_id),
         &recording_enabled,
@@ -4273,7 +4273,7 @@ async fn aggregate_alerts_handler(
         Err(_) => vec![],
     };
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let snapshot = crate::media::engine_views::health_snapshot(
+    let snapshot = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -4338,7 +4338,7 @@ async fn v1_overview_handler(
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
     let pipeline_ids: Vec<String> = pipelines.iter().map(|p| p.id.clone()).collect();
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let snapshot = crate::media::engine_views::health_snapshot(
+    let snapshot = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -4406,7 +4406,7 @@ async fn v1_engine_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    Json(crate::media::engine_views::engine_telemetry(&state.engine).await).into_response()
+    Json(crate::api_runtime_views::engine_telemetry(&state.engine).await).into_response()
 }
 
 async fn v1_pipeline_telemetry_handler(
@@ -4417,7 +4417,7 @@ async fn v1_pipeline_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    Json(crate::media::engine_views::pipeline_telemetry(&state.engine, &pipeline_id).await)
+    Json(crate::api_runtime_views::pipeline_telemetry(&state.engine, &pipeline_id).await)
         .into_response()
 }
 
@@ -4429,7 +4429,7 @@ async fn v1_stage_telemetry_handler(
     if let Some(response) = require_authenticated(&state, &headers).await {
         return response;
     }
-    match crate::media::engine_views::stage_telemetry_by_display(&state.engine, &stage_key).await {
+    match crate::api_runtime_views::stage_telemetry_by_display(&state.engine, &stage_key).await {
         Some(val) => Json(val).into_response(),
         None => (StatusCode::NOT_FOUND, "Stage not found").into_response(),
     }
@@ -4531,7 +4531,7 @@ async fn agent_investigation_handler(
         .map(|pid| vec![pid])
         .unwrap_or_else(|| pipelines.iter().map(|p| p.id.clone()).collect());
     let recording_enabled = recording_enabled_map(&state, &pipeline_ids).await;
-    let health = crate::media::engine_views::health_snapshot(
+    let health = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -4542,14 +4542,14 @@ async fn agent_investigation_handler(
     let graph = if let Some(pid) = request.pipeline_id.as_deref()
         && pipeline_exists
     {
-        Some(crate::media::engine_views::processing_graph(&state.engine, pid, &outputs).await)
+        Some(crate::api_runtime_views::processing_graph(&state.engine, pid, &outputs).await)
     } else {
         None
     };
     let telemetry = if let Some(pid) = request.pipeline_id.as_deref() {
-        crate::media::engine_views::pipeline_telemetry(&state.engine, pid).await
+        crate::api_runtime_views::pipeline_telemetry(&state.engine, pid).await
     } else {
-        crate::media::engine_views::engine_telemetry(&state.engine).await
+        crate::api_runtime_views::engine_telemetry(&state.engine).await
     };
     let events = state.engine.recent_events(
         request.event_limit.min(events::MAX_EVENTS),
@@ -4866,7 +4866,7 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     let jobs_json = api_view_models::job_response_json_list(&jobs);
     let ingests = db::list_ingests(&state.db).await.unwrap_or_default();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = crate::media::engine_views::health_snapshot(
+    let health = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -4875,15 +4875,14 @@ async fn build_agent_context(state: &AppState) -> serde_json::Value {
     .await;
     let alerts = alerts::derive_alerts(&health);
     let events = state.engine.recent_events(events::MAX_EVENTS, None);
-    let engine_telemetry = crate::media::engine_views::engine_telemetry(&state.engine).await;
+    let engine_telemetry = crate::api_runtime_views::engine_telemetry(&state.engine).await;
     let mut pipeline_telemetry = Vec::new();
     let mut graphs = Vec::new();
     for pipeline_id in &pipeline_ids {
         pipeline_telemetry
-            .push(crate::media::engine_views::pipeline_telemetry(&state.engine, pipeline_id).await);
+            .push(crate::api_runtime_views::pipeline_telemetry(&state.engine, pipeline_id).await);
         graphs.push(
-            crate::media::engine_views::processing_graph(&state.engine, pipeline_id, &outputs)
-                .await,
+            crate::api_runtime_views::processing_graph(&state.engine, pipeline_id, &outputs).await,
         );
     }
     let desired_vs_actual = agent_desired_vs_actual(
@@ -5293,7 +5292,7 @@ async fn verify_agent_operation(
         .collect();
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = crate::media::engine_views::health_snapshot(
+    let health = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -5400,8 +5399,7 @@ async fn verify_agent_operation(
     let mut graphs = Vec::new();
     for pipeline_id in &pipeline_ids {
         graphs.push(
-            crate::media::engine_views::processing_graph(&state.engine, pipeline_id, &outputs)
-                .await,
+            crate::api_runtime_views::processing_graph(&state.engine, pipeline_id, &outputs).await,
         );
     }
     let active_graph_nodes = graphs
@@ -5473,7 +5471,7 @@ async fn current_agent_alert_count(state: &AppState) -> usize {
         .map(|pipeline| pipeline.id.clone())
         .collect();
     let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
-    let health = crate::media::engine_views::health_snapshot(
+    let health = crate::api_runtime_views::health_snapshot(
         &state.engine,
         &pipeline_ids,
         &recording_enabled,
@@ -5875,7 +5873,7 @@ async fn build_agent_plan(
     let current_graph = if let Some(pid) = request.pipeline_id.as_deref()
         && pipelines.iter().any(|p| p.id == pid)
     {
-        Some(crate::media::engine_views::processing_graph(&state.engine, pid, &outputs).await)
+        Some(crate::api_runtime_views::processing_graph(&state.engine, pid, &outputs).await)
     } else {
         None
     };
@@ -5972,7 +5970,7 @@ async fn v1_pipeline_summary_handler(
 
     let recording_enabled = recording_enabled_map(&state, std::slice::from_ref(&pipeline_id)).await;
 
-    let snapshot = crate::media::engine_views::health_snapshot(
+    let snapshot = crate::api_runtime_views::health_snapshot(
         &state.engine,
         std::slice::from_ref(&pipeline_id),
         &recording_enabled,
@@ -6001,12 +5999,9 @@ async fn v1_pipeline_summary_handler(
         .into_iter()
         .filter(|output| output.pipeline_id == pipeline_id)
         .collect::<Vec<_>>();
-    let graph = crate::media::engine_views::processing_graph(
-        &state.engine,
-        &pipeline_id,
-        &pipeline_outputs,
-    )
-    .await;
+    let graph =
+        crate::api_runtime_views::processing_graph(&state.engine, &pipeline_id, &pipeline_outputs)
+            .await;
     let graph_nodes = graph["nodes"]
         .as_array()
         .map(|nodes| nodes.len())

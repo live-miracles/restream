@@ -41,6 +41,7 @@ pub mod agent_mcp;
 pub mod agent_plane;
 pub mod alerts;
 pub mod api;
+pub(crate) mod api_runtime_views;
 pub mod api_view_models;
 pub mod application;
 pub mod db;

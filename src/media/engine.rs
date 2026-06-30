@@ -1,7 +1,7 @@
 //! Central media engine state — owns all active ingests, egresses, ring buffers,
 //! and recordings. Byte counters use `AtomicU64` for lock-free updates from the
 //! hot ingest/egress paths; higher layers read that state through
-//! `crate::media::engine_views` when they need API-facing health JSON.
+//! `crate::api_runtime_views` when they need API-facing health JSON.
 
 use ffmpeg_next as ffmpeg;
 use std::sync::Arc;
@@ -2365,8 +2365,7 @@ mod tests {
         pipeline_ids: &[String],
         recording_enabled: &HashMap<String, bool>,
     ) -> serde_json::Value {
-        crate::media::engine_views::health_snapshot(engine, pipeline_ids, recording_enabled, 0)
-            .await
+        crate::api_runtime_views::health_snapshot(engine, pipeline_ids, recording_enabled, 0).await
     }
 
     async fn test_health_snapshot_with_disconnect_grace(
@@ -2375,7 +2374,7 @@ mod tests {
         recording_enabled: &HashMap<String, bool>,
         disconnect_grace_ms: u64,
     ) -> serde_json::Value {
-        crate::media::engine_views::health_snapshot(
+        crate::api_runtime_views::health_snapshot(
             engine,
             pipeline_ids,
             recording_enabled,
@@ -3118,7 +3117,7 @@ mod tests {
             "health reader metrics should expose unread packet age"
         );
 
-        let graph = crate::media::engine_views::processing_graph(&engine, pipeline_id, &[]).await;
+        let graph = crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[]).await;
         let source = graph["nodes"]
             .as_array()
             .unwrap()
@@ -3581,7 +3580,7 @@ mod tests {
         let hls_token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
         hls_token.cancel();
 
-        let graph = crate::media::engine_views::processing_graph(&engine, pipeline_id, &[]).await;
+        let graph = crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[]).await;
         let nodes = graph["nodes"].as_array().unwrap();
 
         let recording = nodes
@@ -3613,7 +3612,7 @@ mod tests {
         };
 
         let graph =
-            crate::media::engine_views::processing_graph(&engine, pipeline_id, &[output]).await;
+            crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[output]).await;
         let nodes = graph["nodes"].as_array().unwrap();
         let edges = graph["edges"].as_array().unwrap();
 
@@ -3665,7 +3664,7 @@ mod tests {
         };
 
         let graph =
-            crate::media::engine_views::processing_graph(&engine, pipeline_id, &[output]).await;
+            crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[output]).await;
         let nodes = graph["nodes"].as_array().unwrap();
         let egress = nodes
             .iter()
@@ -4758,7 +4757,7 @@ mod tests {
         engine.update_egress_phase("out-1", "sending").await;
         engine.record_egress_progress("out-1", 5000).await;
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["phase"], "sending");
@@ -4767,7 +4766,7 @@ mod tests {
             .record_egress_error("out-1", "send", "connection reset by peer")
             .await;
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["phase"], "failed");
@@ -4783,7 +4782,7 @@ mod tests {
             .await;
 
         assert!(
-            crate::media::engine_views::output_status(&engine, "out-1")
+            crate::api_runtime_views::output_status(&engine, "out-1")
                 .await
                 .is_some()
         );
@@ -4791,7 +4790,7 @@ mod tests {
         engine.unregister_egress("out-1").await;
         assert!(token.is_cancelled());
         assert!(
-            crate::media::engine_views::output_status(&engine, "out-1")
+            crate::api_runtime_views::output_status(&engine, "out-1")
                 .await
                 .is_some(),
             "output_status must preserve the last classified egress state after unregister"
@@ -4812,7 +4811,7 @@ mod tests {
 
         engine.unregister_egress("out-1").await;
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["status"], "failed");
@@ -4901,7 +4900,7 @@ mod tests {
 
         assert!(engine.egress_retry_state("out-1").await.is_none());
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["status"], "running");
@@ -4960,7 +4959,7 @@ mod tests {
             "the newest active attempt must not inherit a stale recent-failure snapshot"
         );
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["status"], "running");
@@ -4992,7 +4991,7 @@ mod tests {
             .update_egress_retry_state("out-1", 2, 20_000, 15_000)
             .await;
 
-        let status = crate::media::engine_views::output_status(&engine, "out-1")
+        let status = crate::api_runtime_views::output_status(&engine, "out-1")
             .await
             .unwrap();
         assert_eq!(status["status"], "retrying");
@@ -5102,7 +5101,7 @@ mod tests {
                         }
                     }
 
-                    let status = crate::media::engine_views::output_status(&engine, "out-1").await;
+                    let status = crate::api_runtime_views::output_status(&engine, "out-1").await;
                     let snapshot =
                         test_health_snapshot(&engine, &["pipe-1".to_string()], &HashMap::new())
                             .await;
