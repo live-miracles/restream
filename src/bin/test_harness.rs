@@ -36,6 +36,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
     "mixed-h265-srt-multi",
     "bframe-rtmp",
     "correctness-srt-rtmp",
+    "correctness-srt-rtmp-atrack",
     "correctness-srt-policy",
     "correctness-hevc-rtmp",
     "correctness-hevc-srt",
@@ -87,6 +88,7 @@ fn command_requires_port_namespace(command: &str) -> bool {
             | "correctness-rtmp"
             | "correctness-srt"
             | "correctness-srt-rtmp"
+            | "correctness-srt-rtmp-atrack"
             | "correctness-srt-policy"
             | "bframe-rtmp"
             | "ramp-family"
@@ -296,6 +298,7 @@ async fn run() -> Result<(), String> {
         "correctness-rtmp" => correctness_rtmp().await,
         "correctness-srt" => correctness_srt().await,
         "correctness-srt-rtmp" => srt_to_rtmp_correctness().await,
+        "correctness-srt-rtmp-atrack" => srt_to_rtmp_atrack_correctness().await,
         "correctness-srt-policy" => srt_policy_correctness().await,
         "bframe-rtmp" => bframe_rtmp_correctness().await,
         "ramp-family" => ramp_family_correctness().await,
@@ -320,7 +323,7 @@ async fn run() -> Result<(), String> {
         "srt-crypto-matrix" => srt_crypto_matrix().await,
         other => Err(format!(
             "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
-              correctness-rtmp, correctness-srt, correctness-srt-rtmp, correctness-srt-policy, \
+              correctness-rtmp, correctness-srt, correctness-srt-rtmp, correctness-srt-rtmp-atrack, correctness-srt-policy, \
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
@@ -355,6 +358,16 @@ fn artifact_path(name: &str) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("test/artifacts/latest"))
         .join(name)
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()
+            .map_err(|e| e.to_string())?
+            .join(path))
+    }
 }
 
 fn env_secs(name: &str, default: u64) -> u64 {
@@ -575,7 +588,7 @@ async fn start_restream_child_opts(
     if let Some(media_dir) = media_dir {
         command.env(
             "RESTREAM_MEDIA_DIR",
-            media_dir.to_string_lossy().to_string(),
+            absolute_path(media_dir)?.to_string_lossy().to_string(),
         );
     }
     let mut child = command.spawn().map_err(|e| e.to_string())?;
@@ -600,6 +613,9 @@ async fn start_restream_child_opts(
 struct SinkPacket {
     media_type: &'static str,
     timestamp_ms: u64,
+    audio_packet_type: Option<u8>,
+    audio_has_adts_sync: bool,
+    video_is_sequence_header: bool,
 }
 
 struct GeneralizedSinkMetrics {
@@ -633,11 +649,45 @@ impl Default for GeneralizedSinkMetrics {
 }
 
 impl GeneralizedSinkMetrics {
+    fn audio_packet_stats(&self) -> (Option<u8>, u64, u64, u64) {
+        let packets = self.packets.lock().unwrap();
+        let mut first_audio_packet_type = None;
+        let mut audio_sequence_headers = 0;
+        let mut audio_raw_packets = 0;
+        let mut audio_raw_with_adts = 0;
+
+        for pkt in packets.iter().filter(|pkt| pkt.media_type == "audio") {
+            if first_audio_packet_type.is_none() {
+                first_audio_packet_type = pkt.audio_packet_type;
+            }
+            match pkt.audio_packet_type {
+                Some(0) => audio_sequence_headers += 1,
+                Some(1) => {
+                    audio_raw_packets += 1;
+                    if pkt.audio_has_adts_sync {
+                        audio_raw_with_adts += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        (
+            first_audio_packet_type,
+            audio_sequence_headers,
+            audio_raw_packets,
+            audio_raw_with_adts,
+        )
+    }
+
     fn dts_monotone(&self) -> bool {
         let packets = self.packets.lock().unwrap();
         let mut last_video_ts: Option<u64> = None;
         for pkt in packets.iter() {
             if pkt.media_type == "video" {
+                if pkt.video_is_sequence_header {
+                    continue;
+                }
                 if let Some(prev) = last_video_ts {
                     if pkt.timestamp_ms < prev {
                         return false;
@@ -650,6 +700,12 @@ impl GeneralizedSinkMetrics {
     }
 
     fn summary(&self) -> Value {
+        let (
+            first_audio_packet_type,
+            audio_sequence_headers,
+            audio_raw_packets,
+            audio_raw_with_adts,
+        ) = self.audio_packet_stats();
         json!({
             "connections": self.connections.load(Ordering::Relaxed),
             "publishing": self.publishing.load(Ordering::Relaxed),
@@ -659,6 +715,10 @@ impl GeneralizedSinkMetrics {
             "audioCount": self.audio_count.load(Ordering::Relaxed),
             "keyframeCount": self.keyframe_count.load(Ordering::Relaxed),
             "dtsMonotone": self.dts_monotone(),
+            "firstAudioPacketType": first_audio_packet_type,
+            "audioSequenceHeaders": audio_sequence_headers,
+            "audioRawPackets": audio_raw_packets,
+            "audioRawPacketsWithAdts": audio_raw_with_adts,
         })
     }
 }
@@ -789,6 +849,10 @@ async fn write_generalized_sink_results(
                         pkts.push(SinkPacket {
                             media_type: "video",
                             timestamp_ms: timestamp.value as u64,
+                            audio_packet_type: None,
+                            audio_has_adts_sync: false,
+                            video_is_sequence_header: (tag & 0x80) == 0
+                                && data.get(1).copied() == Some(0),
                         });
                     }
                 }
@@ -812,10 +876,16 @@ async fn write_generalized_sink_results(
                             }
                         }
                     }
+                    let audio_packet_type = data.get(1).copied();
+                    let audio_has_adts_sync =
+                        data.len() >= 4 && data[2] == 0xFF && (data[3] & 0xF0) == 0xF0;
                     if let Ok(mut pkts) = metrics.packets.lock() {
                         pkts.push(SinkPacket {
                             media_type: "audio",
                             timestamp_ms: timestamp.value as u64,
+                            audio_packet_type,
+                            audio_has_adts_sync,
+                            video_is_sequence_header: false,
                         });
                     }
                 }
@@ -4366,6 +4436,44 @@ async fn wait_for_http_ok(url: &str, timeout: Duration) -> Result<(), String> {
     }
 }
 
+async fn start_local_mediamtx(
+    config_path: &Path,
+    log_path: &Path,
+    ports: HarnessPortDefaults,
+) -> Result<Child, String> {
+    std::fs::write(
+        config_path,
+        format!(
+            "logLevel: warn\nrtmp: yes\nrtmpAddress: :{}\nrtmpEncryption: \"no\"\nrtsp: no\nsrt: yes\nsrtAddress: :{}\nhls: yes\nhlsAddress: :{}\nhlsPartDuration: 200ms\nhlsSegmentDuration: 2s\nwebrtc: no\napi: yes\napiAddress: :{}\nmetrics: no\npaths:\n  all:\n",
+            ports.mtx_rtmp, ports.mtx_srt, ports.mtx_hls, ports.mtx_api
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let log = std::fs::File::create(log_path).map_err(|e| e.to_string())?;
+    let stderr_log = log.try_clone().map_err(|e| e.to_string())?;
+    let mut child = Command::new("mediamtx")
+        .arg(config_path)
+        .env_remove("MTX_RTMP")
+        .env_remove("MTX_SRT")
+        .env_remove("MTX_HLS")
+        .env_remove("MTX_API")
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr_log))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Err(err) = wait_for_http_ok(
+        &format!("http://127.0.0.1:{}/v3/paths/list", ports.mtx_api),
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        stop_child(&mut child).await;
+        return Err(format!("mediamtx did not become ready: {err}"));
+    }
+    Ok(child)
+}
+
 async fn run_ramp_config(
     config: RampConfig,
     env: &RampEnv,
@@ -4559,6 +4667,118 @@ async fn wait_for_api_input_media_ready(
             return Err(format!(
                 "{pipeline_id}: ingest went live but media probe was incomplete within {}s; last snapshot={}",
                 timeout.as_secs(),
+                last_snapshot
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_api_probe_ready(
+    api: &RampApi,
+    pipeline_id: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_snapshot = Value::Null;
+
+    loop {
+        if let Ok(snapshot) = api
+            .get_json(&format!("/api/v1/pipelines/{pipeline_id}/probe"))
+            .await
+        {
+            last_snapshot = snapshot.clone();
+            let has_video = !snapshot["video"].is_null();
+            let has_audio = snapshot["audioTracks"]
+                .as_array()
+                .map(|tracks| !tracks.is_empty())
+                .unwrap_or(false)
+                || !snapshot["audio"].is_null();
+            if has_video && has_audio {
+                return Ok(snapshot);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: probe metadata was incomplete within {}s; last snapshot={}",
+                timeout.as_secs(),
+                last_snapshot
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn media_snapshot_view(snapshot: &Value) -> &Value {
+    if snapshot["input"].is_object() {
+        &snapshot["input"]
+    } else {
+        snapshot
+    }
+}
+
+fn snapshot_audio_entry(snapshot: &Value) -> Option<&Value> {
+    let view = media_snapshot_view(snapshot);
+    view["audioTracks"]
+        .as_array()
+        .and_then(|tracks| tracks.first())
+        .or_else(|| (!view["audio"].is_null()).then_some(&view["audio"]))
+}
+
+fn media_snapshot_matches_probe(snapshot: &Value, normalized: &Value) -> bool {
+    let input = media_snapshot_view(snapshot);
+    let streams = match normalized.as_array() {
+        Some(streams) => streams,
+        None => return false,
+    };
+    let Some(video) = streams.iter().find(|stream| stream["type"] == "video") else {
+        return false;
+    };
+    let Some(audio) = streams.iter().find(|stream| stream["type"] == "audio") else {
+        return false;
+    };
+    let Some(snapshot_audio) = snapshot_audio_entry(snapshot) else {
+        return false;
+    };
+    let probe_sample_rate = audio["sampleRate"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| audio["sampleRate"].as_u64());
+
+    input["video"]["codec"] == video["codec"]
+        && input["video"]["width"] == video["width"]
+        && input["video"]["height"] == video["height"]
+        && snapshot_audio["codec"] == audio["codec"]
+        && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
+        && snapshot_audio["channels"] == audio["channels"]
+}
+
+async fn wait_for_api_health_matches_probe(
+    api: &RampApi,
+    pipeline_id: &str,
+    probe_snapshot: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_snapshot = Value::Null;
+
+    loop {
+        if let Ok(health) = api.get_json("/api/v1/engine/health").await {
+            if let Some(snapshot) = health["pipelines"]
+                .as_object()
+                .and_then(|pipelines| pipelines.get(pipeline_id).cloned())
+            {
+                last_snapshot = snapshot.clone();
+                if media_snapshot_matches_probe(&snapshot, probe_snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}: health snapshot did not converge to probe metadata within {}s; probe={} last_health={}",
+                timeout.as_secs(),
+                probe_snapshot,
                 last_snapshot
             ));
         }
@@ -7177,25 +7397,26 @@ async fn correctness() -> Result<Value, String> {
     wait_for_api_input_live(&api, &rtmp_id, Duration::from_secs(15)).await?;
     wait_for_api_input_live(&api, &srt_id, Duration::from_secs(15)).await?;
 
-    let health = api.get_json("/api/v1/engine/health").await?;
-    let rtmp_snapshot = health["pipelines"][&rtmp_id].clone();
-    let srt_snapshot = health["pipelines"][&srt_id].clone();
-    if rtmp_snapshot.is_null() || srt_snapshot.is_null() {
-        stop_child(&mut rtmp_publisher).await;
-        stop_child(&mut srt_publisher).await;
-        stop_child(&mut child).await;
-        return Err("missing snapshot in /health".to_string());
-    }
-
     let rtmp_probe = ffprobe(&rtmp_read).await?;
     let srt_probe = ffprobe(&srt_read).await?;
-
     assert_media_only(&rtmp_probe, "RTMP read")?;
     assert_media_only(&srt_probe, "SRT read")?;
     let rtmp_media = normalized_streams(&rtmp_probe)?;
     let srt_media = normalized_streams(&srt_probe)?;
+
+    let rtmp_snapshot = wait_for_api_probe_ready(&api, &rtmp_id, Duration::from_secs(15)).await?;
+    let srt_snapshot = wait_for_api_probe_ready(&api, &srt_id, Duration::from_secs(15)).await?;
+    let rtmp_health =
+        wait_for_api_health_matches_probe(&api, &rtmp_id, &rtmp_media, Duration::from_secs(15))
+            .await?;
+    let srt_health =
+        wait_for_api_health_matches_probe(&api, &srt_id, &srt_media, Duration::from_secs(15))
+            .await?;
+
     assert_snapshot_matches_probe(&rtmp_snapshot, &rtmp_media, "RTMP")?;
     assert_snapshot_matches_probe(&srt_snapshot, &srt_media, "SRT")?;
+    assert_snapshot_matches_probe(&rtmp_health, &rtmp_media, "RTMP health")?;
+    assert_snapshot_matches_probe(&srt_health, &srt_media, "SRT health")?;
 
     stop_child(&mut rtmp_publisher).await;
     stop_child(&mut srt_publisher).await;
@@ -7208,6 +7429,7 @@ async fn correctness() -> Result<Value, String> {
             "publishUrl": rtmp_publish,
             "readUrl": rtmp_read,
             "snapshot": rtmp_snapshot,
+            "health": rtmp_health,
             "probe": rtmp_probe,
             "normalizedStreams": rtmp_media,
         },
@@ -7216,6 +7438,7 @@ async fn correctness() -> Result<Value, String> {
             "publishUrl": srt_publish,
             "readUrl": srt_read,
             "snapshot": srt_snapshot,
+            "health": srt_health,
             "probe": srt_probe,
             "normalizedStreams": srt_media,
         },
@@ -7343,6 +7566,157 @@ async fn srt_to_rtmp_correctness() -> Result<Value, String> {
         Ok(results)
     } else {
         Err(format!("SRT to RTMP direct egress failed: {results}"))
+    }
+}
+
+async fn srt_to_rtmp_atrack_correctness() -> Result<Value, String> {
+    let work_dir = artifact_path("correctness-srt-rtmp-atrack");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = default_restream_bin();
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let ports = TestPorts::from_env();
+
+    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "H.264 SRT multi-audio", "streamKey": "e2e-srt-rtmp-atrack"}),
+        )
+        .await?;
+    let pipeline_id = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("pipeline create missing id")?
+        .to_string();
+
+    let sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/e2e-srt-rtmp-atrack-sink");
+    let output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
+            json!({"name": "rtmp-atrack-sink", "url": sink_url, "encoding": "source+atrack:0"}),
+        )
+        .await?;
+    let output_id = output["output"]["id"]
+        .as_str()
+        .ok_or("output create missing id")?
+        .to_string();
+
+    let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
+    let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+        .await
+        .map_err(|e| format!("sink bind: {e}"))?;
+    let sink_m = sink_metrics.clone();
+    let sink_task = tokio::spawn(async move {
+        while let Ok((socket, _)) = sink_listener.accept().await {
+            let m = sink_m.clone();
+            tokio::spawn(handle_generalized_sink_client(socket, m));
+        }
+    });
+
+    let fixture = checked_h264_multi_audio_fixture()?;
+    let mut publisher = spawn_publisher(
+        &fixture,
+        &format!(
+            "srt://127.0.0.1:{}?streamid=publish:live/e2e-srt-rtmp-atrack&pkt_size=1316",
+            ports.srt
+        ),
+        "mpegts",
+        true,
+    )
+    .await?;
+    wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
+    let input_snapshot =
+        wait_for_api_input_media_ready(&api, &pipeline_id, Duration::from_secs(15)).await?;
+    println!("[srt-rtmp-atrack] Source ingest established (H.264 via SRT, multi-audio)");
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/start"),
+        json!({}),
+    )
+    .await?;
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (_, audio_sequence_headers, audio_raw_packets, _) = sink_metrics.audio_packet_stats();
+        if sink_metrics.video_count.load(Ordering::Relaxed) >= 10
+            && audio_sequence_headers > 0
+            && audio_raw_packets > 0
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let sink_summary = sink_metrics.summary();
+    let dts_ok = sink_metrics.dts_monotone();
+    let video_count = sink_metrics.video_count.load(Ordering::Relaxed);
+    let audio_count = sink_metrics.audio_count.load(Ordering::Relaxed);
+    let detected_audio = sink_metrics.audio_codec.lock().unwrap().clone();
+    let (first_audio_packet_type, audio_sequence_headers, audio_raw_packets, audio_raw_with_adts) =
+        sink_metrics.audio_packet_stats();
+
+    let output_status = api
+        .get_json(&format!(
+            "/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/status"
+        ))
+        .await
+        .unwrap_or(json!({}));
+
+    stop_child(&mut publisher).await;
+    sink_task.abort();
+    stop_child(&mut child).await;
+
+    let output_phase = output_status["phase"].as_str().unwrap_or("unknown");
+    let output_error = output_status["lastError"].as_str();
+    // This slice is specifically about audio-routing correctness on the
+    // SRT -> RTMP atrack path. Packet-level DTS monotonicity is covered by the
+    // dedicated RTMP/B-frame correctness harness; keep it informational here so
+    // video config packets do not mask the AAC assertions this test owns.
+    let passed = video_count > 0
+        && audio_count > 0
+        && detected_audio.as_deref() == Some("aac")
+        && first_audio_packet_type == Some(0)
+        && audio_sequence_headers > 0
+        && audio_raw_packets > 0
+        && audio_raw_with_adts == 0
+        && output_phase == "sending"
+        && output_error.is_none();
+
+    let results = json!({
+        "passed": passed,
+        "encoding": "source+atrack:0",
+        "dtsMonotone": dts_ok,
+        "videoCount": video_count,
+        "audioCount": audio_count,
+        "audioCodec": detected_audio,
+        "firstAudioPacketType": first_audio_packet_type,
+        "audioSequenceHeaders": audio_sequence_headers,
+        "audioRawPackets": audio_raw_packets,
+        "audioRawPacketsWithAdts": audio_raw_with_adts,
+        "inputAudioTracks": input_snapshot["input"]["audioTracks"].as_array().map(|tracks| tracks.len()).unwrap_or(0),
+        "outputPhase": output_phase,
+        "outputLastError": output_error,
+        "outputStatus": output_status,
+        "sink": sink_summary,
+    });
+
+    let path = work_dir.join("results.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    if passed {
+        Ok(results)
+    } else {
+        Err(format!("SRT to RTMP atrack egress failed: {results}"))
     }
 }
 
@@ -8100,20 +8474,24 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
     let mut publisher = spawn_publisher(&fixture, &publish_url, format, map_all).await?;
     wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
 
-    let snapshot =
-        match wait_for_api_input_media_ready(&api, &pipeline_id, Duration::from_secs(15)).await {
-            Ok(snapshot) => snapshot,
-            Err(err) => {
-                stop_child(&mut publisher).await;
-                stop_child(&mut child).await;
-                return Err(err);
-            }
-        };
+    let snapshot = match wait_for_api_probe_ready(&api, &pipeline_id, Duration::from_secs(15)).await
+    {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            stop_child(&mut publisher).await;
+            stop_child(&mut child).await;
+            return Err(err);
+        }
+    };
 
     let probe = ffprobe(&read_url).await?;
     assert_media_only(&probe, &format!("{protocol} read"))?;
     let normalized = normalized_streams(&probe)?;
+    let health =
+        wait_for_api_health_matches_probe(&api, &pipeline_id, &normalized, Duration::from_secs(15))
+            .await?;
     assert_snapshot_matches_probe(&snapshot, &normalized, protocol)?;
+    assert_snapshot_matches_probe(&health, &normalized, &format!("{protocol} health"))?;
 
     stop_child(&mut publisher).await;
     stop_child(&mut child).await;
@@ -8124,6 +8502,7 @@ async fn correctness_one_protocol(protocol: &str) -> Result<Value, String> {
         "publishUrl": publish_url,
         "readUrl": read_url,
         "snapshot": snapshot,
+        "health": health,
         "probe": probe,
         "normalizedStreams": normalized,
     }))
@@ -8138,8 +8517,16 @@ async fn egress_correctness() -> Result<Value, String> {
     let log_path = work_dir.join("restream.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
     let ports = TestPorts::from_env();
+    let mtx_ports = harness_port_defaults();
+    let mediamtx_config = work_dir.join("mediamtx.yml");
+    let mediamtx_log = work_dir.join("mediamtx.log");
+    let media_dir = work_dir.join("media");
+    std::fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
 
-    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut mediamtx = start_local_mediamtx(&mediamtx_config, &mediamtx_log, mtx_ports).await?;
+    let mut child =
+        start_restream_child_in_media_dir(&restream_bin, &ports, &db_path, &log_path, &media_dir)
+            .await?;
     let mut api = RampApi::new(ports.http);
     api.login().await?;
 
@@ -8166,10 +8553,24 @@ async fn egress_correctness() -> Result<Value, String> {
     wait_for_api_input_live(&api, &pipeline_id, Duration::from_secs(15)).await?;
     println!("[egress] Source ingest established");
 
-    // RTMP egress — use generalized sink for DTS/packet assertions
-    let rtmp_sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/e2e-rtmp-sink");
-    let rtmp_output_id =
+    // RTMP egress — one target goes to a packet-inspecting sink for transport
+    // assertions, and one goes to MediaMTX so a real consumer can ffprobe the
+    // sink-side stream.
+    let rtmp_sink_url = format!("rtmp://127.0.0.1:{sink_port}/live/e2e-rtmp-sink-packets");
+    let rtmp_packet_output_id =
         create_mixed_output(&api, &pipeline_id, "rtmp-egress", &rtmp_sink_url, "source").await?;
+    let rtmp_probe_sink_url = format!(
+        "rtmp://127.0.0.1:{}/live/e2e-rtmp-sink-probe",
+        mtx_ports.mtx_rtmp
+    );
+    let rtmp_probe_output_id = create_mixed_output(
+        &api,
+        &pipeline_id,
+        "rtmp-egress-probe",
+        &rtmp_probe_sink_url,
+        "source",
+    )
+    .await?;
 
     let sink_metrics = Arc::new(GeneralizedSinkMetrics::default());
     let sink_listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
@@ -8183,7 +8584,8 @@ async fn egress_correctness() -> Result<Value, String> {
         }
     });
 
-    start_mixed_output(&api, &pipeline_id, &rtmp_output_id).await?;
+    start_mixed_output(&api, &pipeline_id, &rtmp_packet_output_id).await?;
+    start_mixed_output(&api, &pipeline_id, &rtmp_probe_output_id).await?;
 
     // SRT egress — create a second output to a real SRT listener pipeline
     let srt_egress_url = format!(
@@ -8216,10 +8618,17 @@ async fn egress_correctness() -> Result<Value, String> {
 
     let mut results = json!({});
 
-    // RTMP egress validation via sink
+    // RTMP egress validation via packet sink + external ffprobe on the sink-side stream.
     let dts_ok = sink_metrics.dts_monotone();
     let video_count = sink_metrics.video_count.load(Ordering::Relaxed);
     let audio_count = sink_metrics.audio_count.load(Ordering::Relaxed);
+    let rtmp_sink_read_url = format!(
+        "rtmp://127.0.0.1:{}/live/e2e-rtmp-sink-probe",
+        mtx_ports.mtx_rtmp
+    );
+    let rtmp_probe = ffprobe(&rtmp_sink_read_url).await?;
+    assert_media_only(&rtmp_probe, "RTMP egress sink read")?;
+    let rtmp_normalized = normalized_streams(&rtmp_probe)?;
     let rtmp_passed = video_count >= 30 && audio_count > 0 && dts_ok;
     results["rtmpEgress"] = json!({
         "passed": rtmp_passed,
@@ -8227,106 +8636,110 @@ async fn egress_correctness() -> Result<Value, String> {
         "videoCount": video_count,
         "audioCount": audio_count,
         "sink": sink_metrics.summary(),
+        "readUrl": rtmp_sink_read_url,
+        "probe": rtmp_probe,
+        "normalizedStreams": rtmp_normalized,
     });
 
-    // SRT egress validation — check the sink pipeline received ingest
-    let srt_health = api
-        .get_json("/api/v1/engine/health")
-        .await
-        .unwrap_or(json!({}));
-    let srt_has_input = srt_health["pipelines"]
-        .as_array()
-        .and_then(|pipes| {
-            pipes
-                .iter()
-                .find(|p| p["id"].as_str() == Some(&srt_pipeline_id))
-        })
-        .and_then(|p| p["activeIngest"].as_bool())
-        .unwrap_or(false);
+    // SRT egress validation — assert the sink-side stream is externally readable
+    // and that the sink pipeline's probe + health metadata match that reality.
+    let srt_sink_read_url = srt_read_url(ports.srt, "e2e-srt-sink", None);
+    let srt_probe = ffprobe(&srt_sink_read_url).await?;
+    assert_media_only(&srt_probe, "SRT egress sink read")?;
+    let srt_normalized = normalized_streams(&srt_probe)?;
+    let srt_snapshot =
+        wait_for_api_probe_ready(&api, &srt_pipeline_id, Duration::from_secs(15)).await?;
+    let srt_health = wait_for_api_health_matches_probe(
+        &api,
+        &srt_pipeline_id,
+        &srt_normalized,
+        Duration::from_secs(15),
+    )
+    .await?;
+    assert_snapshot_matches_probe(&srt_snapshot, &srt_normalized, "SRT sink probe")?;
+    assert_snapshot_matches_probe(&srt_health, &srt_normalized, "SRT sink health")?;
     results["srtEgress"] = json!({
-        "passed": srt_has_input,
+        "passed": true,
         "srtSinkPipelineId": srt_pipeline_id,
-        "activeIngest": srt_has_input,
+        "readUrl": srt_sink_read_url,
+        "snapshot": srt_snapshot,
+        "health": srt_health,
+        "probe": srt_probe,
+        "normalizedStreams": srt_normalized,
     });
 
     // Recording via API
-    let media_dir = work_dir.join("media");
-    std::fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
+    let before_files = media_dir_entries(&media_dir)?;
     api.post_json(
         &format!("/api/v1/pipelines/{pipeline_id}/recording/start"),
         json!({}),
     )
     .await?;
+    wait_for_api_recording_state(&api, &pipeline_id, true, Duration::from_secs(10)).await?;
     tokio::time::sleep(Duration::from_secs(6)).await;
     api.post_json(
         &format!("/api/v1/pipelines/{pipeline_id}/recording/stop"),
         json!({}),
     )
     .await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_api_recording_state(&api, &pipeline_id, false, Duration::from_secs(20)).await?;
 
-    // Find recording files in the child's media directory
-    let rec_dir = work_dir.join("media");
-    let mut rec_file: Option<PathBuf> = None;
-    if let Ok(entries) = std::fs::read_dir(&rec_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "ts") {
-                rec_file = Some(path);
-                break;
-            }
-        }
-    }
-    let recording_result = match rec_file {
-        Some(ref path) => {
-            let output = tokio::time::timeout(
-                Duration::from_secs(12),
-                Command::new("ffprobe")
-                    .args([
-                        "-v",
-                        "error",
-                        "-probesize",
-                        "2M",
-                        "-analyzeduration",
-                        "2M",
-                        "-show_entries",
-                        "stream=index,codec_name,codec_type",
-                        "-of",
-                        "json",
-                        path.to_string_lossy().as_ref(),
-                    ])
-                    .output(),
-            )
-            .await;
-            match output {
-                Ok(Ok(out)) if out.status.success() => {
-                    match serde_json::from_slice::<Value>(&out.stdout) {
-                        Ok(probe) => {
-                            if let Some(streams) = probe["streams"].as_array() {
-                                let has_video = streams.iter().any(|s| s["codec_type"] == "video");
-                                let has_audio = streams.iter().any(|s| s["codec_type"] == "audio");
-                                if has_video && has_audio {
-                                    json!({"passed": true, "file": path.to_string_lossy(), "streamCount": streams.len()})
-                                } else {
-                                    json!({"passed": false, "error": format!("missing streams: video={has_video} audio={has_audio}")})
-                                }
-                            } else {
-                                json!({"passed": false, "error": "no streams in ffprobe output"})
-                            }
+    // Recording defaults to remuxing into MP4 and dropping the transient TS,
+    // so the correctness check follows the operator-visible final artifact and
+    // confirms the API inventory matches the file persisted on disk.
+    let recording_entry =
+        wait_for_api_media_file(&api, &before_files, ".mp4", Duration::from_secs(30)).await;
+    let recording_result = match recording_entry {
+        Ok(entry) => {
+            let recording_name = entry["playName"]
+                .as_str()
+                .or_else(|| entry["name"].as_str())
+                .unwrap_or_default();
+            let path = media_dir.join(recording_name);
+            if recording_name.is_empty() {
+                json!({"passed": false, "error": "recording entry missing playName/name", "entry": entry})
+            } else if !path.exists() {
+                json!({
+                    "passed": false,
+                    "error": format!("recording listed by API but missing on disk: {}", path.display()),
+                    "entry": entry,
+                })
+            } else {
+                match ffprobe(path.to_string_lossy().as_ref()).await {
+                    Ok(probe) => match normalized_streams(&probe) {
+                        Ok(streams) => {
+                            let has_video = streams.as_array().is_some_and(|streams| {
+                                streams.iter().any(|stream| stream["type"] == "video")
+                            });
+                            let has_audio = streams.as_array().is_some_and(|streams| {
+                                streams.iter().any(|stream| stream["type"] == "audio")
+                            });
+                            let file_analysis =
+                                restream::media::file_analysis::analyze_media_file(&path)
+                                    .map_err(|error| error.to_string())
+                                    .ok();
+                            json!({
+                                "passed": has_video && has_audio,
+                                "file": path,
+                                "entry": entry,
+                                "hasVideo": has_video,
+                                "hasAudio": has_audio,
+                                "probe": probe,
+                                "normalizedStreams": streams,
+                                "analysis": file_analysis,
+                            })
                         }
-                        Err(e) => {
-                            json!({"passed": false, "error": format!("ffprobe parse failed: {e}")})
+                        Err(error) => {
+                            json!({"passed": false, "error": format!("recording stream normalization failed: {error}"), "entry": entry})
                         }
+                    },
+                    Err(error) => {
+                        json!({"passed": false, "error": format!("recording ffprobe failed: {error}"), "entry": entry})
                     }
                 }
-                Ok(Ok(out)) => {
-                    json!({"passed": false, "error": format!("ffprobe failed: {}", String::from_utf8_lossy(&out.stderr))})
-                }
-                Ok(Err(e)) => json!({"passed": false, "error": format!("ffprobe error: {e}")}),
-                Err(_) => json!({"passed": false, "error": "ffprobe timed out"}),
             }
         }
-        None => json!({"passed": false, "error": "recording file not found in media dir"}),
+        Err(error) => json!({"passed": false, "error": error}),
     };
     results["recording"] = recording_result;
 
@@ -8338,6 +8751,7 @@ async fn egress_correctness() -> Result<Value, String> {
     stop_child(&mut publisher).await;
     sink_task.abort();
     stop_child(&mut child).await;
+    stop_child(&mut mediamtx).await;
 
     let path = work_dir.join("results.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&results).unwrap())
@@ -8630,6 +9044,10 @@ fn checked_h265_fixture() -> Result<PathBuf, String> {
     restream::test_fixtures::canonical_h265_ts_fixture()
 }
 
+fn checked_h264_multi_audio_fixture() -> Result<PathBuf, String> {
+    restream::test_fixtures::bench_transport_fixture("h264", "1.5M", true)
+}
+
 fn spawn_publisher_with_selection(
     path: &Path,
     url: &str,
@@ -8873,36 +9291,9 @@ fn assert_snapshot_matches_probe(
     normalized: &Value,
     label: &str,
 ) -> Result<(), String> {
-    let input = &snapshot["input"];
-    let streams = normalized
-        .as_array()
-        .ok_or_else(|| format!("{label}: normalized streams are not an array"))?;
-    let video = streams
-        .iter()
-        .find(|stream| stream["type"] == "video")
-        .ok_or_else(|| format!("{label}: missing normalized video"))?;
-    let audio = streams
-        .iter()
-        .find(|stream| stream["type"] == "audio")
-        .ok_or_else(|| format!("{label}: missing normalized audio"))?;
-    let snapshot_audio = input["audioTracks"]
-        .as_array()
-        .and_then(|tracks| tracks.first())
-        .ok_or_else(|| format!("{label}: snapshot missing audio"))?;
-    let probe_sample_rate = audio["sampleRate"]
-        .as_str()
-        .and_then(|value| value.parse::<u64>().ok())
-        .or_else(|| audio["sampleRate"].as_u64());
-
-    let matches = input["video"]["codec"] == video["codec"]
-        && input["video"]["width"] == video["width"]
-        && input["video"]["height"] == video["height"]
-        && snapshot_audio["codec"] == audio["codec"]
-        && snapshot_audio["sampleRate"].as_u64() == probe_sample_rate
-        && snapshot_audio["channels"] == audio["channels"];
-    if !matches {
+    if !media_snapshot_matches_probe(snapshot, normalized) {
         return Err(format!(
-            "{label}: engine snapshot does not match external probe: snapshot={} probe={}",
+            "{label}: media snapshot mismatch: snapshot={} normalized={}",
             snapshot, normalized
         ));
     }
@@ -8977,6 +9368,37 @@ async fn wait_for_new_media_file(
             return Err(format!(
                 "no new {extension} media file appeared in {} within {}s",
                 media_dir.display(),
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_api_media_file(
+    api: &RampApi,
+    before: &HashSet<String>,
+    extension: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let media = api.get_json("/api/v1/media").await?;
+        let files = media["files"]
+            .as_array()
+            .ok_or("/api/v1/media response missing files")?;
+        if let Some(file) = files.iter().find(|file| {
+            let candidate = file["playName"]
+                .as_str()
+                .or_else(|| file["name"].as_str())
+                .unwrap_or_default();
+            candidate.ends_with(extension) && !before.contains(candidate)
+        }) {
+            return Ok(file.clone());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "no new {extension} media entry appeared in /api/v1/media within {}s",
                 timeout.as_secs()
             ));
         }
