@@ -1912,7 +1912,7 @@ async fn output_status_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    match state.engine.output_status(&output_id).await {
+    match crate::media::engine_views::output_status(&state.engine, &output_id).await {
         Some(status) => Json(status).into_response(),
         None => (
             StatusCode::NOT_FOUND,

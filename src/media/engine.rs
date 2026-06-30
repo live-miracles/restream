@@ -659,10 +659,6 @@ impl MediaEngine {
         Self::egress_effective_status(egress, has_ingest)
     }
 
-    pub async fn output_status(&self, output_id: &str) -> Option<serde_json::Value> {
-        crate::media::engine_views::output_status(self, output_id).await
-    }
-
     /// Register an OS thread JoinHandle so it can be joined at shutdown.
     /// Already-finished handles are pruned opportunistically to prevent unbounded accumulation
     /// in long-running servers with many short-lived per-connection threads.
@@ -4809,14 +4805,18 @@ mod tests {
         engine.update_egress_phase("out-1", "sending").await;
         engine.record_egress_progress("out-1", 5000).await;
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["phase"], "sending");
 
         engine
             .record_egress_error("out-1", "send", "connection reset by peer")
             .await;
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["phase"], "failed");
         assert_eq!(status["failurePhase"], "send");
         assert_eq!(status["lastError"], "connection reset by peer");
@@ -4829,12 +4829,18 @@ mod tests {
             .register_egress("out-1", "pipe-1", "rtmp://127.0.0.1:1935/live/key")
             .await;
 
-        assert!(engine.output_status("out-1").await.is_some());
+        assert!(
+            crate::media::engine_views::output_status(&engine, "out-1")
+                .await
+                .is_some()
+        );
 
         engine.unregister_egress("out-1").await;
         assert!(token.is_cancelled());
         assert!(
-            engine.output_status("out-1").await.is_some(),
+            crate::media::engine_views::output_status(&engine, "out-1")
+                .await
+                .is_some(),
             "output_status must preserve the last classified egress state after unregister"
         );
     }
@@ -4853,7 +4859,9 @@ mod tests {
 
         engine.unregister_egress("out-1").await;
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["status"], "failed");
         assert_eq!(status["rawStatus"], "running");
         assert_eq!(status["phase"], "failed");
@@ -4942,7 +4950,9 @@ mod tests {
 
         assert!(engine.egress_retry_state("out-1").await.is_none());
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["status"], "running");
         assert_eq!(status["retrying"], false);
         assert!(status["retryAttempts"].is_null());
@@ -4999,7 +5009,9 @@ mod tests {
             "the newest active attempt must not inherit a stale recent-failure snapshot"
         );
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["status"], "running");
         assert_eq!(status["phase"], "sending");
         assert_eq!(status["bytesOut"], 4096);
@@ -5029,7 +5041,9 @@ mod tests {
             .update_egress_retry_state("out-1", 2, 20_000, 15_000)
             .await;
 
-        let status = engine.output_status("out-1").await.unwrap();
+        let status = crate::media::engine_views::output_status(&engine, "out-1")
+            .await
+            .unwrap();
         assert_eq!(status["status"], "retrying");
         assert_eq!(status["phase"], "failed");
         assert_eq!(status["failurePhase"], "send");
@@ -5138,7 +5152,7 @@ mod tests {
                         }
                     }
 
-                    let status = engine.output_status("out-1").await;
+                    let status = crate::media::engine_views::output_status(&engine, "out-1").await;
                     let snapshot = engine
                         .health_snapshot(&["pipe-1".to_string()], &HashMap::new())
                         .await;
