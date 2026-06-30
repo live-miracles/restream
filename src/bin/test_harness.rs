@@ -46,6 +46,7 @@ const SUITE_DEFAULT_MODES: &[&str] = &[
 ];
 
 const SINK_PORT: u16 = 12935;
+const FILE_LIVE_EDGE_MAX_DURATION_DRIFT_SECS: f64 = 0.75;
 
 fn path_profile(path: &Path) -> Option<&'static str> {
     let mut components = path.components();
@@ -9070,7 +9071,7 @@ async fn run_file_live_edge_case(
         )
     })?;
     let duration_delta_secs = absolute_delta_secs(recorded_duration_secs, capture_elapsed_secs);
-    let duration_ok = duration_delta_secs <= 2.0;
+    let duration_ok = duration_delta_secs <= FILE_LIVE_EDGE_MAX_DURATION_DRIFT_SECS;
     let hls_ok = playlist_body.contains("#EXTM3U") && hls_probe.is_ok();
     let live_optimized_gop_ok = if live_optimized {
         recorded_analysis
@@ -9088,6 +9089,7 @@ async fn run_file_live_edge_case(
         "captureElapsedSecs": capture_elapsed_secs,
         "recordedDurationSecs": recorded_duration_secs,
         "durationDeltaSecs": duration_delta_secs,
+        "maxAllowedDurationDriftSecs": FILE_LIVE_EDGE_MAX_DURATION_DRIFT_SECS,
         "durationOk": duration_ok,
         "sourceAnalysis": source_analysis,
         "recordedAnalysis": recorded_analysis,

@@ -18,19 +18,38 @@ type IngestRuntime = (Arc<AtomicU64>, Arc<StageMetrics>, KeyframeTimes);
 #[derive(Default)]
 struct LoopTimestampState {
     offset_ms: i64,
+    pass_base_timestamp_ms: Option<i64>,
     pass_max_timestamp_ms: Option<i64>,
     pass_packet_count: usize,
 }
 
 impl LoopTimestampState {
+    fn packet_timestamp_ms(packet: &MediaPacket) -> i64 {
+        if packet.dts >= 0 {
+            packet.dts
+        } else {
+            packet.pts
+        }
+    }
+
     fn begin_pass(&mut self) {
+        self.pass_base_timestamp_ms = None;
         self.pass_max_timestamp_ms = None;
         self.pass_packet_count = 0;
     }
 
     fn apply(&mut self, packet: &mut MediaPacket) {
-        packet.pts = packet.pts.saturating_add(self.offset_ms);
-        packet.dts = packet.dts.saturating_add(self.offset_ms);
+        let pass_base_timestamp_ms = *self
+            .pass_base_timestamp_ms
+            .get_or_insert_with(|| Self::packet_timestamp_ms(packet));
+        packet.pts = packet
+            .pts
+            .saturating_sub(pass_base_timestamp_ms)
+            .saturating_add(self.offset_ms);
+        packet.dts = packet
+            .dts
+            .saturating_sub(pass_base_timestamp_ms)
+            .saturating_add(self.offset_ms);
         self.pass_packet_count += 1;
         let packet_max = packet.pts.max(packet.dts);
         self.pass_max_timestamp_ms = Some(
@@ -661,6 +680,34 @@ mod tests {
         timestamps.finish_pass();
 
         assert_eq!(timestamps.pass_packet_count(), 0);
+    }
+
+    #[test]
+    fn loop_timestamp_state_normalizes_nonzero_file_offsets() {
+        let mut timestamps = LoopTimestampState::default();
+
+        timestamps.begin_pass();
+        let mut first = test_packet(MediaType::Video, 0, 1_467, 1_400);
+        let mut second = test_packet(MediaType::Audio, 0, 1_445, 1_445);
+        let mut third = test_packet(MediaType::Video, 0, 1_500, 1_433);
+        timestamps.apply(&mut first);
+        timestamps.apply(&mut second);
+        timestamps.apply(&mut third);
+        timestamps.finish_pass();
+
+        assert_eq!(first.pts, 67);
+        assert_eq!(first.dts, 0);
+        assert_eq!(second.pts, 45);
+        assert_eq!(second.dts, 45);
+        assert_eq!(third.pts, 100);
+        assert_eq!(third.dts, 33);
+
+        timestamps.begin_pass();
+        let mut replayed = test_packet(MediaType::Video, 0, 1_467, 1_400);
+        timestamps.apply(&mut replayed);
+        timestamps.finish_pass();
+
+        assert_eq!(replayed.dts, 101);
     }
 
     #[test]

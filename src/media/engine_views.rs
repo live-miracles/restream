@@ -228,30 +228,19 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
 
     let ingest_arr: Vec<serde_json::Value> = ingests
         .iter()
-        .map(|(pid, ingest)| {
-            serde_json::json!({
-                "pipelineId": pid,
-                "protocol": ingest.protocol,
-                "uptimeSecs": ingest.start_time.elapsed().as_secs_f64(),
-                "bytesReceived": ingest.bytes_received.load(Ordering::Relaxed),
-                "metrics": ingest.metrics.snapshot(),
-            })
-        })
+        .map(|(pid, ingest)| api_view_models::ingest_telemetry_json(pid, ingest))
         .collect();
 
     let stage_arr: Vec<serde_json::Value> = stage_metrics
         .iter()
         .map(|(key, metrics)| {
-            let mut val = serde_json::json!({
-                "stageKey": key.to_string(),
-                "pipelineId": key.pipeline.as_str(),
-                "kind": key.kind.to_string(),
-                "metrics": metrics.snapshot(),
-            });
-            if let Some(pm) = pipe_metrics.get(key) {
-                val["pipeMetrics"] = pm.snapshot();
-            }
-            val
+            api_view_models::stage_telemetry_row_json(
+                key,
+                metrics.snapshot(),
+                pipe_metrics.get(key).map(|pm| pm.snapshot()),
+                None,
+                None,
+            )
         })
         .collect();
 
@@ -268,33 +257,22 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
 
     let source_rings: Vec<serde_json::Value> = pipelines
         .iter()
-        .map(|(pipeline_id, ring)| {
-            serde_json::json!({
-                "pipelineId": pipeline_id,
-                "payloadStats": api_view_models::ring_payload_stats_json(ring),
-            })
-        })
+        .map(|(pipeline_id, ring)| api_view_models::source_ring_telemetry_json(pipeline_id, ring))
         .collect();
     let transcoder_rings: Vec<serde_json::Value> = buffers
         .iter()
         .map(|(key, (ring, token))| {
-            serde_json::json!({
-                "stageKey": key.to_string(),
-                "pipelineId": key.pipeline.as_str(),
-                "kind": key.kind.to_string(),
-                "active": !token.is_cancelled(),
-                "payloadStats": api_view_models::ring_payload_stats_json(ring),
-            })
+            api_view_models::transcoder_ring_telemetry_json(key, ring, !token.is_cancelled())
         })
         .collect();
     let ts_muxer_rings: Vec<serde_json::Value> = ts_muxers
         .iter()
         .map(|(stage_key, stage)| {
-            serde_json::json!({
-                "stageKey": stage_key,
-                "active": !stage.cancel.is_cancelled(),
-                "payloadStats": api_view_models::ring_payload_stats_json(&stage.ring),
-            })
+            api_view_models::ts_muxer_ring_telemetry_json(
+                stage_key,
+                &stage.ring,
+                !stage.cancel.is_cancelled(),
+            )
         })
         .collect();
     let retained_payload_bytes = source_rings
@@ -308,29 +286,28 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
         .iter()
         .map(|(key, queue)| {
             let stats = queue.stats();
-            serde_json::json!({
-                "stageKey": key.to_string(),
-                "pipelineId": key.pipeline.as_str(),
-                "lenBytes": stats.len,
-                "capacityBytes": stats.capacity,
-                "highWaterBytes": stats.high_water_bytes,
-                "blockedWrites": stats.blocked_writes,
-                "blockedWriteUs": stats.blocked_write_us,
-            })
+            api_view_models::avio_input_queue_json(
+                key,
+                stats.len,
+                stats.capacity,
+                stats.high_water_bytes,
+                stats.blocked_writes,
+                stats.blocked_write_us,
+            )
         })
         .collect();
     let avio_egress_queues: Vec<serde_json::Value> = egress_queues
         .iter()
         .map(|(output_id, queue)| {
             let stats = queue.stats();
-            serde_json::json!({
-                "outputId": output_id,
-                "lenBytes": stats.len,
-                "capacityBytes": stats.capacity,
-                "highWaterBytes": stats.high_water_bytes,
-                "blockedWrites": stats.blocked_writes,
-                "blockedWriteUs": stats.blocked_write_us,
-            })
+            api_view_models::avio_egress_queue_json(
+                output_id,
+                stats.len,
+                stats.capacity,
+                stats.high_water_bytes,
+                stats.blocked_writes,
+                stats.blocked_write_us,
+            )
         })
         .collect();
     let avio_total_len_bytes: usize = avio_input_queues
@@ -346,25 +323,23 @@ pub(crate) async fn engine_telemetry(engine: &MediaEngine) -> serde_json::Value 
         .map(|value| value as usize)
         .sum();
 
-    serde_json::json!({
-        "generatedAt": generated_at,
-        "ingests": ingest_arr,
-        "stages": stage_arr,
-        "egresses": egress_arr,
-        "activeTranscoderBuffers": buffers.len(),
-        "memoryAccounting": {
-            "retainedPayloadBytes": retained_payload_bytes,
-            "sourceRings": source_rings,
-            "transcoderRings": transcoder_rings,
-            "tsMuxerRings": ts_muxer_rings,
-            "avioQueues": {
-                "totalLenBytes": avio_total_len_bytes,
-                "totalCapacityBytes": avio_total_capacity_bytes,
-                "inputQueues": avio_input_queues,
-                "egressQueues": avio_egress_queues,
-            },
-        },
-    })
+    api_view_models::engine_telemetry_json(
+        generated_at,
+        ingest_arr,
+        stage_arr,
+        egress_arr,
+        buffers.len(),
+        api_view_models::memory_accounting_json(
+            retained_payload_bytes,
+            source_rings,
+            transcoder_rings,
+            ts_muxer_rings,
+            avio_total_len_bytes,
+            avio_total_capacity_bytes,
+            avio_input_queues,
+            avio_egress_queues,
+        ),
+    )
 }
 
 pub(crate) async fn pipeline_telemetry(
@@ -379,58 +354,35 @@ pub(crate) async fn pipeline_telemetry(
     let pipelines = engine.ingests.pipelines.read().await;
     let buffers = engine.stages.buffers.read().await;
 
-    let ingest = ingests.get(pipeline_id).map(|ingest| {
-        serde_json::json!({
-            "protocol": ingest.protocol,
-            "streamKey": ingest.stream_key,
-            "uptimeSecs": ingest.start_time.elapsed().as_secs_f64(),
-            "bytesReceived": ingest.bytes_received.load(Ordering::Relaxed),
-            "video": ingest.video,
-            "audio": ingest.audio,
-            "metrics": ingest.metrics.snapshot(),
-        })
-    });
+    let ingest = ingests
+        .get(pipeline_id)
+        .map(api_view_models::pipeline_ingest_telemetry_json);
 
-    let ring_info = pipelines.get(pipeline_id).map(|ring| {
-        let (fill, cap) = ring.fill_and_capacity();
-        let readers: Vec<serde_json::Value> = ring
-            .reader_snapshots()
-            .into_iter()
-            .map(|reader| {
-                serde_json::json!({
-                    "name": reader.name,
-                    "lagSlots": reader.lag_slots,
-                    "overflowCount": reader.overflow_count,
-                    "packetAgeMs": reader.packet_age_ms,
-                })
-            })
-            .collect();
-        serde_json::json!({
-            "fill": fill,
-            "capacity": cap,
-            "fillPercent": (fill * 100).checked_div(cap).unwrap_or(0),
-            "estimatedPktRatePerSec": ring.estimated_pkt_rate.load(Ordering::Relaxed),
-            "bufferDepthSecs": ring.buffer_depth_secs(),
-            "payloadStats": api_view_models::ring_payload_stats_json(ring),
-            "readers": readers,
-        })
-    });
+    let ring_info = pipelines
+        .get(pipeline_id)
+        .map(|ring| api_view_models::pipeline_source_ring_json(ring));
 
     let stages: Vec<serde_json::Value> = all_stage_metrics
         .iter()
         .filter(|(key, _)| key.pipeline.as_str() == pipeline_id)
         .map(|(key, metrics)| {
-            let mut val = serde_json::json!({
-                "kind": key.kind.to_string(),
-                "metrics": metrics.snapshot(),
-            });
-            if let Some(pm) = all_pipe_metrics.get(key) {
-                val["pipeMetrics"] = pm.snapshot();
-            }
+            let mut val = api_view_models::stage_telemetry_row_json(
+                key,
+                metrics.snapshot(),
+                all_pipe_metrics.get(key).map(|pm| pm.snapshot()),
+                None,
+                None,
+            );
             if let Some((ring, token)) = buffers.get(key) {
                 val["active"] = serde_json::json!(!token.is_cancelled());
                 val["payloadStats"] = api_view_models::ring_payload_stats_json(ring);
             }
+            val.as_object_mut()
+                .expect("stage telemetry rows are objects")
+                .remove("stageKey");
+            val.as_object_mut()
+                .expect("stage telemetry rows are objects")
+                .remove("pipelineId");
             val
         })
         .collect();
@@ -443,14 +395,14 @@ pub(crate) async fn pipeline_telemetry(
         })
         .collect();
 
-    serde_json::json!({
-        "generatedAt": generated_at,
-        "pipelineId": pipeline_id,
-        "ingest": ingest,
-        "sourceRing": ring_info,
-        "stages": stages,
-        "egresses": pipeline_egresses,
-    })
+    api_view_models::pipeline_telemetry_json(
+        generated_at,
+        pipeline_id,
+        ingest,
+        ring_info,
+        stages,
+        pipeline_egresses,
+    )
 }
 
 pub(crate) async fn stage_telemetry(
@@ -463,14 +415,12 @@ pub(crate) async fn stage_telemetry(
     let all_pipe_metrics = engine.stages.pipe_metrics.read().await;
     let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
 
-    Some(serde_json::json!({
-        "generatedAt": chrono::Utc::now().to_rfc3339(),
-        "stageKey": key.to_string(),
-        "pipelineId": key.pipeline.as_str(),
-        "kind": key.kind.to_string(),
-        "metrics": metrics.snapshot(),
-        "pipeMetrics": pipe,
-    }))
+    Some(api_view_models::single_stage_telemetry_json(
+        chrono::Utc::now().to_rfc3339(),
+        key,
+        metrics.snapshot(),
+        pipe,
+    ))
 }
 
 pub(crate) async fn stage_telemetry_by_display(
@@ -486,14 +436,12 @@ pub(crate) async fn stage_telemetry_by_display(
     let all_pipe_metrics = engine.stages.pipe_metrics.read().await;
     let pipe = all_pipe_metrics.get(key).map(|pm| pm.snapshot());
 
-    Some(serde_json::json!({
-        "generatedAt": chrono::Utc::now().to_rfc3339(),
-        "stageKey": key.to_string(),
-        "pipelineId": key.pipeline.as_str(),
-        "kind": key.kind.to_string(),
-        "metrics": metrics.snapshot(),
-        "pipeMetrics": pipe,
-    }))
+    Some(api_view_models::single_stage_telemetry_json(
+        chrono::Utc::now().to_rfc3339(),
+        key,
+        metrics.snapshot(),
+        pipe,
+    ))
 }
 
 pub(crate) async fn processing_graph(
