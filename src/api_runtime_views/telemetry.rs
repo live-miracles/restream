@@ -1,3 +1,8 @@
+//! API/runtime telemetry adapters for engine-, pipeline-, and stage-scoped
+//! metrics views.
+//! This file owns JSON shaping for queue, ring, and stage telemetry while the
+//! runtime layer continues to own the underlying counters and registries.
+
 use crate::api_view_models;
 use crate::media::engine::MediaEngine;
 

@@ -1,3 +1,8 @@
+//! API/runtime graph adapters for visualizing a pipeline's active processing
+//! topology.
+//! This file owns the HTTP-facing node/edge projection over runtime stage and
+//! output state, including packetizer, recording, and preview branches.
+
 use crate::api_view_models;
 use crate::application::output_path::OutputPath;
 use crate::domain::stage::{StageKey, StageKind};

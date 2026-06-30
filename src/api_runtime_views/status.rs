@@ -1,3 +1,8 @@
+//! API/runtime status adapters for live operational snapshots.
+//! This file owns HTTP-facing shaping for output status and health views that
+//! read current engine state plus recent outcomes, retry state, recording, and
+//! HLS activity without pushing those JSON concerns back into `MediaEngine`.
+
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
