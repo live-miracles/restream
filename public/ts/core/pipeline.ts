@@ -153,6 +153,7 @@ function parsePipelinesInfo(
       inputSource: p.inputSource || null,
       srtIngestPolicy: p.srtIngestPolicy || null,
       ingestUrls: resolveIngestUrls(p),
+      fileIngest: p.fileIngest || null,
       input: {
         status: inputStatus,
         time: inputTime,
@@ -229,6 +230,7 @@ function parsePipelinesInfo(
         key: null,
         inputSource: null,
         srtIngestPolicy: null,
+        fileIngest: null,
         input: {
           status: "off",
           time: null,

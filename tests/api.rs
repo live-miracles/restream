@@ -617,6 +617,7 @@ async fn config_get_returns_structured_data() {
     assert!(json["serverName"].is_string());
     assert_eq!(json["ingestHost"], "");
     assert_eq!(json["recordingSettings"]["retainSourceTs"], false);
+    assert_eq!(json["pipelines"][0]["fileIngest"]["configured"], false);
     assert_eq!(
         json["pipelines"][0]["ingestUrls"]["rtmp"],
         "rtmp://localhost:1935/live/key01"
@@ -926,6 +927,9 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["pipelines"][0]["inputSource"], "file:clip.mp4");
+    assert_eq!(json["pipelines"][0]["fileIngest"]["configured"], true);
+    assert_eq!(json["pipelines"][0]["fileIngest"]["filename"], "clip.mp4");
+    assert_eq!(json["pipelines"][0]["fileIngest"]["running"], false);
 
     let resp = app
         .clone()
@@ -951,6 +955,7 @@ async fn pipeline_file_ingest_is_scoped_to_pipeline_stream_key() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert!(json["pipelines"][0]["inputSource"].is_null());
+    assert_eq!(json["pipelines"][0]["fileIngest"]["configured"], false);
 }
 
 // --- Lifecycle history ---

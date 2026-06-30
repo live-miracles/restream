@@ -94,6 +94,17 @@ export interface ConfigPipeline {
   inputSource?: string | null;
   srtIngestPolicy?: SrtPipelineIngestConfig | null;
   ingestUrls?: IngestUrls;
+  fileIngest?: PipelineFileIngestState | null;
+}
+
+export interface PipelineFileIngestState {
+  configured: boolean;
+  id?: string;
+  filename?: string;
+  streamKey?: string;
+  loop?: boolean;
+  startTime?: string;
+  running: boolean;
 }
 
 export interface ConfigOutput {
@@ -346,6 +357,7 @@ export interface PipelineView {
   inputSource: string | null;
   srtIngestPolicy?: SrtPipelineIngestConfig | null;
   ingestUrls: IngestUrls;
+  fileIngest: PipelineFileIngestState | null;
   input: InputView;
   outs: OutputView[];
   stats: PipelineStats;

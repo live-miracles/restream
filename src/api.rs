@@ -236,6 +236,31 @@ fn pipeline_response_json(
     })
 }
 
+async fn pipeline_response_json_with_file_ingest(
+    state: &AppState,
+    pipeline: &Pipeline,
+    effective_ingest_host: &str,
+    rtmp_port: u16,
+    srt_port: u16,
+) -> serde_json::Value {
+    let mut value = pipeline_response_json(pipeline, effective_ingest_host, rtmp_port, srt_port);
+    let ingest = db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key)
+        .await
+        .ok()
+        .flatten();
+    let running = match ingest.as_ref() {
+        Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
+        None => false,
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "fileIngest".to_string(),
+            file_ingest_response(ingest, running),
+        );
+    }
+    value
+}
+
 // Hex encoding helper
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -910,17 +935,19 @@ async fn config_get_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let pipelines = raw_pipelines
-        .iter()
-        .map(|pipeline| {
-            pipeline_response_json(
+    let mut pipelines = Vec::with_capacity(raw_pipelines.len());
+    for pipeline in &raw_pipelines {
+        pipelines.push(
+            pipeline_response_json_with_file_ingest(
+                &state,
                 pipeline,
                 effective_ingest_host,
                 state.ports.rtmp,
                 state.ports.srt,
             )
-        })
-        .collect::<Vec<_>>();
+            .await,
+        );
+    }
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
     let jobs = db::list_jobs(&state.db).await.unwrap_or_default();
