@@ -1,3 +1,4 @@
+pub mod egress;
 pub mod ingest;
 pub mod ingest_security;
 pub mod output_path;

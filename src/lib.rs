@@ -52,7 +52,6 @@ pub mod runtime_info;
 pub mod test_fixtures;
 pub mod types;
 
-use crate::application::output_path::OutputPath;
 use crate::application::reconcile::{
     OutputFailureWindow, OutputStartAction, OutputStopAction, RecordingCommand,
     build_recording_reconcile_plan, collect_needed_stage_keys, decide_output_start_action,
@@ -646,103 +645,10 @@ pub async fn run_app() {
                         "output job started",
                     );
 
-                    // Get source pipeline ring buffer
-                    let source_buf = engine.get_or_create_pipeline(&output.pipeline_id).await;
-
-                    // ── Ring-buffer routing ────────────────────────────────────────────
-                    //
-                    // Passthrough (source/custom): read directly from source_ring.
-                    // Transcoded  (e.g. 720p):     route through a shared transcoder
-                    //   stage that produces its own output_ring.  All egresses for the
-                    //   same (pipeline, preset) share one stage process and one ring.
-                    //
-                    // Stage graph:
-                    //   source_ring
-                    //     │  [if video preset]          video:preset shared stage
-                    //     │  [if audio routing suffix]  audio filter shared stage
-                    //     │  [if RTMP + H.265 ingest]   hevc_to_h264:from:<upstream>
-                    //     ↓
-                    //   ring_buf   ←── egress reads from here
-                    //
-                    // Transcoder backend: external by default (subprocess FFmpeg,
-                    // stdin→stdout).  Set RESTREAM_USE_INTERNAL_TRANSCODER=1 for the
-                    // in-process libavcodec path.  See docs/media-pipeline.md.
-                    let output_path = OutputPath::resolve(
-                        output.pipeline_id.as_str(),
-                        &output.encoding,
-                        &output.url,
-                    );
-                    let ingest_video_codec = engine.ingest_video_codec(&output.pipeline_id).await;
-                    // Stage graph (new design — H.265→H.264 conversion at the output
-                    // edge, not up-front):
-                    //
-                    //   source_ring (H.265 or H.264)
-                    //     │  [Stage 1, if preset] video:NNNp   ← preserves input codec
-                    //     │  [Stage 2, if audio]  audio filter ← shared by RTMP + SRT
-                    //     │  [Stage 3, RTMP only] hevc_to_h264 ← keyed by upstream
-                    //     ↓
-                    //   ring_buf  ←── egress reads from here
-                    //
-                    // SRT outputs receive native H.265 at the target resolution.
-                    // RTMP outputs get one shared hevc_to_h264 per (pipeline, preset)
-                    // applied after the video+audio stages, avoiding a redundant
-                    // source-resolution encode pass.
-                    // Pass the ingest codec as override so the video:preset ring is
-                    // tagged with the correct codec hint for downstream audio stages
-                    // and egress writers (source ring has no hint; active_ingests is
-                    // the authoritative source).
-                    let ingest_codec_override =
-                        output_path.ingest_codec_override(ingest_video_codec.as_deref());
-
-                    // Stage 1: video transcode from source ring (H.265 flows through
-                    // directly; build_stage_ffmpeg_args picks libx265 vs libx264 from
-                    // the input_codec_override passed into the stage).
-                    let video_buf = if let Some(stage) = output_path.video_stage() {
-                        engine
-                            .get_or_create_transcoder(
-                                &output.pipeline_id,
-                                stage.kind,
-                                source_buf.clone(),
-                                ingest_codec_override,
-                            )
-                            .await
-                    } else {
-                        source_buf.clone()
-                    };
-
-                    // Stage 2: optional audio filter (keyed on video stage to prevent
-                    // cross-contamination between presets). Shared between RTMP and SRT
-                    // egresses on the same preset.
-                    let pre_h264_buf = if let Some(stage) = output_path.audio_stage() {
-                        engine
-                            .get_or_create_transcoder(
-                                &output.pipeline_id,
-                                stage.kind,
-                                video_buf.clone(),
-                                None,
-                            )
-                            .await
-                    } else {
-                        video_buf.clone()
-                    };
-
-                    // Stage 3: H.265→H.264 conversion for RTMP only (applied after
-                    // audio routing so the converter sees the selected audio tracks).
-                    // Keyed by terminal_kind so RTMP-passthrough and RTMP-720p each
-                    // get their own converter, and all RTMP egresses on the same preset
-                    // share it.
+                    // Resolve the stage graph for this output and return the ring
+                    // the protocol-specific sender should read from.
                     let ring_buf =
-                        if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
-                            engine
-                                .get_or_create_h264_transcoder(
-                                    &output.pipeline_id,
-                                    output_path.codec_edge_upstream_kind().clone(),
-                                    pre_h264_buf,
-                                )
-                                .await
-                        } else {
-                            pre_h264_buf
-                        };
+                        crate::application::egress::prepare_output_ring(&engine, output).await;
 
                     // Register egress and get an attempt-scoped handle so stale
                     // workers cannot later scribble over a replacement session.
