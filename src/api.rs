@@ -46,12 +46,13 @@ use crate::diag;
 use crate::domain::ingest_security::IngestSecurityConfig;
 use crate::domain::srt_ingest::{SrtGlobalIngestConfig, SrtPipelineIngestConfig};
 use crate::events;
+use crate::logging::types::AppLogFilters;
 use crate::media::engine::MediaEngine;
 use crate::media::hls::{HlsSegmentVariant, HlsStore};
 use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
 use crate::media::srt::{SrtIngestPolicyStore, serialize_pipeline_srt_ingest_policy};
-use crate::types::{AppLogFilters, Ingest, Pipeline};
+use crate::types::{Ingest, Pipeline};
 
 /// Maximum byte lengths for user-supplied string fields stored in SQLite.
 /// These prevent both memory exhaustion and bloated DB rows.

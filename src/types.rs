@@ -1,10 +1,9 @@
-//! Shared DTOs and persistence row shapes that are still used across storage,
-//! orchestration, and API layers.
-//! This file is intentionally narrower than the domain modules: reusable policy
-//! configs are re-exported from `crate::domain`, while these structs remain the
-//! cross-layer records that still back SQLite rows and JSON payloads.
+//! Shared pipeline/media DTOs and persistence row shapes that are still used
+//! across storage, orchestration, and API layers.
+//! Domain policy configs and logging payloads live in their own modules; this
+//! file is for the remaining cross-layer records that still back SQLite rows
+//! and JSON payloads for pipelines, outputs, jobs, and file ingests.
 
-pub use crate::logging::types::{AppLogEntry, AppLogFilters, AppLogRow};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
