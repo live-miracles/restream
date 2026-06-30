@@ -1059,12 +1059,6 @@
             </div>
             <div class="flex shrink-0 items-center gap-2">
               <button
-                class="btn btn-xs btn-accent btn-outline hidden"
-                id="file-ingest-pipe-btn"
-              >
-                Start File
-              </button>
-              <button
                 class="btn btn-xs btn-accent btn-outline"
                 id="record-pipe-btn"
               >
@@ -1206,14 +1200,22 @@
               id="file-source-section"
               class="border-base-content/10 bg-base-100 hidden rounded-lg border p-4"
             >
-              <div class="flex items-center gap-2">
-                <span class="text-base-content/75 text-sm font-semibold"
-                  >Source File:</span
+              <div class="flex items-center gap-3">
+                <div class="min-w-0 flex-1">
+                  <span class="text-base-content/75 text-sm font-semibold"
+                    >Source File:</span
+                  >
+                  <code
+                    id="file-source-inline"
+                    class="text-base-content/90 ml-2 min-w-0 truncate font-mono text-sm"
+                  ></code>
+                </div>
+                <button
+                  class="btn btn-xs btn-accent btn-outline hidden shrink-0"
+                  id="file-ingest-pipe-btn"
                 >
-                <code
-                  id="file-source-inline"
-                  class="text-base-content/90 min-w-0 flex-1 truncate font-mono text-sm"
-                ></code>
+                  Start File
+                </button>
               </div>
             </section>
 
