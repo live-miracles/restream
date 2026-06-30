@@ -165,9 +165,11 @@ Progress so far:
 
 - started: `application::ports::PipelineLookup`
 - started: `application::ports::PipelineCatalog`
+- started: `application::ports::IngestLookup`
 - started: `application::ports::MetaStore`
 - started: `application::egress` shared output stage/ring preparation for lib runtime wiring
 - started: `application::ingest` stream-key lookup/auth helpers
+- started: `application::file_ingest` read-side ingest resolution shared by api handlers
 - started: `application::ingest_security` MetaStore-backed config loading
 - started: `application::recording` meta-backed recording enablement helpers for lib/api orchestration
 - started: `application::recording` settings load/save extracted from `media::recording`
@@ -217,6 +219,7 @@ Current smell:
 Target:
 
 - `application::ports::PipelineLookup`
+- `application::ports::IngestLookup`
 - `db` implements the trait
 - ingest protocols receive the port or a repository wrapper
 

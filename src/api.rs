@@ -32,8 +32,13 @@ use tracing::{error, warn};
 
 use crate::alerts;
 use crate::api_view_models;
+use crate::application::file_ingest::{
+    ResolveFileIngestError, list_file_ingests_for_stream_key, load_configured_file_ingest,
+    load_file_ingest_by_id, resolve_file_ingest_context,
+};
+use crate::application::ingest::lookup_pipeline_by_stream_key;
 use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
-use crate::application::ports::{SqliteMetaStore, SqlitePipelineLookup};
+use crate::application::ports::{SqliteIngestLookup, SqliteMetaStore, SqlitePipelineLookup};
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
 use crate::application::srt_ingest::{
     SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config, refresh_policy_store,
@@ -900,18 +905,24 @@ async fn config_get_handler(
     };
 
     let mut pipelines = Vec::with_capacity(raw_pipelines.len());
+    let ingest_lookup = SqliteIngestLookup::new(state.db.clone());
     for pipeline in &raw_pipelines {
-        pipelines.push(
-            api_view_models::pipeline_response_json_with_file_ingest(
-                &state.db,
-                &state.engine,
-                pipeline,
-                effective_ingest_host,
-                state.ports.rtmp,
-                state.ports.srt,
-            )
-            .await,
-        );
+        let ingest = load_configured_file_ingest(&ingest_lookup, &pipeline.stream_key)
+            .await
+            .ok()
+            .flatten();
+        let running = match ingest.as_ref() {
+            Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
+            None => false,
+        };
+        pipelines.push(api_view_models::pipeline_response_json_with_file_ingest(
+            pipeline,
+            effective_ingest_host,
+            state.ports.rtmp,
+            state.ports.srt,
+            ingest,
+            running,
+        ));
     }
 
     let outputs = db::list_outputs(&state.db).await.unwrap_or_default();
@@ -2292,14 +2303,20 @@ async fn stop_file_ingest_child(engine: &MediaEngine, ingest_id: &str) {
 }
 
 async fn unregister_file_ingest_for_stream_key(state: &AppState, stream_key: &str) {
-    if let Ok(Some(pipeline)) = db::get_pipeline_by_stream_key(&state.db, stream_key).await {
+    if let Ok(Some(pipeline)) =
+        lookup_pipeline_by_stream_key(&SqlitePipelineLookup::new(state.db.clone()), stream_key)
+            .await
+    {
         state.engine.unregister_ingest(&pipeline.id).await;
     }
 }
 
 async fn stop_file_ingests_for_stream_key(state: &AppState, stream_key: &str) {
     unregister_file_ingest_for_stream_key(state, stream_key).await;
-    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, stream_key).await {
+    if let Ok(ingests) =
+        list_file_ingests_for_stream_key(&SqliteIngestLookup::new(state.db.clone()), stream_key)
+            .await
+    {
         for ingest in ingests {
             stop_file_ingest_child(&state.engine, &ingest.id).await;
             state.engine.clear_file_ingest_running(&ingest.id).await;
@@ -2325,7 +2342,12 @@ async fn pipeline_file_ingest_get_handler(
         _ => return (StatusCode::NOT_FOUND, "Pipeline not found").into_response(),
     };
 
-    let ingest = match db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key).await {
+    let ingest = match load_configured_file_ingest(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &pipeline.stream_key,
+    )
+    .await
+    {
         Ok(ingest) => ingest,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -2378,7 +2400,12 @@ async fn pipeline_file_ingest_put_handler(
     let start_time = payload.start_time.unwrap_or_default();
     let live_optimized = payload.live_optimized.unwrap_or(false);
     let target_gop_seconds = sanitize_target_gop_seconds(payload.target_gop_seconds);
-    let existing = match db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key).await {
+    let existing = match load_configured_file_ingest(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &pipeline.stream_key,
+    )
+    .await
+    {
         Ok(ingest) => ingest,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -2419,7 +2446,12 @@ async fn pipeline_file_ingest_put_handler(
         }
     };
 
-    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, &pipeline.stream_key).await {
+    if let Ok(ingests) = list_file_ingests_for_stream_key(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &pipeline.stream_key,
+    )
+    .await
+    {
         for ingest in ingests.into_iter().filter(|ingest| ingest.id != saved.id) {
             let _ = db::delete_ingest(&state.db, &ingest.id).await;
         }
@@ -2463,7 +2495,12 @@ async fn pipeline_file_ingest_delete_handler(
     };
 
     stop_file_ingests_for_stream_key(&state, &pipeline.stream_key).await;
-    if let Ok(ingests) = db::list_ingests_for_stream_key(&state.db, &pipeline.stream_key).await {
+    if let Ok(ingests) = list_file_ingests_for_stream_key(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &pipeline.stream_key,
+    )
+    .await
+    {
         for ingest in ingests {
             let _ = db::delete_ingest(&state.db, &ingest.id).await;
         }
@@ -2837,7 +2874,9 @@ async fn ingests_delete_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    if let Ok(Some(ingest)) = db::get_ingest(&state.db, &id).await {
+    if let Ok(Some(ingest)) =
+        load_file_ingest_by_id(&SqliteIngestLookup::new(state.db.clone()), &id).await
+    {
         unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;
     }
     stop_file_ingest_child(&state.engine, &id).await;
@@ -2860,10 +2899,35 @@ async fn ingests_start_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let ingest = match db::get_ingest(&state.db, &id).await {
-        Ok(Some(i)) => i,
-        _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
+    let resolved = match resolve_file_ingest_context(
+        &SqliteIngestLookup::new(state.db.clone()),
+        &SqlitePipelineLookup::new(state.db.clone()),
+        &id,
+    )
+    .await
+    {
+        Ok(Some(context)) => context,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
+        Err(ResolveFileIngestError::MissingPipelineForStreamKey(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "No pipeline found for stream key"})),
+            )
+                .into_response();
+        }
+        Err(ResolveFileIngestError::IngestLookup(_)) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(ResolveFileIngestError::PipelineLookup(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to resolve pipeline: {e}")})),
+            )
+                .into_response();
+        }
     };
+    let ingest = resolved.ingest;
+    let pipeline = resolved.pipeline;
 
     if state.engine.is_file_ingest_running(&id).await {
         return (
@@ -2881,24 +2945,6 @@ async fn ingests_start_handler(
         )
             .into_response();
     }
-
-    let pipeline = match db::get_pipeline_by_stream_key(&state.db, &ingest.stream_key).await {
-        Ok(Some(pipeline)) => pipeline,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "No pipeline found for stream key"})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to resolve pipeline: {e}")})),
-            )
-                .into_response();
-        }
-    };
 
     let ring_buffer = state.engine.get_or_create_pipeline(&pipeline.id).await;
     let Some(registration) = state
@@ -2986,9 +3032,11 @@ async fn ingests_stop_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    let ingest = match db::get_ingest(&state.db, &id).await {
-        Ok(Some(i)) => i,
-        _ => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
+    let ingest = match load_file_ingest_by_id(&SqliteIngestLookup::new(state.db.clone()), &id).await
+    {
+        Ok(Some(ingest)) => ingest,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Ingest not found").into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     unregister_file_ingest_for_stream_key(&state, &ingest.stream_key).await;

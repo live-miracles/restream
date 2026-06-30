@@ -1,4 +1,4 @@
-use crate::types::Pipeline;
+use crate::types::{Ingest, Pipeline};
 use sqlx::SqlitePool;
 use std::fmt;
 use std::future::Future;
@@ -8,6 +8,10 @@ pub type PipelineLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Pipeline>, PipelineLookupError>> + Send + 'a>>;
 pub type PipelineCatalogFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<Pipeline>, PipelineCatalogError>> + Send + 'a>>;
+pub type IngestLookupFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Ingest>, IngestLookupError>> + Send + 'a>>;
+pub type IngestCatalogFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<Ingest>, IngestLookupError>> + Send + 'a>>;
 pub type MetaLookupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<String>, MetaLookupError>> + Send + 'a>>;
 pub type MetaWriteFuture<'a> =
@@ -56,6 +60,27 @@ impl fmt::Display for PipelineCatalogError {
 impl std::error::Error for PipelineCatalogError {}
 
 #[derive(Debug, Clone)]
+pub struct IngestLookupError {
+    message: String,
+}
+
+impl IngestLookupError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for IngestLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IngestLookupError {}
+
+#[derive(Debug, Clone)]
 pub struct MetaLookupError {
     message: String,
 }
@@ -84,6 +109,12 @@ pub trait PipelineCatalog: Send + Sync {
     fn list_pipelines<'a>(&'a self) -> PipelineCatalogFuture<'a>;
 }
 
+pub trait IngestLookup: Send + Sync {
+    fn get_ingest<'a>(&'a self, id: &'a str) -> IngestLookupFuture<'a>;
+    fn get_ingest_by_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestLookupFuture<'a>;
+    fn list_ingests_for_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestCatalogFuture<'a>;
+}
+
 pub trait MetaStore: Send + Sync {
     fn get_meta<'a>(&'a self, key: &'a str) -> MetaLookupFuture<'a>;
 }
@@ -98,11 +129,22 @@ pub struct SqlitePipelineLookup {
 }
 
 #[derive(Clone)]
+pub struct SqliteIngestLookup {
+    pool: SqlitePool,
+}
+
+#[derive(Clone)]
 pub struct SqliteMetaStore {
     pool: SqlitePool,
 }
 
 impl SqlitePipelineLookup {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+impl SqliteIngestLookup {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
@@ -130,6 +172,32 @@ impl PipelineCatalog for SqlitePipelineLookup {
             crate::db::list_pipelines(&self.pool)
                 .await
                 .map_err(|err| PipelineCatalogError::new(err.to_string()))
+        })
+    }
+}
+
+impl IngestLookup for SqliteIngestLookup {
+    fn get_ingest<'a>(&'a self, id: &'a str) -> IngestLookupFuture<'a> {
+        Box::pin(async move {
+            crate::db::get_ingest(&self.pool, id)
+                .await
+                .map_err(|err| IngestLookupError::new(err.to_string()))
+        })
+    }
+
+    fn get_ingest_by_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestLookupFuture<'a> {
+        Box::pin(async move {
+            crate::db::get_ingest_by_stream_key(&self.pool, stream_key)
+                .await
+                .map_err(|err| IngestLookupError::new(err.to_string()))
+        })
+    }
+
+    fn list_ingests_for_stream_key<'a>(&'a self, stream_key: &'a str) -> IngestCatalogFuture<'a> {
+        Box::pin(async move {
+            crate::db::list_ingests_for_stream_key(&self.pool, stream_key)
+                .await
+                .map_err(|err| IngestLookupError::new(err.to_string()))
         })
     }
 }
@@ -206,6 +274,69 @@ mod tests {
         assert_eq!(pipelines.len(), 2);
         assert!(pipelines.iter().any(|pipeline| pipeline.id == "p1"));
         assert!(pipelines.iter().any(|pipeline| pipeline.id == "p2"));
+    }
+
+    #[tokio::test]
+    async fn sqlite_ingest_lookup_reads_ingest_by_id_and_latest_stream_key_entry() {
+        let pool = test_pool().await;
+        crate::db::create_ingest(
+            &pool,
+            "i1",
+            "clip.mp4",
+            "stream-key",
+            true,
+            "00:00:05",
+            true,
+            4,
+        )
+        .await
+        .unwrap();
+        crate::db::create_ingest(
+            &pool,
+            "i2",
+            "clip-latest.mp4",
+            "stream-key",
+            false,
+            "00:00:10",
+            false,
+            2,
+        )
+        .await
+        .unwrap();
+        let lookup = SqliteIngestLookup::new(pool);
+
+        let by_id = lookup.get_ingest("i1").await.unwrap();
+        let by_stream_key = lookup.get_ingest_by_stream_key("stream-key").await.unwrap();
+
+        assert_eq!(by_id.as_ref().map(|ingest| ingest.id.as_str()), Some("i1"));
+        assert_eq!(
+            by_stream_key.as_ref().map(|ingest| ingest.id.as_str()),
+            Some("i2")
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_ingest_lookup_lists_ingests_for_stream_key() {
+        let pool = test_pool().await;
+        crate::db::create_ingest(&pool, "i1", "clip.mp4", "stream-key", true, "", false, 2)
+            .await
+            .unwrap();
+        crate::db::create_ingest(&pool, "i2", "clip-2.mp4", "other-key", false, "", false, 2)
+            .await
+            .unwrap();
+        crate::db::create_ingest(&pool, "i3", "clip-3.mp4", "stream-key", false, "", false, 2)
+            .await
+            .unwrap();
+        let lookup = SqliteIngestLookup::new(pool);
+
+        let ingests = lookup
+            .list_ingests_for_stream_key("stream-key")
+            .await
+            .unwrap();
+
+        assert_eq!(ingests.len(), 2);
+        assert_eq!(ingests[0].id, "i1");
+        assert_eq!(ingests[1].id, "i3");
     }
 
     #[tokio::test]

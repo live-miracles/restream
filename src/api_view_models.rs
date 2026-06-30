@@ -6,7 +6,6 @@ use crate::media::engine::{
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::srt::parse_pipeline_srt_ingest_policy;
 use crate::types::{Ingest, Pipeline};
-use sqlx::SqlitePool;
 use std::sync::atomic::Ordering;
 
 pub(crate) fn pipeline_response_json(
@@ -31,23 +30,15 @@ pub(crate) fn pipeline_response_json(
     })
 }
 
-pub(crate) async fn pipeline_response_json_with_file_ingest(
-    db: &SqlitePool,
-    engine: &MediaEngine,
+pub(crate) fn pipeline_response_json_with_file_ingest(
     pipeline: &Pipeline,
     effective_ingest_host: &str,
     rtmp_port: u16,
     srt_port: u16,
+    ingest: Option<Ingest>,
+    running: bool,
 ) -> serde_json::Value {
     let mut value = pipeline_response_json(pipeline, effective_ingest_host, rtmp_port, srt_port);
-    let ingest = crate::db::get_ingest_by_stream_key(db, &pipeline.stream_key)
-        .await
-        .ok()
-        .flatten();
-    let running = match ingest.as_ref() {
-        Some(ingest) => engine.is_file_ingest_running(&ingest.id).await,
-        None => false,
-    };
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "fileIngest".to_string(),
@@ -804,6 +795,14 @@ mod tests {
         };
 
         let pipeline_json = pipeline_response_json(&pipeline, "ingest.example", 1935, 10080);
+        let pipeline_with_ingest = pipeline_response_json_with_file_ingest(
+            &pipeline,
+            "ingest.example",
+            1935,
+            10080,
+            Some(ingest.clone()),
+            true,
+        );
         let ingest_json = file_ingest_response(Some(ingest), true);
         let missing_ingest_json = file_ingest_response(None, false);
 
@@ -818,6 +817,9 @@ mod tests {
         );
         assert_eq!(pipeline_json["srtIngestPolicy"]["mode"], "encrypted");
         assert_eq!(pipeline_json["srtIngestPolicy"]["pbkeylen"], 24);
+        assert_eq!(pipeline_with_ingest["fileIngest"]["configured"], true);
+        assert_eq!(pipeline_with_ingest["fileIngest"]["filename"], "clip.mp4");
+        assert_eq!(pipeline_with_ingest["fileIngest"]["running"], true);
         assert_eq!(ingest_json["configured"], true);
         assert_eq!(ingest_json["filename"], "clip.mp4");
         assert_eq!(ingest_json["loop"], true);
