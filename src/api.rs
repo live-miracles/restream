@@ -31,6 +31,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, warn};
 
 use crate::alerts;
+use crate::api_view_models;
 use crate::application::ingest_security::INGEST_SECURITY_CONFIG_META_KEY;
 use crate::application::ports::{SqliteMetaStore, SqlitePipelineLookup};
 use crate::application::recording::{load_recording_enabled_map, recording_enabled_meta_key};
@@ -44,9 +45,7 @@ use crate::media::engine::MediaEngine;
 use crate::media::hls::{HlsSegmentVariant, HlsStore};
 use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
-use crate::media::srt::{
-    SrtIngestPolicyStore, parse_pipeline_srt_ingest_policy, serialize_pipeline_srt_ingest_policy,
-};
+use crate::media::srt::{SrtIngestPolicyStore, serialize_pipeline_srt_ingest_policy};
 use crate::types::*;
 
 /// Maximum byte lengths for user-supplied string fields stored in SQLite.
@@ -220,53 +219,6 @@ async fn refresh_srt_ingest_policy_store(state: &AppState) {
     {
         warn!(err = %error, "failed to refresh SRT ingest policy store");
     }
-}
-
-fn pipeline_response_json(
-    pipeline: &Pipeline,
-    effective_ingest_host: &str,
-    rtmp_port: u16,
-    srt_port: u16,
-) -> serde_json::Value {
-    serde_json::json!({
-        "id": pipeline.id,
-        "name": pipeline.name,
-        "streamKey": pipeline.stream_key,
-        "inputSource": pipeline.input_source,
-        "encoding": pipeline.encoding,
-        "srtIngestPolicy": parse_pipeline_srt_ingest_policy(
-            pipeline.srt_ingest_policy.as_deref()
-        ),
-        "ingestUrls": {
-            "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, rtmp_port, pipeline.stream_key),
-            "srt": format!("srt://{}:{}?streamid=publish:live/{}", effective_ingest_host, srt_port, pipeline.stream_key)
-        }
-    })
-}
-
-async fn pipeline_response_json_with_file_ingest(
-    state: &AppState,
-    pipeline: &Pipeline,
-    effective_ingest_host: &str,
-    rtmp_port: u16,
-    srt_port: u16,
-) -> serde_json::Value {
-    let mut value = pipeline_response_json(pipeline, effective_ingest_host, rtmp_port, srt_port);
-    let ingest = db::get_ingest_by_stream_key(&state.db, &pipeline.stream_key)
-        .await
-        .ok()
-        .flatten();
-    let running = match ingest.as_ref() {
-        Some(ingest) => state.engine.is_file_ingest_running(&ingest.id).await,
-        None => false,
-    };
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "fileIngest".to_string(),
-            file_ingest_response(ingest, running),
-        );
-    }
-    value
 }
 
 // Hex encoding helper
@@ -950,8 +902,9 @@ async fn config_get_handler(
     let mut pipelines = Vec::with_capacity(raw_pipelines.len());
     for pipeline in &raw_pipelines {
         pipelines.push(
-            pipeline_response_json_with_file_ingest(
-                &state,
+            api_view_models::pipeline_response_json_with_file_ingest(
+                &state.db,
+                &state.engine,
                 pipeline,
                 effective_ingest_host,
                 state.ports.rtmp,
@@ -1126,7 +1079,7 @@ async fn pipelines_get_handler(
             let pipelines = pipelines
                 .iter()
                 .map(|pipeline| {
-                    pipeline_response_json(
+                    api_view_models::pipeline_response_json(
                         pipeline,
                         &ingest_host,
                         state.ports.rtmp,
@@ -1163,7 +1116,7 @@ async fn pipeline_detail_handler(
         .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
 
     Json(serde_json::json!({
-        "pipeline": pipeline_response_json(
+        "pipeline": api_view_models::pipeline_response_json(
             &pipeline,
             &ingest_host,
             state.ports.rtmp,
@@ -1292,7 +1245,7 @@ async fn pipelines_post_handler(
                 StatusCode::CREATED,
                 Json(serde_json::json!({
                     "message": "Pipeline created",
-                    "pipeline": pipeline_response_json(
+                    "pipeline": api_view_models::pipeline_response_json(
                         &pipeline,
                         &ingest_host,
                         state.ports.rtmp,
@@ -1415,7 +1368,7 @@ async fn pipelines_update_handler(
                 .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
             Json(serde_json::json!({
                 "message": "Pipeline updated",
-                "pipeline": pipeline_response_json(
+                "pipeline": api_view_models::pipeline_response_json(
                     &updated,
                     &ingest_host,
                     state.ports.rtmp,
@@ -2240,26 +2193,6 @@ fn sanitize_target_gop_seconds(value: Option<u32>) -> u32 {
         .max(1)
 }
 
-fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> serde_json::Value {
-    match ingest {
-        Some(ingest) => serde_json::json!({
-            "configured": true,
-            "id": ingest.id,
-            "filename": ingest.filename,
-            "streamKey": ingest.stream_key,
-            "loop": ingest.loop_flag,
-            "startTime": ingest.start_time,
-            "liveOptimized": ingest.live_optimized,
-            "targetGopSeconds": ingest.target_gop_seconds,
-            "running": running
-        }),
-        None => serde_json::json!({
-            "configured": false,
-            "running": false
-        }),
-    }
-}
-
 struct SpawnedFileIngestChild {
     child: Child,
     stdout: ChildStdout,
@@ -2401,7 +2334,7 @@ async fn pipeline_file_ingest_get_handler(
         None => false,
     };
 
-    Json(file_ingest_response(ingest, running)).into_response()
+    Json(api_view_models::file_ingest_response(ingest, running)).into_response()
 }
 
 async fn pipeline_file_ingest_put_handler(
@@ -2508,7 +2441,7 @@ async fn pipeline_file_ingest_put_handler(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    Json(file_ingest_response(Some(saved), false)).into_response()
+    Json(api_view_models::file_ingest_response(Some(saved), false)).into_response()
 }
 
 async fn pipeline_file_ingest_delete_handler(

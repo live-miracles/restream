@@ -4,7 +4,78 @@ use crate::media::engine::{
     RecentIngestOutcome,
 };
 use crate::media::ring_buffer::RingBuffer;
+use crate::media::srt::parse_pipeline_srt_ingest_policy;
+use crate::types::{Ingest, Pipeline};
+use sqlx::SqlitePool;
 use std::sync::atomic::Ordering;
+
+pub(crate) fn pipeline_response_json(
+    pipeline: &Pipeline,
+    effective_ingest_host: &str,
+    rtmp_port: u16,
+    srt_port: u16,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": pipeline.id,
+        "name": pipeline.name,
+        "streamKey": pipeline.stream_key,
+        "inputSource": pipeline.input_source,
+        "encoding": pipeline.encoding,
+        "srtIngestPolicy": parse_pipeline_srt_ingest_policy(
+            pipeline.srt_ingest_policy.as_deref()
+        ),
+        "ingestUrls": {
+            "rtmp": format!("rtmp://{}:{}/live/{}", effective_ingest_host, rtmp_port, pipeline.stream_key),
+            "srt": format!("srt://{}:{}?streamid=publish:live/{}", effective_ingest_host, srt_port, pipeline.stream_key)
+        }
+    })
+}
+
+pub(crate) async fn pipeline_response_json_with_file_ingest(
+    db: &SqlitePool,
+    engine: &MediaEngine,
+    pipeline: &Pipeline,
+    effective_ingest_host: &str,
+    rtmp_port: u16,
+    srt_port: u16,
+) -> serde_json::Value {
+    let mut value = pipeline_response_json(pipeline, effective_ingest_host, rtmp_port, srt_port);
+    let ingest = crate::db::get_ingest_by_stream_key(db, &pipeline.stream_key)
+        .await
+        .ok()
+        .flatten();
+    let running = match ingest.as_ref() {
+        Some(ingest) => engine.is_file_ingest_running(&ingest.id).await,
+        None => false,
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "fileIngest".to_string(),
+            file_ingest_response(ingest, running),
+        );
+    }
+    value
+}
+
+pub(crate) fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> serde_json::Value {
+    match ingest {
+        Some(ingest) => serde_json::json!({
+            "configured": true,
+            "id": ingest.id,
+            "filename": ingest.filename,
+            "streamKey": ingest.stream_key,
+            "loop": ingest.loop_flag,
+            "startTime": ingest.start_time,
+            "liveOptimized": ingest.live_optimized,
+            "targetGopSeconds": ingest.target_gop_seconds,
+            "running": running
+        }),
+        None => serde_json::json!({
+            "configured": false,
+            "running": false
+        }),
+    }
+}
 
 pub(crate) fn egress_runtime_json(
     egress: &ActiveEgress,
@@ -702,6 +773,59 @@ mod tests {
     use super::*;
     use crate::domain::stage::StageKind;
     use crate::media::engine::RecentIngestOutcome;
+    use crate::media::srt::serialize_pipeline_srt_ingest_policy;
+    use crate::types::{SrtPipelineIngestConfig, SrtPipelineIngestMode};
+
+    #[test]
+    fn pipeline_response_helpers_preserve_pipeline_and_file_ingest_shape() {
+        let pipeline = Pipeline {
+            id: "pipeline-1".to_string(),
+            name: "Primary".to_string(),
+            stream_key: "stream-key".to_string(),
+            input_source: Some("file:clip.mp4".to_string()),
+            encoding: Some("copy".to_string()),
+            srt_ingest_policy: Some(
+                serialize_pipeline_srt_ingest_policy(&SrtPipelineIngestConfig {
+                    mode: SrtPipelineIngestMode::Encrypted,
+                    passphrase: Some("secret-pass".to_string()),
+                    pbkeylen: Some(24),
+                })
+                .unwrap(),
+            ),
+        };
+        let ingest = Ingest {
+            id: "ingest-1".to_string(),
+            filename: "clip.mp4".to_string(),
+            stream_key: pipeline.stream_key.clone(),
+            loop_flag: true,
+            start_time: "00:00:03".to_string(),
+            live_optimized: true,
+            target_gop_seconds: 3,
+        };
+
+        let pipeline_json = pipeline_response_json(&pipeline, "ingest.example", 1935, 10080);
+        let ingest_json = file_ingest_response(Some(ingest), true);
+        let missing_ingest_json = file_ingest_response(None, false);
+
+        assert_eq!(pipeline_json["id"], "pipeline-1");
+        assert_eq!(
+            pipeline_json["ingestUrls"]["rtmp"],
+            "rtmp://ingest.example:1935/live/stream-key"
+        );
+        assert_eq!(
+            pipeline_json["ingestUrls"]["srt"],
+            "srt://ingest.example:10080?streamid=publish:live/stream-key"
+        );
+        assert_eq!(pipeline_json["srtIngestPolicy"]["mode"], "encrypted");
+        assert_eq!(pipeline_json["srtIngestPolicy"]["pbkeylen"], 24);
+        assert_eq!(ingest_json["configured"], true);
+        assert_eq!(ingest_json["filename"], "clip.mp4");
+        assert_eq!(ingest_json["loop"], true);
+        assert_eq!(ingest_json["targetGopSeconds"], 3);
+        assert_eq!(ingest_json["running"], true);
+        assert_eq!(missing_ingest_json["configured"], false);
+        assert_eq!(missing_ingest_json["running"], false);
+    }
 
     #[test]
     fn apply_egress_retry_state_marks_value_as_retrying() {
