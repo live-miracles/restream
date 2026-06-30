@@ -1,4 +1,5 @@
 use crate::application::ports::{MetaLookupError, MetaStore, MetaStoreWriter};
+use crate::application::reconcile::RecordingCommand;
 use crate::media::engine::MediaEngine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -94,6 +95,45 @@ pub async fn spawn_recording_task(
     });
 
     cancel_token
+}
+
+pub async fn apply_recording_commands(
+    engine: Arc<MediaEngine>,
+    meta_store: &dyn MetaStore,
+    media_dir: &str,
+    commands: Vec<RecordingCommand>,
+) {
+    let needs_settings = commands
+        .iter()
+        .any(|command| matches!(command, RecordingCommand::Start { .. }));
+    let recording_settings = if needs_settings {
+        Some(load_recording_settings(meta_store).await)
+    } else {
+        None
+    };
+
+    for command in commands {
+        match command {
+            RecordingCommand::Start {
+                pipeline_name,
+                pipeline_id,
+                input_source,
+            } => {
+                spawn_recording_task(
+                    engine.clone(),
+                    pipeline_name,
+                    pipeline_id,
+                    input_source,
+                    media_dir.to_string(),
+                    recording_settings.clone().unwrap_or_default(),
+                )
+                .await;
+            }
+            RecordingCommand::Stop { pipeline_id } => {
+                engine.unregister_recording(&pipeline_id).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +285,44 @@ mod tests {
         wait_for_recording_shutdown(&engine, "pipeline-launch").await;
         assert!(!engine.is_recording_active("pipeline-launch").await);
 
+        let _ = std::fs::remove_dir_all(media_dir);
+    }
+
+    #[tokio::test]
+    async fn apply_recording_commands_starts_and_stops_recordings() {
+        let engine = Arc::new(MediaEngine::new());
+        let media_dir = unique_test_media_dir("recording-commands");
+        let store = FakeMetaStore {
+            values: Mutex::new(HashMap::from([(
+                RECORDING_SETTINGS_META_KEY.to_string(),
+                "{\"retainSourceTs\":true}".to_string(),
+            )])),
+            fail_keys: HashMap::new(),
+        };
+        let _existing = engine.register_recording("pipeline-stop").await;
+
+        apply_recording_commands(
+            engine.clone(),
+            &store,
+            media_dir.to_str().unwrap_or_default(),
+            vec![
+                RecordingCommand::Start {
+                    pipeline_name: "Start Me".to_string(),
+                    pipeline_id: "pipeline-start".to_string(),
+                    input_source: None,
+                },
+                RecordingCommand::Stop {
+                    pipeline_id: "pipeline-stop".to_string(),
+                },
+            ],
+        )
+        .await;
+
+        assert!(engine.is_recording_active("pipeline-start").await);
+        assert!(!engine.is_recording_active("pipeline-stop").await);
+
+        engine.unregister_recording("pipeline-start").await;
+        wait_for_recording_shutdown(&engine, "pipeline-start").await;
         let _ = std::fs::remove_dir_all(media_dir);
     }
 

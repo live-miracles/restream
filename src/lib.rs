@@ -53,9 +53,9 @@ pub mod test_fixtures;
 pub mod types;
 
 use crate::application::reconcile::{
-    OutputFailureWindow, OutputStartAction, OutputStopAction, RecordingCommand,
-    build_recording_reconcile_plan, collect_needed_stage_keys, decide_output_start_action,
-    decide_output_stop_action, next_output_retry_count,
+    OutputFailureWindow, OutputStartAction, OutputStopAction, build_recording_reconcile_plan,
+    collect_needed_stage_keys, decide_output_start_action, decide_output_stop_action,
+    next_output_retry_count,
 };
 use crate::domain::stage::StageKey;
 use crate::media::engine::MediaEngine;
@@ -1003,30 +1003,13 @@ pub async fn run_app() {
                 continue;
             }
         };
-        let recording_settings =
-            crate::application::recording::load_recording_settings(&meta_store).await;
-        for command in recording_commands {
-            match command {
-                RecordingCommand::Start {
-                    pipeline_name,
-                    pipeline_id,
-                    input_source,
-                } => {
-                    crate::application::recording::spawn_recording_task(
-                        engine.clone(),
-                        pipeline_name,
-                        pipeline_id,
-                        input_source,
-                        reconciler_media_dir.clone(),
-                        recording_settings.clone(),
-                    )
-                    .await;
-                }
-                RecordingCommand::Stop { pipeline_id } => {
-                    engine.unregister_recording(&pipeline_id).await;
-                }
-            }
-        }
+        crate::application::recording::apply_recording_commands(
+            engine.clone(),
+            &meta_store,
+            &reconciler_media_dir,
+            recording_commands,
+        )
+        .await;
 
         // Sweep idle HLS segmenters after the configured idle timeout
         // or if ingest disconnected.
