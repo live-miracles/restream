@@ -765,6 +765,9 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
   appendRoot(document, "div", "settings-mode-panel");
   appendRoot(document, "div", "settings-mode-content");
   appendRoot(document, "div", "status-mode-panel");
+  appendRoot(document, "div", "restream-process-indicator");
+  appendRoot(document, "span", "restream-process-dot");
+  appendRoot(document, "span", "restream-process-text");
 
   const requests = [];
   const streams = [];
@@ -892,6 +895,11 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
       ),
       true,
       "settings mode should subscribe only to restream lifecycle events",
+    );
+    assert.equal(
+      document.getElementById("restream-process-text")?.textContent,
+      "Running",
+      "settings mode should mark the Rust process as reachable after its metrics refresh",
     );
 
     requests.length = 0;

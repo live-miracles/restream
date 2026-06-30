@@ -381,6 +381,31 @@ runCheck("restream process indicator reacts to lifecycle logs and health recover
   assert.equal(label.textContent, "Degraded");
 });
 
+runCheck("restream process indicator keeps explicit lifecycle states ahead of API reachability hints", async () => {
+  const { document } = installFakeDom();
+  const badge = appendRoot(document, "div", "restream-process-indicator");
+  const dot = appendRoot(document, "span", "restream-process-dot");
+  const label = appendRoot(document, "span", "restream-process-text");
+  badge.appendChild(dot);
+  badge.appendChild(label);
+
+  const indicator = await loadCompiledFrontendModule(
+    "features/restream-process-indicator.js",
+  );
+
+  indicator.updateRestreamProcessIndicatorFromLog({
+    eventType: "restream.shutdown.completed",
+  });
+  assert.equal(label.textContent, "Stopped");
+
+  indicator.syncRestreamProcessIndicatorFromApiReachability();
+  assert.equal(
+    label.textContent,
+    "Stopped",
+    "API reachability should not overwrite an explicit lifecycle state",
+  );
+});
+
 runCheck("renderPipelineInfoColumn reuses publisher meta badges across refreshes", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "pipe-info-col");

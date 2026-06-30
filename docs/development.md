@@ -130,7 +130,9 @@ metrics-only modes still hit `/metrics/system` directly. Output start/stop,
 recording, and file-ingest controls now reuse runtime-only refreshes so they do
 not pull dashboard settings again after every toggle. Status mode now reuses
 its own restream log SSE instead of opening a second lifecycle-only dashboard
-stream on top.
+stream on top. Settings and media modes also use their existing metrics refresh
+to mark the Rust process indicator as running immediately, rather than waiting
+for a later lifecycle event to clear the initial "Connecting" state.
 
 ## Testing
 

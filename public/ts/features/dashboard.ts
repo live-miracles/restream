@@ -12,6 +12,7 @@ import {
   setServerConfig,
 } from "../core/utils.js";
 import {
+  syncRestreamProcessIndicatorFromApiReachability,
   syncRestreamProcessIndicatorFromHealth,
   updateRestreamProcessIndicatorFromLog,
 } from "./restream-process-indicator.js";
@@ -326,7 +327,13 @@ async function fetchAndRerender(): Promise<void> {
       state.metrics,
       nextMetrics as typeof state.metrics,
     );
-  syncRestreamProcessIndicatorFromHealth(state.health?.status);
+  if (runtimeResult?.health) {
+    syncRestreamProcessIndicatorFromHealth(state.health?.status);
+  } else if (nextMetrics !== null) {
+    syncRestreamProcessIndicatorFromApiReachability();
+  } else {
+    syncRestreamProcessIndicatorFromHealth(state.health?.status);
+  }
 
   const previousPipelines = state.pipelines;
   state.pipelines = parsePipelinesInfo(state.config, state.health);

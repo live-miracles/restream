@@ -95,6 +95,12 @@ export function syncRestreamProcessIndicatorFromHealth(
   }
 }
 
+export function syncRestreamProcessIndicatorFromApiReachability(): void {
+  if (currentIndicatorState === "connecting") {
+    setIndicatorState("running");
+  }
+}
+
 export function updateRestreamProcessIndicatorFromLog(log: AppLogRow): void {
   const eventType = String(log?.eventType || "")
     .trim()

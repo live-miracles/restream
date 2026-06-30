@@ -256,7 +256,9 @@ periodic poll.
 Settings and media also keep a narrower restream-scoped `event_class=lifecycle`
 feed open so the global Rust-process indicator can react to
 shutdown/fault/ready events without waking the heavier runtime health polls in
-those modes.
+those modes. Their successful `/metrics/system` refreshes also mark the Rust
+process as reachable immediately instead of leaving the indicator on
+"Connecting" until the next lifecycle event.
 The output-history and pipeline-history "Live" views use the same SSE endpoint
 with `pipeline_id`, `output_id`, and `event_class` filters plus `Last-Event-ID`
 resume cursors instead of periodic history re-polls.
