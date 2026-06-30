@@ -163,7 +163,9 @@ Why first:
 Progress so far:
 
 - started: `application::ports::PipelineLookup`
+- started: `application::ports::MetaStore`
 - started: `application::ingest` stream-key lookup/auth helpers
+- started: `application::srt_ingest` global config lookup via port
 - done: `application::output_path` for source/video/audio/codec-edge planning
 - next: `application::reconcile` so `lib.rs` owns less lifecycle orchestration
 

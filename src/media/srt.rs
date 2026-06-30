@@ -61,8 +61,7 @@ use crate::media::engine::{EgressRegistration, MediaEngine, PublisherQuality};
 use crate::media::ring_buffer::{MediaPacket, MediaType, Reader, RingBuffer};
 use crate::media::ts_chunk_ring::{TsChunkReader, TsChunkRing};
 use crate::types::{
-    DEFAULT_SRT_PBKEYLEN, Pipeline, ResolvedSrtIngestConfig, SrtGlobalIngestConfig,
-    SrtGlobalIngestMode, SrtPipelineIngestConfig,
+    Pipeline, ResolvedSrtIngestConfig, SrtGlobalIngestConfig, SrtPipelineIngestConfig,
 };
 
 // 256 slots covers the mux wakeup → SRT socket-write latency (sub-millisecond
@@ -74,8 +73,6 @@ const DEFAULT_TS_RING_CAPACITY: usize = 256;
 const MIN_TS_RING_CAPACITY: usize = 32;
 const MAX_TS_RING_CAPACITY: usize = 16_384;
 static TS_RING_CAPACITY: OnceLock<usize> = OnceLock::new();
-pub const SRT_INGEST_GLOBAL_CONFIG_META_KEY: &str = "srt_ingest_global_config";
-
 pub struct SrtIngestPolicyStore {
     inner: RwLock<SrtIngestPolicySnapshot>,
 }
@@ -3201,38 +3198,6 @@ fn srt_crypto_from_resolved(config: ResolvedSrtIngestConfig) -> Option<SrtCrypto
             pbkeylen,
         }),
     }
-}
-
-pub fn legacy_srt_global_config_from_env() -> Option<SrtGlobalIngestConfig> {
-    let passphrase = std::env::var("RESTREAM_SRT_PASSPHRASE").ok()?;
-    if passphrase.is_empty() {
-        return None;
-    }
-    let pbkeylen = std::env::var("RESTREAM_SRT_PBKEYLEN")
-        .ok()
-        .and_then(|value| value.parse::<c_int>().ok())
-        .unwrap_or(DEFAULT_SRT_PBKEYLEN);
-    Some(SrtGlobalIngestConfig {
-        mode: SrtGlobalIngestMode::Encrypted,
-        passphrase: Some(passphrase),
-        pbkeylen,
-    })
-}
-
-pub async fn load_global_srt_ingest_config(db: &sqlx::SqlitePool) -> SrtGlobalIngestConfig {
-    let from_db = crate::db::get_meta(db, SRT_INGEST_GLOBAL_CONFIG_META_KEY)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str::<SrtGlobalIngestConfig>(&raw).ok());
-    let mut config = from_db
-        .or_else(legacy_srt_global_config_from_env)
-        .unwrap_or_default();
-    if let Err(error) = config.validate() {
-        warn!(err = %error, "invalid global SRT ingest config; falling back to plaintext");
-        config = SrtGlobalIngestConfig::default();
-    }
-    config
 }
 
 pub fn parse_pipeline_srt_ingest_policy(raw: Option<&str>) -> Option<SrtPipelineIngestConfig> {

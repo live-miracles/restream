@@ -31,6 +31,10 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, warn};
 
 use crate::alerts;
+use crate::application::ports::SqliteMetaStore;
+use crate::application::srt_ingest::{
+    SRT_INGEST_GLOBAL_CONFIG_META_KEY, load_global_srt_ingest_config,
+};
 use crate::db;
 use crate::diag;
 use crate::events;
@@ -39,8 +43,7 @@ use crate::media::hls::{HlsSegmentVariant, HlsStore};
 use crate::media::mpegts::{TsSegmentView, remux_segment_view};
 use crate::media::security::IngestSecurityService;
 use crate::media::srt::{
-    SRT_INGEST_GLOBAL_CONFIG_META_KEY, SrtIngestPolicyStore, load_global_srt_ingest_config,
-    parse_pipeline_srt_ingest_policy, serialize_pipeline_srt_ingest_policy,
+    SrtIngestPolicyStore, parse_pipeline_srt_ingest_policy, serialize_pipeline_srt_ingest_policy,
 };
 use crate::types::*;
 
@@ -209,7 +212,7 @@ async fn get_ingest_host(db_pool: &SqlitePool) -> Result<String, sqlx::Error> {
 }
 
 async fn refresh_srt_ingest_policy_store(state: &AppState) {
-    let global = load_global_srt_ingest_config(&state.db).await;
+    let global = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
     let pipelines = db::list_pipelines(&state.db).await.unwrap_or_default();
     state.ingest_policy_store.replace(global, &pipelines);
 }
@@ -956,7 +959,7 @@ async fn config_get_handler(
         .unwrap_or(Some("Name".to_string()))
         .unwrap_or("Name".to_string());
     let sec = state.security.get_config();
-    let srt_ingest = load_global_srt_ingest_config(&state.db).await;
+    let srt_ingest = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
     let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
 
     // Transcode profiles from runtime cache, with built-ins exposed when unset.
@@ -1075,7 +1078,7 @@ async fn config_patch_handler(
     };
     let sec = state.security.get_config();
     let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
-    let srt_ingest = load_global_srt_ingest_config(&state.db).await;
+    let srt_ingest = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
     let transcode_profiles = crate::media::profiles::current_effective().await;
 
     Json(serde_json::json!({
