@@ -947,7 +947,7 @@ async fn config_get_handler(
         "srtIngest": srt_ingest,
         "transcodeProfiles": transcode_profiles,
         "pipelines": pipelines,
-        "outputs": outputs,
+        "outputs": api_view_models::output_response_json_list(&outputs),
         "jobs": jobs
     }))
     .into_response()
@@ -959,7 +959,7 @@ struct ConfigPatchPayload {
     server_name: Option<String>,
     ingest_host: Option<String>,
     ingest_security: Option<IngestSecurityConfig>,
-    recording_settings: Option<crate::media::recording::RecordingSettings>,
+    recording_settings: Option<crate::application::recording::RecordingSettings>,
     srt_ingest: Option<SrtGlobalIngestConfig>,
     transcode_profiles: Option<crate::media::profiles::TranscodeProfiles>,
 }
@@ -1054,7 +1054,10 @@ async fn config_patch_handler(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let sec = state.security.get_config();
-    let recording_settings = crate::media::recording::load_recording_settings(&state.db).await;
+    let recording_settings = crate::application::recording::load_recording_settings(
+        &SqliteMetaStore::new(state.db.clone()),
+    )
+    .await;
     let srt_ingest = load_global_srt_ingest_config(&SqliteMetaStore::new(state.db.clone())).await;
     let transcode_profiles = crate::media::profiles::current_effective().await;
 
@@ -1132,7 +1135,7 @@ async fn pipeline_detail_handler(
             state.ports.rtmp,
             state.ports.srt
         ),
-        "outputs": outputs,
+        "outputs": api_view_models::output_response_json_list(&outputs),
     }))
     .into_response()
 }
@@ -1713,7 +1716,10 @@ async fn outputs_create_handler(
     {
         Ok(output) => (
             StatusCode::CREATED,
-            Json(serde_json::json!({"message": "Output created", "output": output})),
+            Json(serde_json::json!({
+                "message": "Output created",
+                "output": api_view_models::output_response_json(&output)
+            })),
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1813,10 +1819,11 @@ async fn outputs_update_handler(
     )
     .await
     {
-        Ok(Some(updated)) => {
-            Json(serde_json::json!({"message": "Output updated", "output": updated}))
-                .into_response()
-        }
+        Ok(Some(updated)) => Json(serde_json::json!({
+            "message": "Output updated",
+            "output": api_view_models::output_response_json(&updated)
+        }))
+        .into_response(),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -1855,7 +1862,12 @@ async fn outputs_start_handler(
     }
 
     match db::set_output_desired_state(&state.db, &pipeline_id, &output_id, "running").await {
-        Ok(output) => Json(serde_json::json!({"message": "Output started", "desiredState": "running", "output": output})).into_response(),
+        Ok(output) => Json(serde_json::json!({
+            "message": "Output started",
+            "desiredState": "running",
+            "output": api_view_models::output_response_json(&output)
+        }))
+        .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -1874,7 +1886,12 @@ async fn outputs_stop_handler(
     }
 
     match db::set_output_desired_state(&state.db, &pipeline_id, &output_id, "stopped").await {
-        Ok(output) => Json(serde_json::json!({"message": "Output stopped", "desiredState": "stopped", "output": output})).into_response(),
+        Ok(output) => Json(serde_json::json!({
+            "message": "Output stopped",
+            "desiredState": "stopped",
+            "output": api_view_models::output_response_json(&output)
+        }))
+        .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

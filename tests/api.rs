@@ -794,7 +794,10 @@ async fn config_patch_recording_settings_persists() {
     let json = body_json(resp).await;
     assert_eq!(json["recordingSettings"]["retainSourceTs"], true);
 
-    let stored = restream::media::recording::load_recording_settings(&pool).await;
+    let stored = restream::application::recording::load_recording_settings(
+        &restream::application::ports::SqliteMetaStore::new(pool.clone()),
+    )
+    .await;
     assert!(stored.retain_source_ts);
 
     let resp = app
@@ -3056,6 +3059,9 @@ async fn v1_pipeline_list_detail_and_graph_endpoints_return_payloads() {
     let detail = body_json(resp).await;
     assert_eq!(detail["pipeline"]["id"], "pipe-v1");
     assert_eq!(detail["outputs"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["outputs"][0]["id"], "out-v1");
+    assert_eq!(detail["outputs"][0]["desiredState"], "stopped");
+    assert_eq!(detail["outputs"][0]["url"], "rtmp://example/live/key");
 
     let resp = app
         .oneshot(auth_req(

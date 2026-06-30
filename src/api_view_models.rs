@@ -8,7 +8,7 @@ use crate::media::engine::{
 };
 use crate::media::ring_buffer::RingBuffer;
 use crate::media::srt::parse_pipeline_srt_ingest_policy;
-use crate::types::{Ingest, Pipeline};
+use crate::types::{Ingest, Output, Pipeline};
 use std::sync::atomic::Ordering;
 
 pub(crate) fn pipeline_response_json(
@@ -69,6 +69,22 @@ pub(crate) fn file_ingest_response(ingest: Option<Ingest>, running: bool) -> ser
             "running": false
         }),
     }
+}
+
+pub(crate) fn output_response_json(output: &Output) -> serde_json::Value {
+    serde_json::json!({
+        "id": output.id,
+        "pipelineId": output.pipeline_id,
+        "name": output.name,
+        "url": output.url,
+        "monitoringUrl": output.monitoring_url,
+        "desiredState": output.desired_state,
+        "encoding": output.encoding,
+    })
+}
+
+pub(crate) fn output_response_json_list(outputs: &[Output]) -> Vec<serde_json::Value> {
+    outputs.iter().map(output_response_json).collect()
 }
 
 pub(crate) fn egress_runtime_json(

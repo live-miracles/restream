@@ -8,13 +8,12 @@
 //! ends we optionally remux the completed `.ts` into `.mp4` via the configured
 //! FFmpeg subprocess when that binary exposes the MP4 muxer.
 
-pub use crate::application::recording::RecordingSettings;
+use crate::application::recording::RecordingSettings;
 use crate::media::engine::MediaEngine;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsServiceMetadata;
 use crate::media::ring_buffer::{Reader, RingBuffer};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -133,21 +132,6 @@ pub(crate) fn load_conversion_state(ts_path: &Path) -> Option<RecordingConversio
     let state_path = build_conversion_state_path(ts_path);
     let bytes = std::fs::read(state_path).ok()?;
     serde_json::from_slice(&bytes).ok()
-}
-
-pub async fn load_recording_settings(db: &SqlitePool) -> RecordingSettings {
-    let meta_store = crate::application::ports::SqliteMetaStore::new(db.clone());
-    crate::application::recording::load_recording_settings(&meta_store).await
-}
-
-pub async fn save_recording_settings(
-    db: &SqlitePool,
-    settings: &RecordingSettings,
-) -> Result<(), sqlx::Error> {
-    let meta_store = crate::application::ports::SqliteMetaStore::new(db.clone());
-    crate::application::recording::save_recording_settings(&meta_store, settings)
-        .await
-        .map_err(|error| sqlx::Error::Protocol(error.to_string()))
 }
 
 fn build_recording_remux_args(input_path: &Path, output_path: &Path) -> Vec<String> {
@@ -658,15 +642,16 @@ mod tests {
 
     #[tokio::test]
     async fn recording_settings_default_to_deleting_source_ts() {
-        let pool = SqlitePool::connect("sqlite::memory:")
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
             .await
             .expect("in-memory sqlite should connect");
         crate::db::setup_database_schema(&pool)
             .await
             .expect("schema should initialize");
+        let meta_store = crate::application::ports::SqliteMetaStore::new(pool.clone());
 
         assert_eq!(
-            load_recording_settings(&pool).await,
+            crate::application::recording::load_recording_settings(&meta_store).await,
             RecordingSettings {
                 retain_source_ts: false
             }
