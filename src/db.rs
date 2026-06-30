@@ -462,7 +462,7 @@ pub async fn create_job(
     pipeline_id: &str,
     output_id: &str,
     pid: Option<i64>,
-    status: &str,
+    status: JobStatus,
     started_at: &str,
 ) -> Result<Job, sqlx::Error> {
     sqlx::query(
@@ -481,7 +481,7 @@ pub async fn create_job(
     .bind(pipeline_id)
     .bind(output_id)
     .bind(pid)
-    .bind(status)
+    .bind(status.as_str())
     .bind(started_at)
     .execute(pool)
     .await?;
@@ -507,10 +507,11 @@ pub async fn get_running_job_for(
 ) -> Result<Option<Job>, sqlx::Error> {
     sqlx::query_as::<_, Job>(
         "SELECT id, pipeline_id, output_id, pid, status, started_at, ended_at, exit_code, exit_signal
-         FROM jobs WHERE pipeline_id = ? AND output_id = ? AND status = 'running' LIMIT 1"
+         FROM jobs WHERE pipeline_id = ? AND output_id = ? AND status = ? LIMIT 1"
     )
     .bind(pipeline_id)
     .bind(output_id)
+    .bind(JobStatus::Running.as_str())
     .fetch_optional(pool)
     .await
 }
@@ -519,7 +520,7 @@ pub async fn update_job(
     pool: &SqlitePool,
     id: &str,
     pid: Option<i64>,
-    status: Option<&str>,
+    status: Option<JobStatus>,
     ended_at: Option<&str>,
     exit_code: Option<i64>,
     exit_signal: Option<&str>,
@@ -529,7 +530,7 @@ pub async fn update_job(
                          exit_code = COALESCE(?, exit_code), exit_signal = COALESCE(?, exit_signal) WHERE id = ?"
     )
     .bind(pid)
-    .bind(status)
+    .bind(status.map(JobStatus::as_str))
     .bind(ended_at)
     .bind(exit_code)
     .bind(exit_signal)
@@ -720,9 +721,11 @@ pub async fn cleanup_old_jobs(pool: &SqlitePool) -> Result<(u64, u64), sqlx::Err
 
     let result = sqlx::query(
         "DELETE FROM jobs
-         WHERE (status IN ('stopped','failed') AND ended_at IS NOT NULL AND datetime(ended_at) < datetime('now', '-7 days'))
+         WHERE (status IN (?, ?) AND ended_at IS NOT NULL AND datetime(ended_at) < datetime('now', '-7 days'))
             OR datetime(COALESCE(ended_at, started_at)) < datetime('now', '-30 days')"
     )
+    .bind(JobStatus::Stopped.as_str())
+    .bind(JobStatus::Failed.as_str())
     .execute(&mut *tx)
     .await?;
 
@@ -732,10 +735,12 @@ pub async fn cleanup_old_jobs(pool: &SqlitePool) -> Result<(u64, u64), sqlx::Err
 
 pub async fn reset_running_jobs(pool: &SqlitePool, now_ts: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE jobs SET status = 'stopped', ended_at = ?, exit_code = NULL, exit_signal = 'SIGKILL'
-         WHERE status = 'running'"
+        "UPDATE jobs SET status = ?, ended_at = ?, exit_code = NULL, exit_signal = 'SIGKILL'
+         WHERE status = ?",
     )
+    .bind(JobStatus::Stopped.as_str())
     .bind(now_ts)
+    .bind(JobStatus::Running.as_str())
     .execute(pool)
     .await?;
     Ok(())

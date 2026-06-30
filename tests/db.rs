@@ -1,6 +1,7 @@
 use restream::{
     db,
     logging::types::{AppLogEntry, AppLogFilters},
+    types::JobStatus,
 };
 
 async fn test_pool() -> sqlx::SqlitePool {
@@ -162,12 +163,12 @@ async fn job_lifecycle() {
         "p1",
         "o1",
         Some(1234),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:00:00Z",
     )
     .await
     .unwrap();
-    assert_eq!(job.status, "running");
+    assert_eq!(job.status_typed(), Some(JobStatus::Running));
     assert_eq!(job.pid, Some(1234));
 
     let running = db::get_running_job_for(&pool, "p1", "o1").await.unwrap();
@@ -177,7 +178,7 @@ async fn job_lifecycle() {
         &pool,
         "j1",
         None,
-        Some("stopped"),
+        Some(JobStatus::Stopped),
         Some("2024-01-01T00:01:00Z"),
         Some(0),
         None,
@@ -185,7 +186,7 @@ async fn job_lifecycle() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(updated.status, "stopped");
+    assert_eq!(updated.status_typed(), Some(JobStatus::Stopped));
     assert_eq!(updated.exit_code, Some(0));
 
     let no_running = db::get_running_job_for(&pool, "p1", "o1").await.unwrap();
@@ -210,7 +211,7 @@ async fn job_upsert_on_conflict() {
         "p1",
         "o1",
         Some(100),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:00:00Z",
     )
     .await
@@ -221,7 +222,7 @@ async fn job_upsert_on_conflict() {
         "p1",
         "o1",
         Some(200),
-        "running",
+        JobStatus::Running,
         "2024-01-01T01:00:00Z",
     )
     .await
@@ -251,7 +252,7 @@ async fn stale_job_update_cannot_clobber_replacement_attempt() {
         "p1",
         "o1",
         Some(100),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:00:00Z",
     )
     .await
@@ -263,7 +264,7 @@ async fn stale_job_update_cannot_clobber_replacement_attempt() {
         "p1",
         "o1",
         Some(200),
-        "running",
+        JobStatus::Running,
         "2024-01-01T01:00:00Z",
     )
     .await
@@ -274,7 +275,7 @@ async fn stale_job_update_cannot_clobber_replacement_attempt() {
         &pool,
         "j1",
         None,
-        Some("failed"),
+        Some(JobStatus::Failed),
         Some("2024-01-01T00:05:00Z"),
         Some(1),
         None,
@@ -288,7 +289,7 @@ async fn stale_job_update_cannot_clobber_replacement_attempt() {
         .unwrap()
         .unwrap();
     assert_eq!(running.id, "j2");
-    assert_eq!(running.status, "running");
+    assert_eq!(running.status_typed(), Some(JobStatus::Running));
     assert_eq!(running.pid, Some(200));
     assert!(running.ended_at.is_none());
     assert!(running.exit_code.is_none());
@@ -312,7 +313,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         "p1",
         "o1",
         Some(100),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:00:00Z",
     )
     .await
@@ -323,7 +324,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         "p1",
         "o1",
         Some(200),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:10:00Z",
     )
     .await
@@ -334,7 +335,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         "p1",
         "o1",
         Some(300),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:20:00Z",
     )
     .await
@@ -345,7 +346,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         &pool,
         "j1",
         None,
-        Some("failed"),
+        Some(JobStatus::Failed),
         Some("2024-01-01T00:05:00Z"),
         Some(1),
         None,
@@ -356,7 +357,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         &pool,
         "j2",
         None,
-        Some("failed"),
+        Some(JobStatus::Failed),
         Some("2024-01-01T00:15:00Z"),
         Some(1),
         None,
@@ -371,7 +372,7 @@ async fn multiple_stale_job_updates_cannot_clobber_newest_attempt() {
         .unwrap()
         .unwrap();
     assert_eq!(running.id, "j3");
-    assert_eq!(running.status, "running");
+    assert_eq!(running.status_typed(), Some(JobStatus::Running));
     assert_eq!(running.pid, Some(300));
     assert_eq!(running.started_at, "2024-01-01T00:20:00Z");
     assert!(running.ended_at.is_none());
@@ -698,7 +699,7 @@ async fn reset_running_jobs() {
         "p1",
         "o1",
         Some(999),
-        "running",
+        JobStatus::Running,
         "2024-01-01T00:00:00Z",
     )
     .await
@@ -709,8 +710,75 @@ async fn reset_running_jobs() {
         .unwrap();
 
     let job = db::get_job(&pool, "j1").await.unwrap().unwrap();
-    assert_eq!(job.status, "stopped");
+    assert_eq!(job.status_typed(), Some(JobStatus::Stopped));
     assert_eq!(job.exit_signal.as_deref(), Some("SIGKILL"));
+}
+
+#[tokio::test]
+async fn cleanup_old_jobs_removes_only_old_terminal_jobs() {
+    let pool = test_pool().await;
+    db::create_pipeline(&pool, "p1", "P", "key01", None, None, None)
+        .await
+        .unwrap();
+    db::create_output(
+        &pool, "o1", "p1", "Out", "rtmp://x", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+    db::create_output(
+        &pool, "o2", "p1", "Out 2", "rtmp://y", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+    db::create_output(
+        &pool, "o3", "p1", "Out 3", "rtmp://z", None, "stopped", "source",
+    )
+    .await
+    .unwrap();
+
+    db::create_job(
+        &pool,
+        "old-stopped",
+        "p1",
+        "o1",
+        None,
+        JobStatus::Stopped,
+        "2000-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+    db::create_job(
+        &pool,
+        "old-failed",
+        "p1",
+        "o2",
+        None,
+        JobStatus::Failed,
+        "2000-01-02T00:00:00Z",
+    )
+    .await
+    .unwrap();
+    db::create_job(
+        &pool,
+        "keep-running",
+        "p1",
+        "o3",
+        None,
+        JobStatus::Running,
+        "2999-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let (deleted_jobs, deleted_logs) = db::cleanup_old_jobs(&pool).await.unwrap();
+
+    assert_eq!(deleted_jobs, 2);
+    assert_eq!(deleted_logs, 0);
+    assert!(db::get_job(&pool, "old-stopped").await.unwrap().is_none());
+    assert!(db::get_job(&pool, "old-failed").await.unwrap().is_none());
+
+    let running = db::get_job(&pool, "keep-running").await.unwrap().unwrap();
+    assert_eq!(running.status_typed(), Some(JobStatus::Running));
 }
 
 // ── Regression tests for Round 10 audit fixes ────────────────────────────────

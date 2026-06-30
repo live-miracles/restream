@@ -653,7 +653,7 @@ pub async fn run_app() {
                         &output.pipeline_id,
                         &output.id,
                         None,
-                        "running",
+                        crate::types::JobStatus::Running,
                         &now_str,
                     )
                     .await;
@@ -690,7 +690,7 @@ pub async fn run_app() {
                                 &pool_c,
                                 &job_id,
                                 None,
-                                Some("failed"),
+                                Some(crate::types::JobStatus::Failed),
                                 Some(&end_now),
                                 Some(0),
                                 None,
@@ -856,7 +856,11 @@ pub async fn run_app() {
                         }
 
                         let end_now = chrono::Utc::now().to_rfc3339();
-                        let job_status = if is_cancelled { "stopped" } else { "failed" };
+                        let job_status = if is_cancelled {
+                            crate::types::JobStatus::Stopped
+                        } else {
+                            crate::types::JobStatus::Failed
+                        };
                         let _ = db::update_job(
                             &pool_c,
                             &job_id,

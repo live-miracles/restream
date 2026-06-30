@@ -84,6 +84,7 @@ Good examples:
 
 - stage vocabulary in `domain::stage`
 - resolved ingest/security policy enums in `domain`
+- job lifecycle status in DB/application seams via `types::JobStatus`
 
 ### 5. Traits
 
