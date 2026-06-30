@@ -20,12 +20,14 @@ old/
 
 # Log files
 log/
+logs/
 *.log
 *.pid
 scale.csv
 
 # Runtime SQLite databases
 *.db
+*.db.bak
 *.db-*
 *.sqlite
 *.sqlite3
