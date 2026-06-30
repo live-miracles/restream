@@ -45,6 +45,7 @@ use crate::db;
 use crate::diag;
 use crate::domain::ingest_security::IngestSecurityConfig;
 use crate::domain::srt_ingest::{SrtGlobalIngestConfig, SrtPipelineIngestConfig};
+use crate::domain::transcode_profile::TranscodeProfiles;
 use crate::events;
 use crate::logging::types::AppLogFilters;
 use crate::media::engine::MediaEngine;
@@ -964,7 +965,7 @@ struct ConfigPatchPayload {
     ingest_security: Option<IngestSecurityConfig>,
     recording_settings: Option<crate::application::recording::RecordingSettings>,
     srt_ingest: Option<SrtGlobalIngestConfig>,
-    transcode_profiles: Option<crate::media::profiles::TranscodeProfiles>,
+    transcode_profiles: Option<TranscodeProfiles>,
 }
 
 async fn config_patch_handler(

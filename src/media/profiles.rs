@@ -30,7 +30,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-pub use crate::domain::transcode_profile::{TranscodeProfile, TranscodeProfiles};
+use crate::domain::transcode_profile::{TranscodeProfile, TranscodeProfiles};
 
 /// Meta key in the DB `meta` table.
 pub const META_KEY: &str = "transcode_profiles";

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub use crate::domain::ingest_security::DEFAULT_INGEST_SECURITY_CONFIG;
+use crate::domain::ingest_security::DEFAULT_INGEST_SECURITY_CONFIG;
 
 struct FailureRecord {
     failures: Vec<Instant>,

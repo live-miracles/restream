@@ -29,7 +29,7 @@ impl AsRef<[u8]> for OwnedFfmpegPacket {
     }
 }
 
-pub use crate::domain::audio_routing::{AudioRouting, parse_audio_routing};
+use crate::domain::audio_routing::{AudioRouting, parse_audio_routing};
 
 /// Lightweight audio routing stage — no FFmpeg, no MPEG-TS round-trip.
 ///

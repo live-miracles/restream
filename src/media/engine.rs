@@ -1090,7 +1090,7 @@ impl MediaEngine {
 
         let output_tracks = if let Some(audio_op) = stage_kind.audio_operation() {
             let routing =
-                crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
+                crate::domain::audio_routing::parse_audio_routing(&format!("source+{audio_op}"));
             crate::media::transcoder::apply_audio_routing(&routing, &input_tracks)
         } else {
             (*input_tracks).clone()
@@ -1121,7 +1121,7 @@ impl MediaEngine {
         let backend_policy = BackendPolicy::from_env();
         if let Some(audio_op) = stage_kind.audio_operation() {
             let routing =
-                crate::media::transcoder::parse_audio_routing(&format!("source+{audio_op}"));
+                crate::domain::audio_routing::parse_audio_routing(&format!("source+{audio_op}"));
             if backend_policy.select_backend(&stage_kind) == StageBackend::AudioRouter {
                 info!(pipeline_id = %pipeline_id, encoding = %encoding_str, "spawning audio-router stage");
                 tokio::spawn(async move {

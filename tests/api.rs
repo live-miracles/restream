@@ -4,6 +4,7 @@
 
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
+use restream::domain::ingest_security::DEFAULT_INGEST_SECURITY_CONFIG;
 use restream::domain::srt_ingest::SrtGlobalIngestConfig;
 use restream::domain::stage::{StageKey, StageKind};
 use restream::logging::types::AppLogEntry;
@@ -29,9 +30,7 @@ async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) 
     let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
     api::initialize_auth(&pool, &sessions).await;
 
-    let security = Arc::new(IngestSecurityService::new(
-        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
-    ));
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
         SrtGlobalIngestConfig::default(),
         &[],
@@ -74,9 +73,7 @@ async fn authenticated_app_with_temp_media()
     let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
     api::initialize_auth(&pool, &sessions).await;
 
-    let security = Arc::new(IngestSecurityService::new(
-        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
-    ));
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
         SrtGlobalIngestConfig::default(),
         &[],
@@ -124,9 +121,7 @@ async fn authenticated_app_with_temp_media_and_engine() -> (
     let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
     api::initialize_auth(&pool, &sessions).await;
 
-    let security = Arc::new(IngestSecurityService::new(
-        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
-    ));
+    let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
     let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
         SrtGlobalIngestConfig::default(),
         &[],
@@ -921,7 +916,7 @@ async fn config_patch_rejects_invalid_ingest_security() {
     .await;
     assert_eq!(
         stored.failure_limit,
-        restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG.failure_limit
+        DEFAULT_INGEST_SECURITY_CONFIG.failure_limit
     );
 }
 
@@ -1820,9 +1815,7 @@ async fn health_shows_registered_egress() {
     let app = {
         let sessions = Arc::new(TokioRwLock::new(HashSet::new()));
         api::initialize_auth(&pool, &sessions).await;
-        let security = Arc::new(IngestSecurityService::new(
-            restream::media::security::DEFAULT_INGEST_SECURITY_CONFIG,
-        ));
+        let security = Arc::new(IngestSecurityService::new(DEFAULT_INGEST_SECURITY_CONFIG));
         let ingest_policy_store = Arc::new(restream::media::srt::SrtIngestPolicyStore::new(
             SrtGlobalIngestConfig::default(),
             &[],

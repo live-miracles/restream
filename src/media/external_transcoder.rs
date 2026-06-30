@@ -41,12 +41,12 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+use crate::domain::audio_routing::{AudioRouting, parse_audio_routing};
 use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::pipe_metrics::PipeMetrics;
 use crate::media::ring_buffer::{Reader, RingBuffer};
-use crate::media::transcoder::{AudioRouting, parse_audio_routing};
 
 /// Stdin writes or stdout reads exceeding this threshold are counted as stalls/idles.
 /// 1 ms filters normal async scheduling jitter while catching real back-pressure.
@@ -676,7 +676,7 @@ mod tests {
             let mut cache = crate::media::profiles::cache().blocking_write();
             cache.insert(
                 "square_test".to_string(),
-                crate::media::profiles::TranscodeProfile {
+                crate::domain::transcode_profile::TranscodeProfile {
                     preset: "superfast".to_string(),
                     tune: "zerolatency".to_string(),
                     crf: 21,
@@ -841,7 +841,7 @@ mod tests {
             let mut cache = crate::media::profiles::cache().blocking_write();
             cache.insert(
                 "crf_test".to_string(),
-                crate::media::profiles::TranscodeProfile {
+                crate::domain::transcode_profile::TranscodeProfile {
                     preset: "veryfast".to_string(),
                     tune: String::new(),
                     crf: 28,
