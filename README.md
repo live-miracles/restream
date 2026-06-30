@@ -65,6 +65,7 @@ npm run build:frontend
 - `src/domain/`: persisted models and business logic
 - `src/planner/`: pipeline planning/orchestration helpers
 - `public/`: dashboard assets
+  Frontend TypeScript is layered under `public/ts/app`, `public/ts/core`, `public/ts/features`, and `public/ts/history`.
 - `tests/` and `test/`: integration tests and live test harness
 - `scripts/`: bootstrap and native build helpers
 

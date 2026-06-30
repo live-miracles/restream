@@ -110,6 +110,9 @@ npm run build:frontend
 
 Edit `public/ts/`, not generated files in `public/js/`. The build now re-syncs
 the browser HLS runtime from the `hls.js` npm dependency automatically.
+Frontend orchestration entrypoints live in `public/ts/app/`, shared transport
+and state helpers in `public/ts/core/`, bounded UI modules in
+`public/ts/features/`, and history-specific UI in `public/ts/history/`.
 
 ## Testing
 
