@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 
 import {
   FakeElement,
@@ -95,18 +96,11 @@ function appendRoot(document, tagName, id) {
   return element;
 }
 
-async function runCheck(name, fn) {
-  try {
-    await fn();
-    console.log(`ok - ${name}`);
-  } catch (error) {
-    console.error(`not ok - ${name}`);
-    console.error(error);
-    process.exit(1);
-  }
+function runCheck(name, fn) {
+  test(name, { concurrency: false }, fn);
 }
 
-await runCheck("renderPipelinesList skips identical sidebar rewrites", async () => {
+runCheck("renderPipelinesList skips identical sidebar rewrites", async () => {
   const { document } = installFakeDom();
   const pipelinesList = appendRoot(document, "ul", "pipelines");
 
@@ -125,7 +119,7 @@ await runCheck("renderPipelinesList skips identical sidebar rewrites", async () 
   assert.equal(pipelinesList.onclick, firstHandler);
 });
 
-await runCheck("renderStatsColumn skips identical empty-state rewrites", async () => {
+runCheck("renderStatsColumn skips identical empty-state rewrites", async () => {
   const { document, window } = installFakeDom();
   const statsCol = appendRoot(document, "div", "stats-col");
   window.addPipeBtn = () => {};
@@ -143,7 +137,7 @@ await runCheck("renderStatsColumn skips identical empty-state rewrites", async (
   assert.equal(statsCol.stats.innerHTMLWrites, firstWriteCount);
 });
 
-await runCheck("renderOutsColumn reuses cards and patches live telemetry fields", async () => {
+runCheck("renderOutsColumn reuses cards and patches live telemetry fields", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "outs-col");
   const outputsList = appendRoot(document, "div", "outputs-list");
@@ -201,7 +195,7 @@ await runCheck("renderOutsColumn reuses cards and patches live telemetry fields"
   assert.equal(toggleButton.textContent, "Stop");
 });
 
-await runCheck("renderOutsColumn preserves keyed cards across reorder and removes stale cards", async () => {
+runCheck("renderOutsColumn preserves keyed cards across reorder and removes stale cards", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "outs-col");
   const outputsList = appendRoot(document, "div", "outputs-list");
@@ -233,7 +227,7 @@ await runCheck("renderOutsColumn preserves keyed cards across reorder and remove
   );
 });
 
-await runCheck("renderOutsColumn delegates actions with stable output ids", async () => {
+runCheck("renderOutsColumn delegates actions with stable output ids", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "outs-col");
   const outputsList = appendRoot(document, "div", "outputs-list");
@@ -261,7 +255,7 @@ await runCheck("renderOutsColumn delegates actions with stable output ids", asyn
   assert.deepEqual(calls, [["stop", "pipe-1", "out-1"]]);
 });
 
-await runCheck("renderPipelineInfoColumn reuses publisher meta badges across refreshes", async () => {
+runCheck("renderPipelineInfoColumn reuses publisher meta badges across refreshes", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "pipe-info-col");
   appendRoot(document, "div", "pipe-name");
@@ -305,7 +299,7 @@ await runCheck("renderPipelineInfoColumn reuses publisher meta badges across ref
   assert.equal(publisherMeta.stats.innerHTMLWrites, 0);
 });
 
-await runCheck("renderPipelineInfoColumn shows file ingest controls for file sources", async () => {
+runCheck("renderPipelineInfoColumn shows file ingest controls for file sources", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "pipe-info-col");
   appendRoot(document, "div", "pipe-name");
@@ -411,7 +405,7 @@ await runCheck("renderPipelineInfoColumn shows file ingest controls for file sou
   );
 });
 
-await runCheck("metric-format reuses subtle-unit spans across updates", async () => {
+runCheck("metric-format reuses subtle-unit spans across updates", async () => {
   const { document } = installFakeDom();
   const metric = appendRoot(document, "div", "metric");
 
@@ -430,7 +424,7 @@ await runCheck("metric-format reuses subtle-unit spans across updates", async ()
   assert.equal(metric.textContent, "2.8Mb/s");
 });
 
-await runCheck("renderDashboardModes skips overview work when pipeline mode is active", async () => {
+runCheck("renderDashboardModes skips overview work when pipeline mode is active", async () => {
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=pipeline";
   appendRoot(document, "div", "overview-mode-content");
@@ -447,11 +441,10 @@ await runCheck("renderDashboardModes skips overview work when pipeline mode is a
   assert.equal(overview.stats.innerHTMLWrites, 0);
 });
 
-await runCheck("initDashboardApp bootstraps dashboard wiring once", async () => {
+runCheck("initDashboardApp wires dashboard mode bootstrapping once", async () => {
   const { document, window } = installFakeDom();
   window.location.href = "http://localhost/?mode=pipeline";
   appendRoot(document, "div", "dashboard-grid");
-
   const app = await loadCompiledFrontendModule("app/dashboard-app.js");
 
   app.initDashboardApp();
@@ -461,5 +454,3 @@ await runCheck("initDashboardApp bootstraps dashboard wiring once", async () => 
   assert.equal(typeof firstSetDashboardMode, "function");
   assert.equal(window.setDashboardMode, firstSetDashboardMode);
 });
-
-process.exit(0);
