@@ -28,6 +28,7 @@ Use the narrowest proof that can actually catch the bug:
      - `ring_migration_loom`
      - `ts_chunk_ring_loom`
      - `ts_muxer_stage_loom`
+    - `transcoder_stage_loom`
 
 3. Property tests
    - Use when ordering, permutations, or randomized lifecycle sequences matter.
@@ -101,6 +102,9 @@ draining RTMP sinks. `recovery` is the focused reconnect/grace/retry contract
 so we can target that behavior directly without depending on the broader
 teardown bucket.
 
+The current proof inventory is summarized in
+[Concurrency Proof Coverage Report - 2026-07-02](concurrency-proof-coverage-2026-07-02.md).
+
 Both gates also carry explicit property/stress coverage for lifecycle
 permutations and thread-hop wakeups, rather than relying on the general
 workspace test job to catch those indirectly.
@@ -141,6 +145,7 @@ surface already covers it.
   - `stalled_output_status_matches_health_runtime_fields`
 - `tests/ring_migration.rs`
   - `prop_no_loss_no_gap_no_duplication`
+  - `prop_multi_reader_migration_preserves_each_reader_order`
 - `src/media/engine.rs`
   - `stale_ingest_unregister_cannot_clobber_replacement_attempt`
   - `stale_ingest_disconnect_cannot_poison_replacement_attempt`
@@ -155,10 +160,23 @@ surface already covers it.
   - `output_status_surfaces_retry_backoff_after_failure`
   - `prop_egress_lifecycle_preserves_runtime_and_health_invariants`
 - `src/media/avio.rs`
+  - close/wake/backpressure loom coverage in `tests/avio_loom.rs`
   - `write_batch_round_trips_random_chunks`
+- `src/media/external_transcoder.rs`
+  - `external_output_stream_idx_routes_known_tracks_without_aliasing`
+  - `proptest_external_output_dts_routing_preserves_per_stream_monotonicity`
+  - `external_720p_stage_emits_live_packets_for_h264_marker_fixture`
+  - `external_1080p_stage_remuxes_marker_fixture_with_monotone_dts`
 - `src/media/srt.rs`
   - `epoll_waiter_coordination`
+  - `srt_stream_ids_normalize_equivalent_publish_keys_before_registration`
+  - `srt_stream_ids_normalize_equivalent_read_keys_before_auth`
+  - `srt_sender_semaphore_is_bounded`
+  - `srt_sender_semaphore_releases_on_drop`
+- `src/media/ts_chunk_ring.rs`
+  - `live_reader_starts_after_existing_chunks`
 - `src/bin/test_harness.rs`
+  - `kill_and_wait_child_terminates_spawned_process`
   - `fault-egress-retry`
   - `fault-output-stall`
   - `fault-resilience`

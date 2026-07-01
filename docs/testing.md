@@ -420,6 +420,11 @@ For concurrency-sensitive changes, run the focused proof gate first:
 bash ./scripts/check-concurrency-proof-fast.sh
 ```
 
+The current model/property/unit proof inventory is tracked in
+[Concurrency Proof Coverage Report - 2026-07-02](concurrency-proof-coverage-2026-07-02.md).
+Use that report to choose a narrower serial validation set when developing in a
+resource-constrained environment, then run the full gate before broad sign-off.
+
 Then run the full live contract gate:
 
 ```sh
