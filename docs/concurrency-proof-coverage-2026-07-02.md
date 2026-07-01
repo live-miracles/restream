@@ -66,6 +66,9 @@ This report summarizes the model, property, unit, and live-harness proof surface
 
 - `src/bin/test_harness.rs`
   - Added `kill_and_wait_child` coverage through `tests::kill_and_wait_child_terminates_spawned_process`.
+  - Extended `fault-output-stall` with a sibling-isolation subtest (`rtmp-stalled-sink-isolation-under-many-outputs`) that keeps one RTMP sink intentionally non-draining while sibling RTMP outputs drain through generalized sink servers.
+  - The subtest now proves isolation: the stalled output surfaces `status=stalled` while sibling outputs remain `running`/progressing with positive bytes and fresh progress timestamps.
+  - `FAULT_OUTPUT_STALL_SIBLINGS` controls sibling fanout (default `12`), capped by `N_PER_GROUP` so `N_PER_GROUP=1` keeps the mode cheap for fast loops.
 - `scripts/resource-limit`
   - Honors `RESTREAM_BUILD_LOCK_FILE` and rejects relative paths.
 - `scripts/check-concurrency-contract.sh`
@@ -122,6 +125,7 @@ scripts/resource-limit cargo test media::avio::tests --lib -- --nocapture
 scripts/resource-limit cargo test srt_stream_ids_normalize_equivalent --lib -- --nocapture
 scripts/resource-limit cargo test srt_sender_semaphore --lib -- --nocapture
 scripts/resource-limit cargo test --bin test_harness tests::kill_and_wait_child_terminates_spawned_process -- --exact --nocapture
+N_PER_GROUP=1 scripts/resource-limit cargo run --bin test_harness -- fault-output-stall --no-netns
 env N_PER_GROUP=1 ONLY_CHECKS=ffprobe SKIP_LOAD=1 scripts/resource-limit cargo run --bin test_harness -- mixed-file-h264-single
 ```
 
