@@ -56,10 +56,16 @@ pub async fn start_audio_router(
         output_buffer.set_codec_hint(hint);
     }
 
-    error!(
-        "[audio-router] start pipeline={} routing={:?} input_codec='{}' output_codec='{}'",
+    let routing_mode = match &routing {
+        AudioRouting::Passthrough => "all",
+        AudioRouting::SelectTracks(_) => "subset",
+        AudioRouting::Remap { .. } => "remap",
+        AudioRouting::Downmix(_) => "downmix",
+    };
+    info!(
+        "[audio-router] start pipeline={} mode={} input_codec='{}' output_codec='{}'",
         pipeline_id,
-        std::mem::discriminant(&routing),
+        routing_mode,
         input_buffer.codec_hint_str(),
         output_buffer.codec_hint_str(),
     );

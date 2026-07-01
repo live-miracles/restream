@@ -5751,6 +5751,9 @@ struct MixedEnv {
     mtx_srt: u16,
     mtx_hls: u16,
     mtx_api: u16,
+    ffmpeg_srt_sink: bool,
+    ffmpeg_srt_sink_base: u16,
+    ffmpeg_srt_sink_seconds: u64,
     n_per_group: usize,
     snapshot_sleep: Duration,
 }
@@ -5810,6 +5813,12 @@ impl MixedEnv {
             mtx_srt: ports.mtx_srt,
             mtx_hls: ports.mtx_hls,
             mtx_api: ports.mtx_api,
+            ffmpeg_srt_sink: std::env::var("SRT_SINK")
+                .or_else(|_| std::env::var("MIXED_SRT_SINK"))
+                .ok()
+                .is_some_and(|value| value.eq_ignore_ascii_case("ffmpeg")),
+            ffmpeg_srt_sink_base: env_u16("FFMPEG_SRT_SINK_BASE", 15_000),
+            ffmpeg_srt_sink_seconds: env_secs("FFMPEG_SRT_SINK_SECONDS", 8),
             n_per_group: env_usize("N_PER_GROUP", 25),
             snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
             work_dir,
@@ -7431,6 +7440,8 @@ async fn run_mixed_srt_multi_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
+    let mut ffmpeg_srt_sinks = Vec::new();
+    let mut next_ffmpeg_srt_sink = 0usize;
     add_mixed_group(
         api,
         &pipeline_id,
@@ -7581,9 +7592,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-src",
@@ -7596,6 +7608,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT source all-tracks",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7603,9 +7620,10 @@ async fn run_mixed_srt_multi_config(
         snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-src-atrack",
@@ -7618,6 +7636,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT source audio0",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7631,9 +7654,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-src-a1",
@@ -7646,6 +7670,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT source audio1",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7659,9 +7688,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-720p-all",
@@ -7674,6 +7704,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 720p all-tracks",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7687,9 +7722,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-720p",
@@ -7702,6 +7738,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 720p audio0",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7715,9 +7756,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-720p-a1",
@@ -7730,6 +7772,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 720p audio1",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7743,9 +7790,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-1080p-all",
@@ -7758,6 +7806,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 1080p all-tracks",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7771,9 +7824,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-1080p-a1",
@@ -7786,6 +7840,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 1080p audio1",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7799,9 +7858,10 @@ async fn run_mixed_srt_multi_config(
         .await?;
     }
 
-    add_mixed_group(
+    add_mixed_srt_group(
         api,
         &pipeline_id,
+        env,
         MixedGroupSpec {
             cfg,
             group: "srt-1080p",
@@ -7814,6 +7874,11 @@ async fn run_mixed_srt_multi_config(
                 env.mtx_srt
             )
         },
+        MixedSrtGroupValidation {
+            label: "SRT 1080p audio0",
+        },
+        &mut ffmpeg_srt_sinks,
+        &mut next_ffmpeg_srt_sink,
         &mut output_ids,
     )
     .await?;
@@ -7855,6 +7920,10 @@ async fn run_mixed_srt_multi_config(
         )?;
     }
 
+    if !ffmpeg_srt_sinks.is_empty() {
+        finish_ffmpeg_srt_sinks(&mut ffmpeg_srt_sinks).await?;
+    }
+
     if env.check_selected("ffprobe") {
         let rtmp_src_url = format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp);
         let rtmp_src_a1_url = format!(
@@ -7874,41 +7943,95 @@ async fn run_mixed_srt_multi_config(
             "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-a1-{n}",
             env.mtx_rtmp
         );
-        let srt_src_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_src_url = mixed_srt_validation_target(
+            env,
+            "srt-src",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_src_atrack_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-atrack-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_src_atrack_url = mixed_srt_validation_target(
+            env,
+            "srt-src-atrack",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-atrack-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_src_a1_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-a1-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_src_a1_url = mixed_srt_validation_target(
+            env,
+            "srt-src-a1",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-a1-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_720p_all_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-all-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_720p_all_url = mixed_srt_validation_target(
+            env,
+            "srt-720p-all",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-all-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_720p_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_720p_url = mixed_srt_validation_target(
+            env,
+            "srt-720p",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_720p_a1_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-a1-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_720p_a1_url = mixed_srt_validation_target(
+            env,
+            "srt-720p-a1",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-a1-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_1080p_all_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-all-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_1080p_all_url = mixed_srt_validation_target(
+            env,
+            "srt-1080p-all",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-all-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_1080p_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_1080p_url = mixed_srt_validation_target(
+            env,
+            "srt-1080p",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
-        let srt_1080p_a1_url = format!(
-            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-a1-{n}&timeout=30000000",
-            env.mtx_srt
+        let srt_1080p_a1_url = mixed_srt_validation_target(
+            env,
+            "srt-1080p-a1",
+            n,
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-a1-{n}&timeout=30000000",
+                env.mtx_srt
+            ),
+            &ffmpeg_srt_sinks,
         );
         let output_matrix = [
             (
@@ -8233,6 +8356,15 @@ struct MixedGroupSpec<'a> {
     encoding: &'a str,
 }
 
+struct FfmpegSrtSink {
+    group: String,
+    index: usize,
+    port: u16,
+    capture_path: PathBuf,
+    log_path: PathBuf,
+    child: Child,
+}
+
 async fn add_mixed_group<F>(
     api: &RampApi,
     pipeline_id: &str,
@@ -8260,6 +8392,201 @@ where
         spec.count, spec.group, spec.cfg
     );
     Ok(())
+}
+
+struct MixedSrtGroupValidation<'a> {
+    label: &'a str,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn add_mixed_srt_group<F>(
+    api: &RampApi,
+    pipeline_id: &str,
+    env: &MixedEnv,
+    spec: MixedGroupSpec<'_>,
+    mediamtx_url_for: F,
+    validation: MixedSrtGroupValidation<'_>,
+    sinks: &mut Vec<FfmpegSrtSink>,
+    next_sink_offset: &mut usize,
+    output_ids: &mut Vec<String>,
+) -> Result<(), String>
+where
+    F: Fn(usize) -> String,
+{
+    let mut direct_urls = Vec::new();
+    if env.ffmpeg_srt_sink {
+        for index in 1..=spec.count {
+            let sink = spawn_ffmpeg_srt_sink(
+                env,
+                spec.cfg,
+                spec.group,
+                index,
+                validation.label,
+                *next_sink_offset,
+            )
+            .await?;
+            *next_sink_offset += 1;
+            direct_urls.push(format!(
+                "srt://127.0.0.1:{}?pkt_size=1316&latency=200000",
+                sink.port
+            ));
+            sinks.push(sink);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    add_mixed_group(
+        api,
+        pipeline_id,
+        spec,
+        |index| {
+            direct_urls
+                .get(index.saturating_sub(1))
+                .cloned()
+                .unwrap_or_else(|| mediamtx_url_for(index))
+        },
+        output_ids,
+    )
+    .await
+}
+
+async fn spawn_ffmpeg_srt_sink(
+    env: &MixedEnv,
+    cfg: &str,
+    group: &str,
+    index: usize,
+    label: &str,
+    offset: usize,
+) -> Result<FfmpegSrtSink, String> {
+    let port = env
+        .ffmpeg_srt_sink_base
+        .checked_add(offset as u16)
+        .ok_or("FFmpeg SRT sink port range overflowed")?;
+    let safe_label = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let stem = format!("{cfg}-{group}-{index}-{safe_label}");
+    let capture_path = env.work_dir.join(format!("{stem}.ffmpeg-srt-sink.ts"));
+    let log_path = env.work_dir.join(format!("{stem}.ffmpeg-srt-sink.log"));
+    let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    let err = log.try_clone().map_err(|e| e.to_string())?;
+    let listener_url =
+        format!("srt://127.0.0.1:{port}?mode=listener&transtype=live&timeout=30000000");
+    let capture_seconds = env.ffmpeg_srt_sink_seconds.to_string();
+    let child = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-y",
+            "-i",
+            &listener_url,
+            "-t",
+            &capture_seconds,
+            "-map",
+            "0",
+            "-c",
+            "copy",
+        ])
+        .arg(&capture_path)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(err))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("failed to start FFmpeg SRT sink {group}[{index}]: {e}"))?;
+
+    Ok(FfmpegSrtSink {
+        group: group.to_string(),
+        index,
+        port,
+        capture_path,
+        log_path,
+        child,
+    })
+}
+
+async fn finish_ffmpeg_srt_sinks(sinks: &mut [FfmpegSrtSink]) -> Result<(), String> {
+    for sink in sinks {
+        let wait = tokio::time::timeout(Duration::from_secs(30), sink.child.wait()).await;
+        let status = match wait {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => {
+                return Err(format!(
+                    "FFmpeg SRT sink {}[{}] wait failed: {error}",
+                    sink.group, sink.index
+                ));
+            }
+            Err(_) => {
+                let _ = sink.child.kill().await;
+                return Err(format!(
+                    "FFmpeg SRT sink {}[{}] timed out waiting for capture {}",
+                    sink.group,
+                    sink.index,
+                    sink.capture_path.display()
+                ));
+            }
+        };
+        if !status.success() {
+            let stderr = std::fs::read_to_string(&sink.log_path).unwrap_or_default();
+            return Err(format!(
+                "FFmpeg SRT sink {}[{}] failed status={status}: {}",
+                sink.group,
+                sink.index,
+                stderr.lines().take(5).collect::<Vec<_>>().join(" | ")
+            ));
+        }
+        let bytes = std::fs::metadata(&sink.capture_path)
+            .map_err(|e| {
+                format!(
+                    "FFmpeg SRT sink {}[{}] missing capture {}: {e}",
+                    sink.group,
+                    sink.index,
+                    sink.capture_path.display()
+                )
+            })?
+            .len();
+        if bytes == 0 {
+            return Err(format!(
+                "FFmpeg SRT sink {}[{}] produced an empty capture",
+                sink.group, sink.index
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ffmpeg_srt_sink_capture<'a>(
+    sinks: &'a [FfmpegSrtSink],
+    group: &str,
+    index: usize,
+) -> Option<&'a Path> {
+    sinks
+        .iter()
+        .find(|sink| sink.group == group && sink.index == index)
+        .map(|sink| sink.capture_path.as_path())
+}
+
+fn mixed_srt_validation_target(
+    env: &MixedEnv,
+    group: &str,
+    index: usize,
+    mediamtx_url: String,
+    sinks: &[FfmpegSrtSink],
+) -> String {
+    if env.ffmpeg_srt_sink
+        && let Some(path) = ffmpeg_srt_sink_capture(sinks, group, index)
+    {
+        return path.to_string_lossy().into_owned();
+    }
+    mediamtx_url
 }
 
 async fn snapshot_mixed(

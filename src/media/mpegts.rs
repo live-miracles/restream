@@ -706,6 +706,7 @@ pub struct TsMuxer {
     pmt_pid: u16,
     pcr_pid: u16,
     last_pat_pmt_dts: Option<i64>,
+    last_dts_90k: Vec<i64>,
     service_metadata: TsServiceMetadata,
     output: Vec<u8>,
 }
@@ -763,8 +764,9 @@ impl TsMuxer {
             pid += 1;
         }
 
+        let stream_count = streams.len();
         let pcr_pid = streams.first().map_or(0x100, |s| s.pid);
-        let continuity = vec![0u8; streams.len()];
+        let continuity = vec![0u8; stream_count];
 
         Self {
             streams,
@@ -775,6 +777,7 @@ impl TsMuxer {
             pmt_pid: 0x1000,
             pcr_pid,
             last_pat_pmt_dts: None,
+            last_dts_90k: vec![i64::MIN; stream_count],
             service_metadata,
             output: Vec::with_capacity(TS_PACKET_SIZE * 8),
         }
@@ -808,8 +811,19 @@ impl TsMuxer {
         };
 
         let pid = self.streams[stream_idx].pid;
-        let pts_90k = ms_to_ts(pts_ms);
-        let dts_90k = ms_to_ts(dts_ms);
+        let mut pts_90k = ms_to_ts(pts_ms);
+        let mut dts_90k = ms_to_ts(dts_ms);
+        if let Some(prev) = self.last_dts_90k.get(stream_idx).copied()
+            && dts_90k <= prev
+        {
+            dts_90k = prev + 1;
+        }
+        if pts_90k < dts_90k {
+            pts_90k = dts_90k;
+        }
+        if let Some(slot) = self.last_dts_90k.get_mut(stream_idx) {
+            *slot = dts_90k;
+        }
 
         // Insert PAT/PMT before keyframes or every ~500ms
         let should_insert_tables = match self.last_pat_pmt_dts {
@@ -2438,6 +2452,92 @@ mod tests {
         let ts_out2 = muxer.mux_packet(MediaType::Audio, 0, 0, 0, false, &audio_payload);
         assert!(!ts_out2.is_empty());
         assert_eq!(ts_out2.len() % TS_PACKET_SIZE, 0);
+    }
+
+    #[test]
+    fn muxer_enforces_strict_dts_when_ms_timestamps_repeat() {
+        let audio = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+        };
+
+        let mut muxer = TsMuxer::new(None, &[audio]);
+        let audio_payload = [0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC, 0xDE, 0x02];
+
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1000, 1000, false, &audio_payload)
+                .is_empty()
+        );
+        assert_eq!(muxer.last_dts_90k[0], 90_000);
+
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1000, 1000, false, &audio_payload)
+                .is_empty()
+        );
+        assert_eq!(
+            muxer.last_dts_90k[0], 90_001,
+            "equal millisecond DTS must not become equal 90 kHz DTS"
+        );
+    }
+
+    #[test]
+    fn muxer_tracks_strict_dts_per_audio_track() {
+        let audio0 = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: None,
+            language: Some("eng".to_string()),
+            title: None,
+            profile: None,
+        };
+        let audio1 = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 1,
+            pid: None,
+            language: Some("spa".to_string()),
+            title: None,
+            profile: None,
+        };
+
+        let mut muxer = TsMuxer::new(None, &[audio0, audio1]);
+        let audio_payload = [0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC, 0xDE, 0x02];
+
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1000, 1000, false, &audio_payload)
+                .is_empty()
+        );
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 1, 1000, 1000, false, &audio_payload)
+                .is_empty()
+        );
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1000, 1000, false, &audio_payload)
+                .is_empty()
+        );
+
+        assert_eq!(muxer.last_dts_90k[0], 90_001);
+        assert_eq!(
+            muxer.last_dts_90k[1], 90_000,
+            "DTS repair must be isolated per elementary stream"
+        );
     }
 
     #[test]

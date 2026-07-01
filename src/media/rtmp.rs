@@ -48,6 +48,41 @@ struct RtmpIngestHandle {
     ingest_metrics: Arc<StageMetrics>,
 }
 
+struct RtmpTimestampGuard {
+    last_video_ms: i64,
+    last_audio_ms: i64,
+}
+
+impl RtmpTimestampGuard {
+    fn new() -> Self {
+        Self {
+            last_video_ms: i64::MIN,
+            last_audio_ms: i64::MIN,
+        }
+    }
+
+    fn packet_timestamp(&mut self, packet: &MediaPacket) -> RtmpTimestamp {
+        let timestamp_ms = match packet.media_type {
+            MediaType::Video => packet.dts,
+            MediaType::Audio => packet.pts,
+        };
+        RtmpTimestamp::new(self.enforce_ms(packet.media_type, timestamp_ms) as u32)
+    }
+
+    fn enforce_ms(&mut self, media_type: MediaType, timestamp_ms: i64) -> i64 {
+        let mut timestamp_ms = timestamp_ms.clamp(0, u32::MAX as i64);
+        let slot = match media_type {
+            MediaType::Video => &mut self.last_video_ms,
+            MediaType::Audio => &mut self.last_audio_ms,
+        };
+        if timestamp_ms <= *slot {
+            timestamp_ms = (*slot + 1).min(u32::MAX as i64);
+        }
+        *slot = timestamp_ms;
+        timestamp_ms
+    }
+}
+
 fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
     if data.len() < 2 {
         return None;
@@ -1368,6 +1403,7 @@ async fn handle_session_results(
                         let mut reader =
                             Reader::new(format!("rtmp_play:{}", pipeline.id), ring_buf);
                         let mut burst = Vec::with_capacity(32);
+                        let mut timestamp_guard = RtmpTimestampGuard::new();
 
                         'play: loop {
                             burst.clear();
@@ -1384,10 +1420,7 @@ async fn handle_session_results(
                             }
 
                             for pkt in &burst {
-                                let ts = match pkt.media_type {
-                                    MediaType::Video => RtmpTimestamp::new(pkt.dts.max(0) as u32),
-                                    MediaType::Audio => RtmpTimestamp::new(pkt.pts.max(0) as u32),
-                                };
+                                let ts = timestamp_guard.packet_timestamp(pkt);
                                 let result = match pkt.media_type {
                                     MediaType::Video => session.send_video_data(
                                         stream_id,
@@ -1476,6 +1509,17 @@ pub async fn start_rtmp_egress(
                 .await;
         }};
     }
+    let output_audio_tracks =
+        resolved_output_audio_tracks(&engine, &pipeline_id, &ring_buffer).await;
+    if let Err(message) = validate_rtmp_output_audio_tracks(&output_audio_tracks) {
+        error!(
+            "[rtmp-egress] refusing to start output {} for pipeline {}: {}",
+            output_id, pipeline_id, message
+        );
+        egress_error!("prepare", message);
+        return;
+    }
+    let mut output_audio_track = output_audio_tracks.first().cloned();
     let parts = match parse_rtmp_url(&target_url) {
         Some(p) => p,
         None => {
@@ -1650,6 +1694,8 @@ pub async fn start_rtmp_egress(
     // config record when the encoder changes resolution or bitrate mid-stream.
     // None = no sequence header sent yet.
     let mut last_sent_sps: Option<Vec<u8>> = None;
+    let mut audio_sequence_header_sent = false;
+    let mut timestamp_guard = RtmpTimestampGuard::new();
     // Per-egress reusable conversion buffers — avoids per-frame Vec allocation.
     // Each task owns its own buffer; no sharing, no contention with transcoder.
     let mut video_buf = Vec::<u8>::new();
@@ -1724,31 +1770,51 @@ pub async fn start_rtmp_egress(
                                         egress_error!("send", "failed to write video sequence header");
                                         return;
                                     }
-                                    // Synthesize AAC sequence header from audio meta if not cached
-                                    if audio_sh.is_none() {
-                                        if let Some(Some(track)) = engine
-                                            .with_active_ingest(&pipeline_id, |ingest| {
-                                                let tracks = ingest
-                                                    .audio_tracks
-                                                    .lock()
-                                                    .unwrap_or_else(|e| e.into_inner());
-                                                tracks.first().cloned()
-                                            })
-                                            .await
+                                    if audio_sh.is_none() && output_audio_track.is_none() {
+                                        let refreshed_tracks = resolved_output_audio_tracks(
+                                            &engine,
+                                            &pipeline_id,
+                                            reader.current_ring(),
+                                        )
+                                        .await;
+                                        if let Err(message) =
+                                            validate_rtmp_output_audio_tracks(&refreshed_tracks)
                                         {
-                                            audio_sh = Some(codec::build_aac_sequence_header(
-                                                track.sample_rate,
-                                                track.channels,
-                                            ));
+                                            error!(
+                                                "[rtmp-egress] refusing to start output {} for pipeline {}: {}",
+                                                output_id, pipeline_id, message
+                                            );
+                                            egress_error!("prepare", message);
+                                            return;
                                         }
+                                        output_audio_track = refreshed_tracks.first().cloned();
                                     }
-                                    if let Some(ash) = audio_sh
-                                        && let Ok(ClientSessionResult::OutboundResponse(p)) =
-                                            session.publish_audio_data(ash, RtmpTimestamp::new(0), false)
-                                            && socket.write_all(&p.bytes).await.is_err()
+                                    // Synthesize AAC sequence header from audio meta if not cached
+                                    if audio_sh.is_none()
+                                        && let Some(track) = output_audio_track.as_ref()
                                     {
-                                        egress_error!("send", "failed to write audio sequence header");
-                                        return;
+                                        audio_sh = Some(codec::build_aac_sequence_header(
+                                            track.sample_rate,
+                                            track.channels,
+                                        ));
+                                    }
+                                    if let Some(ref ash) = audio_sh {
+                                        if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                            session.publish_audio_data(
+                                                ash.clone(),
+                                                RtmpTimestamp::new(0),
+                                                false,
+                                            )
+                                        {
+                                            if socket.write_all(&p.bytes).await.is_err() {
+                                                egress_error!(
+                                                    "send",
+                                                    "failed to write audio sequence header"
+                                                );
+                                                return;
+                                            }
+                                            audio_sequence_header_sent = true;
+                                        }
                                     }
                                     is_publishing = true;
                                 }
@@ -1769,10 +1835,63 @@ pub async fn start_rtmp_egress(
                 if reader.pull_burst(&mut packets, 32).is_ok() {
                     let mut burst_made_progress = false;
                     for packet in packets.drain(..) {
-                        let ts = match packet.media_type {
-                            MediaType::Video => RtmpTimestamp::new(packet.dts.max(0) as u32),
-                            MediaType::Audio => RtmpTimestamp::new(packet.pts.max(0) as u32),
-                        };
+                        if packet.media_type == MediaType::Audio {
+                            if output_audio_track.is_none() {
+                                let refreshed_tracks = resolved_output_audio_tracks(
+                                    &engine,
+                                    &pipeline_id,
+                                    reader.current_ring(),
+                                )
+                                .await;
+                                if let Err(message) =
+                                    validate_rtmp_output_audio_tracks(&refreshed_tracks)
+                                {
+                                    error!(
+                                        "[rtmp-egress] refusing output {} for pipeline {} after audio track probe: {}",
+                                        output_id, pipeline_id, message
+                                    );
+                                    egress_error!("send", message);
+                                    return;
+                                }
+                                output_audio_track = refreshed_tracks.first().cloned();
+                            }
+                            if let Err(message) =
+                                validate_rtmp_output_audio_packet_track(packet.track_index)
+                            {
+                                error!(
+                                    "[rtmp-egress] refusing output {} for pipeline {}: {}",
+                                    output_id, pipeline_id, message
+                                );
+                                egress_error!("send", message);
+                                return;
+                            }
+                            if packet.format == PayloadFormat::Raw
+                                && !audio_sequence_header_sent
+                                && let Some(track) = output_audio_track.as_ref()
+                            {
+                                let sequence_header = codec::build_aac_sequence_header(
+                                    track.sample_rate,
+                                    track.channels,
+                                );
+                                if let Ok(ClientSessionResult::OutboundResponse(p)) =
+                                    session.publish_audio_data(
+                                        sequence_header,
+                                        RtmpTimestamp::new(0),
+                                        false,
+                                    )
+                                {
+                                    if socket.write_all(&p.bytes).await.is_err() {
+                                        egress_error!(
+                                            "send",
+                                            "failed to write deferred audio sequence header"
+                                        );
+                                        return;
+                                    }
+                                    audio_sequence_header_sent = true;
+                                }
+                            }
+                        }
+                        let ts = timestamp_guard.packet_timestamp(&packet);
                         let payload = if packet.format == PayloadFormat::Raw {
                             match packet.media_type {
                                 MediaType::Video => {
@@ -1897,6 +2016,53 @@ pub async fn start_rtmp_egress(
     }
 }
 
+async fn resolved_output_audio_tracks(
+    engine: &MediaEngine,
+    pipeline_id: &str,
+    ring_buffer: &Arc<RingBuffer>,
+) -> Vec<AudioMeta> {
+    if let Some(tracks) = ring_buffer.audio_tracks() {
+        if !tracks.is_empty() {
+            return tracks.to_vec();
+        }
+    }
+
+    engine
+        .with_active_ingest(pipeline_id, |ingest| {
+            let tracks = ingest
+                .audio_tracks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !tracks.is_empty() {
+                tracks.as_ref().clone()
+            } else {
+                ingest.audio.clone().into_iter().collect()
+            }
+        })
+        .await
+        .unwrap_or_default()
+}
+
+fn validate_rtmp_output_audio_tracks(audio_tracks: &[AudioMeta]) -> Result<(), String> {
+    if audio_tracks.len() > 1 {
+        return Err(format!(
+            "RTMP output supports exactly one audio track, but this output resolved to {} tracks. Choose subset, downmix, or remap audio routing.",
+            audio_tracks.len()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_output_audio_packet_track(track_index: u32) -> Result<(), String> {
+    if track_index != 0 {
+        return Err(format!(
+            "RTMP output requires a single routed audio track, but observed track index {} on the output ring. Choose subset, downmix, or remap audio routing.",
+            track_index
+        ));
+    }
+    Ok(())
+}
+
 async fn handle_client_results<S>(
     results: Vec<ClientSessionResult>,
     socket: &mut S,
@@ -1942,7 +2108,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::engine::{MediaEngine, VideoMeta};
+    use crate::media::engine::{AudioMeta, MediaEngine, VideoMeta};
+    use crate::media::ring_buffer::RingBuffer;
 
     #[tokio::test]
     async fn detects_h265_from_ingest_video_meta() {
@@ -2087,6 +2254,47 @@ mod tests {
         assert!(is_h265, "should detect hevc after probe arrives");
 
         engine.unregister_ingest(&pipeline_id).await;
+    }
+
+    #[tokio::test]
+    async fn resolved_output_audio_tracks_falls_back_when_ring_metadata_is_empty() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-audio", "key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_audio_tracks(
+                "pipe-audio",
+                vec![
+                    AudioMeta {
+                        codec: "aac".into(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        track_index: 0,
+                        ..Default::default()
+                    },
+                    AudioMeta {
+                        codec: "aac".into(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        track_index: 1,
+                        ..Default::default()
+                    },
+                ],
+            )
+            .await;
+
+        let ring = Arc::new(RingBuffer::new(16));
+        ring.set_audio_tracks(Vec::new());
+
+        let tracks = resolved_output_audio_tracks(&engine, "pipe-audio", &ring).await;
+
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].track_index, 0);
+        assert_eq!(tracks[1].track_index, 1);
+
+        engine.unregister_ingest("pipe-audio").await;
     }
 
     #[test]
@@ -2484,6 +2692,78 @@ mod tests {
         assert_eq!(meta.sample_rate, 48000);
         assert_eq!(meta.channels, 6);
         assert_eq!(meta.channel_layout.as_deref(), Some("5.1"));
+    }
+
+    #[test]
+    fn rtmp_timestamp_guard_bumps_repeated_video_dts() {
+        let mut guard = RtmpTimestampGuard::new();
+
+        assert_eq!(guard.enforce_ms(MediaType::Video, 41), 41);
+        assert_eq!(guard.enforce_ms(MediaType::Video, 41), 42);
+        assert_eq!(guard.enforce_ms(MediaType::Video, 40), 43);
+    }
+
+    #[test]
+    fn rtmp_timestamp_guard_bumps_repeated_audio_pts() {
+        let mut guard = RtmpTimestampGuard::new();
+
+        assert_eq!(guard.enforce_ms(MediaType::Audio, 26), 26);
+        assert_eq!(guard.enforce_ms(MediaType::Audio, 26), 27);
+        assert_eq!(guard.enforce_ms(MediaType::Audio, 25), 28);
+    }
+
+    #[test]
+    fn rtmp_timestamp_guard_keeps_audio_and_video_independent() {
+        let mut guard = RtmpTimestampGuard::new();
+
+        assert_eq!(guard.enforce_ms(MediaType::Video, 100), 100);
+        assert_eq!(guard.enforce_ms(MediaType::Audio, 100), 100);
+        assert_eq!(guard.enforce_ms(MediaType::Video, 100), 101);
+        assert_eq!(guard.enforce_ms(MediaType::Audio, 100), 101);
+    }
+
+    #[test]
+    fn validate_rtmp_output_audio_tracks_accepts_single_track() {
+        let track = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
+            track_index: 1,
+            ..Default::default()
+        };
+
+        assert!(validate_rtmp_output_audio_tracks(&[track]).is_ok());
+    }
+
+    #[test]
+    fn validate_rtmp_output_audio_tracks_rejects_multitrack_outputs() {
+        let track0 = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
+            track_index: 0,
+            ..Default::default()
+        };
+        let track1 = AudioMeta {
+            track_index: 1,
+            ..track0.clone()
+        };
+
+        let error = validate_rtmp_output_audio_tracks(&[track0, track1]).unwrap_err();
+        assert!(error.contains("exactly one audio track"));
+        assert!(error.contains("subset"));
+    }
+
+    #[test]
+    fn validate_rtmp_output_audio_packet_track_accepts_track_zero() {
+        assert!(validate_rtmp_output_audio_packet_track(0).is_ok());
+    }
+
+    #[test]
+    fn validate_rtmp_output_audio_packet_track_rejects_nonzero_track() {
+        let error = validate_rtmp_output_audio_packet_track(1).unwrap_err();
+        assert!(error.contains("single routed audio track"));
+        assert!(error.contains("track index 1"));
     }
 
     // --- FLV composition time: edge cases ---

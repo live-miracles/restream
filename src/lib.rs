@@ -794,8 +794,10 @@ pub async fn run_app() {
                                             pid2.clone(),
                                             store_for_segmenter,
                                             rb2,
+                                            None,
                                             eng2.clone(),
                                             hls_cancel,
+                                            None,
                                         )
                                         .await;
                                         eng2.shutdown_hls_segmenter(&pid2).await;
@@ -969,6 +971,8 @@ pub async fn run_app() {
             }
             let needed_stages: std::collections::HashSet<StageKey> =
                 collect_needed_stage_keys(stage_inputs);
+            let mut needed_stages = needed_stages;
+            needed_stages.extend(engine.active_hls_preview_stage_keys().await);
             engine.sweep_unused_transcoder_stages(&needed_stages).await;
             engine.sweep_unused_stages().await;
         }
@@ -1015,6 +1019,21 @@ pub async fn run_app() {
                 .await
             {
                 engine.shutdown_hls_segmenter(&pid).await;
+            }
+        }
+        let hls_preview_ids = engine.hls_preview_pipeline_ids().await;
+        for pid in hls_preview_ids {
+            if engine
+                .has_recent_ingest_disconnect(&pid, tuning.ingest_disconnect_grace_ms)
+                .await
+            {
+                continue;
+            }
+            if engine
+                .should_shutdown_hls_preview_segmenter(&pid, tuning.hls_idle_timeout_ms)
+                .await
+            {
+                engine.shutdown_hls_preview_segmenter(&pid).await;
             }
         }
 

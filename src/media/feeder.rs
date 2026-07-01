@@ -330,4 +330,69 @@ mod tests {
 
         assert_eq!(feeder_output, manual_output);
     }
+
+    #[test]
+    fn feeder_remuxed_h265_multi_audio_fixture_decodes_cleanly() {
+        let fixture = crate::test_fixtures::bench_transport_fixture("h265", "1.5M", true)
+            .expect("fixture must exist");
+        let input = std::fs::read(&fixture).expect("fixture must be readable");
+        let mut demuxer = crate::media::mpegts::TsDemuxer::new();
+        let mut packets = Vec::new();
+
+        for chunk in input.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("fixture must probe");
+        let video = probe.video.expect("fixture must have video");
+        let audio_tracks = Arc::new(probe.audio_tracks);
+        assert_eq!(
+            audio_tracks.len(),
+            2,
+            "regression fixture must keep both audio tracks"
+        );
+
+        let mut feeder =
+            TsPacketFeeder::new(Some(&video), audio_tracks, PacketFeedConfig::default());
+        let mut output = Vec::new();
+        for packet in &packets {
+            feeder.extend_ts_for_packet(packet, &mut output);
+        }
+        assert!(
+            !output.is_empty(),
+            "remuxed fixture must produce MPEG-TS bytes"
+        );
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock must be valid")
+            .as_nanos();
+        let output_path = std::env::temp_dir().join(format!(
+            "restream-h265-multi-remux-{}-{unique}.ts",
+            std::process::id()
+        ));
+        std::fs::write(&output_path, &output).expect("remuxed fixture must be writable");
+
+        let ffmpeg = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-v", "warning", "-i"])
+            .arg(&output_path)
+            .args(["-t", "5", "-map", "0", "-f", "null", "-"])
+            .output()
+            .expect("ffmpeg must run");
+        let _ = std::fs::remove_file(&output_path);
+        let stderr = String::from_utf8_lossy(&ffmpeg.stderr);
+        let stderr_lower = stderr.to_ascii_lowercase();
+
+        assert!(
+            ffmpeg.status.success(),
+            "ffmpeg should decode remuxed fixture: {stderr}"
+        );
+        assert!(
+            !stderr_lower.contains("non monoton"),
+            "remuxed fixture must not contain duplicate DTS: {stderr}"
+        );
+    }
 }

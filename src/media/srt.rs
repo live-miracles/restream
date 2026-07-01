@@ -2095,7 +2095,7 @@ impl SrtServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::engine::VideoMeta;
+    use crate::media::engine::{AudioMeta, VideoMeta};
     use crate::media::ring_buffer::PayloadFormat;
 
     #[test]
@@ -2712,6 +2712,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_ts_muxer_uses_routed_audio_track_metadata() {
+        let engine = Arc::new(crate::media::engine::MediaEngine::new());
+        let pipeline_id = "test-pipe-routed-audio";
+        let source_ring = engine.get_or_create_pipeline(pipeline_id).await;
+        let cancel_ingest = engine
+            .try_register_ingest(pipeline_id, "key", "srt")
+            .await
+            .unwrap();
+
+        engine
+            .update_ingest_meta(
+                pipeline_id,
+                Some(VideoMeta {
+                    codec: "h264".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    fps: 30.0,
+                    bw: None,
+                    pid: None,
+                    language: None,
+                    title: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                None,
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks(
+                pipeline_id,
+                vec![
+                    AudioMeta {
+                        codec: "aac".to_string(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        track_index: 0,
+                        ..Default::default()
+                    },
+                    AudioMeta {
+                        codec: "aac".to_string(),
+                        sample_rate: 48_000,
+                        channels: 2,
+                        track_index: 1,
+                        ..Default::default()
+                    },
+                ],
+            )
+            .await;
+        source_ring.set_audio_tracks(vec![AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
+            track_index: 0,
+            ..Default::default()
+        }]);
+
+        let stage = engine
+            .get_or_create_ts_muxer_stage(pipeline_id, "source+atrack:0", source_ring.clone())
+            .await;
+        let mut reader = TsChunkReader::new("routed-audio-reader".to_string(), &stage);
+
+        source_ring.push(crate::media::ring_buffer::MediaPacket {
+            media_type: MediaType::Video,
+            track_index: 0,
+            pts: 1000,
+            dts: 1000,
+            is_keyframe: true,
+            format: PayloadFormat::Raw,
+            payload: bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1, 2, 3]),
+        });
+        source_ring.push(crate::media::ring_buffer::MediaPacket {
+            media_type: MediaType::Audio,
+            track_index: 0,
+            pts: 1020,
+            dts: 1020,
+            is_keyframe: false,
+            format: PayloadFormat::Raw,
+            payload: bytes::Bytes::from_static(&[0x11; 32]),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let mut chunks = Vec::new();
+        assert!(reader.pull_burst(&mut chunks, 10).unwrap() > 0);
+
+        let mut demuxer = crate::media::mpegts::TsDemuxer::new();
+        for chunk in &chunks {
+            demuxer.feed(&chunk.payload);
+        }
+        demuxer.flush();
+        let probe = demuxer.take_probe().expect("muxed TS should probe");
+        assert_eq!(
+            probe.audio_tracks.len(),
+            1,
+            "SRT subset muxer PMT must advertise only routed audio tracks"
+        );
+
+        cancel_ingest.cancel();
+        stage.cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn shared_ts_muxer_cancels_and_recreates_after_probe_wait_exit() {
         let engine = Arc::new(crate::media::engine::MediaEngine::new());
         let pipeline_id = "test-pipe-probe-exit";
@@ -3300,16 +3403,22 @@ pub fn start_shared_ts_muxer(
                 .with_active_ingest(&pipeline_id_str, |ingest| {
                     let video = ingest.video.clone();
                     video.as_ref()?;
-                    let lock = ingest
-                        .audio_tracks
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    let tracks = if lock.is_empty()
-                        && let Some(audio) = ingest.audio.clone()
+                    let tracks = if let Some(routed_tracks) = source_ring.audio_tracks()
+                        && !routed_tracks.is_empty()
                     {
-                        std::sync::Arc::new(vec![audio])
+                        std::sync::Arc::new(routed_tracks.to_vec())
                     } else {
-                        std::sync::Arc::clone(&lock)
+                        let lock = ingest
+                            .audio_tracks
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if lock.is_empty()
+                            && let Some(audio) = ingest.audio.clone()
+                        {
+                            std::sync::Arc::new(vec![audio])
+                        } else {
+                            std::sync::Arc::clone(&lock)
+                        }
                     };
                     Some((video, tracks))
                 })

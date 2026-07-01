@@ -298,8 +298,10 @@ async fn run_matrix_iteration(
             "pipe".to_string(),
             store.clone(),
             target_ring.clone(),
+            None,
             engine.clone(),
             cancel.clone(),
+            None,
         ));
         tokio::time::sleep(Duration::from_millis(10)).await;
         Some((store, cancel, segmenter))

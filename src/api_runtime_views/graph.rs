@@ -15,13 +15,12 @@ pub(crate) async fn processing_graph(
     pipeline_id: &str,
     outputs: &[Output],
 ) -> serde_json::Value {
+    let hls_snapshot = engine.hls_dependency_snapshot(pipeline_id).await;
     let ingests = engine.ingests.active.read().await;
     let egresses = engine.egresses.active.read().await;
     let pipelines = engine.ingests.pipelines.read().await;
     let transcoder_buffers = engine.stages.buffers.read().await;
     let rec_tokens = engine.recordings.cancel_tokens.read().await;
-    let hls_stores = engine.hls.stores.read().await;
-    let hls_consumers = engine.hls.consumers.read().await;
     let all_stage_metrics = engine.stages.metrics.read().await;
     let all_input_queues = engine.stages.input_queues.read().await;
     let all_pipe_metrics = engine.stages.pipe_metrics.read().await;
@@ -276,17 +275,14 @@ pub(crate) async fn processing_graph(
         ));
     }
 
-    if hls_stores.contains_key(pipeline_id) {
+    if hls_snapshot.store_exists {
         let hls_id = format!("{pipeline_id}_hls_preview");
         let hls_stage_key = StageKey::new(pipeline_id, StageKind::hls());
-        let hls_active = hls_consumers
-            .get(pipeline_id)
-            .is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
         nodes.push(api_view_models::processing_graph_node(
             hls_id.clone(),
             "hls",
             "HLS Preview",
-            hls_active,
+            hls_snapshot.active,
             None,
             all_stage_metrics
                 .get(&hls_stage_key)
