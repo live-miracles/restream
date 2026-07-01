@@ -1061,6 +1061,11 @@ async function populatePipeFileSelect(selectedFilename = ""): Promise<void> {
   fileSelect.value = selectedFilename;
 }
 
+async function loadPipeFileOptions(selectedFilename = ""): Promise<void> {
+  await populatePipeFileSelect(selectedFilename);
+  await refreshPipeFileAnalysis(selectedFilename);
+}
+
 function resetPipeFileOptions(
   fileIngest: PipelineFileIngestConfig | null,
   fallbackFilename = "",
@@ -1113,8 +1118,6 @@ function resetPipeFileOptions(
       );
     };
   }
-  void populatePipeFileSelect(filename);
-  void refreshPipeFileAnalysis(filename);
 }
 
 async function openPipeModal(
@@ -1168,6 +1171,9 @@ async function openPipeModal(
     fileIngest?.configured || fallbackFilename ? "file" : "publisher";
   setPipeSourceUi(sourceType);
   resetPipeFileOptions(fileIngest, fallbackFilename);
+  if (sourceType === "file") {
+    await loadPipeFileOptions(fallbackFilename || fileIngest?.filename || "");
+  }
 
   const sourceSelect = document.getElementById(
     "pipe-source-type-input",
@@ -1178,7 +1184,15 @@ async function openPipeModal(
         sourceSelect.value === "file" ? "file" : "publisher";
       setPipeSourceUi(nextSourceType);
       if (nextSourceType === "file") {
-        void refreshPipeFileAnalysis();
+        const selectedFilename =
+          (
+            document.getElementById(
+              "pipe-file-input",
+            ) as HTMLSelectElement | null
+          )?.value?.trim() ||
+          filenameFromInputSource(currentPipeModalPipeline?.inputSource) ||
+          "";
+        void loadPipeFileOptions(selectedFilename);
       }
     };
   }
