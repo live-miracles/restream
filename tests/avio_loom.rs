@@ -9,7 +9,8 @@ mod loom_tests {
 
     struct FakeQueue {
         mu: Mutex<State>,
-        cvar: Condvar,
+        data_available: Condvar,
+        space_available: Condvar,
         capacity: usize,
     }
 
@@ -26,7 +27,8 @@ mod loom_tests {
                     len: 0,
                     closed: false,
                 }),
-                cvar: Condvar::new(),
+                data_available: Condvar::new(),
+                space_available: Condvar::new(),
                 capacity,
             })
         }
@@ -39,10 +41,29 @@ mod loom_tests {
                 }
                 if guard.len < self.capacity {
                     guard.len += 1;
-                    self.cvar.notify_all();
+                    self.data_available.notify_all();
                     return true;
                 }
-                guard = self.cvar.wait(guard).unwrap();
+                guard = self.space_available.wait(guard).unwrap();
+            }
+        }
+
+        fn write_batch(&self, bytes: usize) -> bool {
+            if bytes == 0 {
+                return true;
+            }
+
+            let mut guard = self.mu.lock().unwrap();
+            loop {
+                if guard.closed {
+                    return false;
+                }
+                if guard.len < self.capacity {
+                    guard.len += bytes;
+                    self.data_available.notify_all();
+                    return true;
+                }
+                guard = self.space_available.wait(guard).unwrap();
             }
         }
 
@@ -51,20 +72,21 @@ mod loom_tests {
             loop {
                 if guard.len > 0 {
                     guard.len -= 1;
-                    self.cvar.notify_all();
+                    self.space_available.notify_all();
                     return Some(());
                 }
                 if guard.closed {
                     return None;
                 }
-                guard = self.cvar.wait(guard).unwrap();
+                guard = self.data_available.wait(guard).unwrap();
             }
         }
 
         fn close(&self) {
             let mut guard = self.mu.lock().unwrap();
             guard.closed = true;
-            self.cvar.notify_all();
+            self.data_available.notify_all();
+            self.space_available.notify_all();
         }
     }
 
@@ -104,6 +126,46 @@ mod loom_tests {
 
             queue.close();
             reader.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn loom_close_wakes_blocked_batch_writer() {
+        loom::model(|| {
+            let queue = FakeQueue::new(1);
+            assert!(queue.write_one(), "initial write should fill queue");
+
+            let writer_queue = queue.clone();
+            let writer = thread::spawn(move || {
+                let wrote = writer_queue.write_batch(2);
+                assert!(
+                    !wrote,
+                    "batch writer blocked on a full queue must return after close"
+                );
+            });
+
+            queue.close();
+            writer.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn loom_read_wakes_blocked_batch_writer() {
+        loom::model(|| {
+            let queue = FakeQueue::new(1);
+            assert!(queue.write_one(), "initial write should fill queue");
+
+            let writer_queue = queue.clone();
+            let writer = thread::spawn(move || {
+                let wrote = writer_queue.write_batch(2);
+                assert!(wrote, "batch writer should continue after read frees space");
+            });
+
+            assert!(
+                queue.read_one().is_some(),
+                "reader should drain initial byte"
+            );
+            writer.join().unwrap();
         });
     }
 }
