@@ -9,9 +9,13 @@ mod loom_tests {
     use loom::thread;
 
     #[derive(Debug)]
+    struct FakeReader;
+
+    #[derive(Debug)]
     struct FakeStage {
         id: usize,
         cancelled: AtomicBool,
+        readers: Mutex<Vec<loom::sync::Weak<FakeReader>>>,
     }
 
     impl FakeStage {
@@ -19,6 +23,7 @@ mod loom_tests {
             Arc::new(Self {
                 id,
                 cancelled: AtomicBool::new(false),
+                readers: Mutex::new(Vec::new()),
             })
         }
 
@@ -26,7 +31,20 @@ mod loom_tests {
             Arc::new(Self {
                 id,
                 cancelled: AtomicBool::new(true),
+                readers: Mutex::new(Vec::new()),
             })
+        }
+
+        fn register_reader(self: &Arc<Self>) -> Arc<FakeReader> {
+            let reader = Arc::new(FakeReader);
+            self.readers.lock().unwrap().push(Arc::downgrade(&reader));
+            reader
+        }
+
+        fn has_readers(&self) -> bool {
+            let mut readers = self.readers.lock().unwrap();
+            readers.retain(|reader| reader.upgrade().is_some());
+            !readers.is_empty()
         }
     }
 
@@ -67,6 +85,17 @@ mod loom_tests {
                 stage.cancelled.store(true, Ordering::Release);
             }
             *guard = None;
+        }
+
+        fn sweep_unused(&self) {
+            let mut guard = self.slot.lock().unwrap();
+            let remove = guard.as_ref().is_some_and(|stage| !stage.has_readers());
+            if remove {
+                if let Some(stage) = guard.as_ref() {
+                    stage.cancelled.store(true, Ordering::Release);
+                }
+                *guard = None;
+            }
         }
 
         fn current_id(&self) -> Option<usize> {
@@ -110,6 +139,36 @@ mod loom_tests {
             assert_ne!(stage1.id, cancelled.id);
             assert!(!stage1.cancelled.load(Ordering::Acquire));
             assert_eq!(registry.current_id(), Some(stage1.id));
+        });
+    }
+
+    #[test]
+    fn loom_sweep_racing_reader_registration_is_serialized() {
+        loom::model(|| {
+            let stage = FakeStage::new(1);
+            let registry = FakeRegistry::new(Some(stage.clone()));
+            let sweep_registry = registry.clone();
+            let reader_stage = stage.clone();
+
+            let sweep = thread::spawn(move || sweep_registry.sweep_unused());
+            let reader = thread::spawn(move || reader_stage.register_reader());
+
+            sweep.join().unwrap();
+            let active_reader = reader.join().unwrap();
+
+            match registry.slot.lock().unwrap().as_ref() {
+                Some(current) => {
+                    assert!(Arc::ptr_eq(current, &stage));
+                    assert!(!current.cancelled.load(Ordering::Acquire));
+                    assert!(current.has_readers());
+                }
+                None => {
+                    assert!(stage.cancelled.load(Ordering::Acquire));
+                    assert!(stage.has_readers());
+                }
+            }
+
+            drop(active_reader);
         });
     }
 }
