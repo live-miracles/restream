@@ -436,7 +436,7 @@ Common runner flags:
 | `--preflight` | Check binary, dependencies, namespace support, and host-mode port conflicts without starting the test. |
 | `--fast` | Set `N_PER_GROUP=1`, `N_OUTPUTS=1`, `SNAP_EVERY=999`, and skip snapshot sleeps for quick agent loops. |
 | `--json <path>` | Write JSONL assertion records alongside the human-readable log. Failed ffprobe assertions include stderr and log tails. |
-| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `recording`, `lifecycle`, `tc-spawns`, `load`. |
+| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `recording`, `stage-sharing`, `lifecycle`, `load`. |
 | `--skip-load` | Skip resource snapshot sleeps and load assertion records while preserving correctness setup. |
 | `--resume-from <id>` | Skip named assertion records until the requested assertion ID is reached. |
 | `RSS_BASELINE=<path>` | Compare mixed-input RSS summaries against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
@@ -614,23 +614,29 @@ addition to the resource measurements:
 3. **Stop lifecycle** — calls `/stop` on every output and polls `/api/v1/settings` until
    all reach `"stopped"` within 60 s.
 
-**h265-srt-single** asserts `1 ≤ TC_SPAWNS ≤ ext_ffmpeg# + 1`: the number of shared
-internal h264-tc transcoders must be bounded by the number of distinct consumer
-paths (one for RTMP source outputs, one feeding each external ffmpeg for 720p),
-not proportional to N. With both source and 720p output groups this bound is 2
-regardless of N. If sharing breaks, each output spawns its own h264-tc and
-TC_SPAWNS would equal N (or more).
+`ONLY_CHECKS=stage-sharing` asserts that the live processing graph has exactly
+the expected unique `transcoder`, `audio_filter`, and `codec_edge` nodes for the
+row. This is the live `N_PER_GROUP` sharing check: increasing output count must
+not add processing stages when the output encoding/protocol shape is identical.
+`N_PER_GROUP=2` is enough to catch accidental per-output stage duplication
+because the second output in every group has the same processing shape as the
+first. It does not, by itself, cover every processing graph shape; coverage of
+source/720p/1080p, RTMP/SRT, all-audio/subset-audio, HLS preview, and recording
+comes from the table-driven mixed input/output matrix.
+Because `ONLY_CHECKS=stage-sharing` does not attach every readback consumer,
+the live assertion treats audio-route nodes as an upper bound. Video transcode
+and codec-edge nodes are exact, and `codec_edge=3` for H.265 multi is the
+expensive-stage invariant the check is designed to protect.
 
 Expected resource counts (see
 [media-pipeline.md § Scale Test Pipeline Paths](media-pipeline.md#scale-test-pipeline-paths)):
 
-| Config | `ext_ffmpeg#` | `TC_SPAWNS` bound |
-|---|:---:|:---:|
-| `h264-rtmp-single` | 1 | N/A |
-| `h264-srt-single` | 1 | N/A (H.264 ingest, no h264-tc needed) |
-| `h265-srt-single` | 1 | ≤ 2 (1 source path + 1 720p path) |
-| `h264-srt-multi` | 1 | N/A |
-| `h265-srt-multi` | 1 | N/A |
+| Config | Video stages | Audio-route stages | Codec-edge stages |
+|---|:---:|:---:|:---:|
+| `h264-*-single` | 2 (`720p`, `1080p`) | 0 | 0 |
+| `h265-*-single` | 2 (`720p`, `1080p`) | 0 | 3 (`source`, `720p`, `1080p` RTMP paths) |
+| `h264-*-multi` | 2 (`720p`, `1080p`) | 6 | 0 |
+| `h265-*-multi` | 2 (`720p`, `1080p`) | 12 | 3 (`source`, `720p`, `1080p` RTMP paths) |
 
 Env: `N_PER_GROUP` (default 25).
 

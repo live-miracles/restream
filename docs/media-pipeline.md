@@ -408,10 +408,10 @@ RTMP-src / SRT-src: identical to h265-srt-single source paths above.
     ──► output_ring [Raw, H.265 720p + track0 + track1]
 
 RTMP-720p  encoding = "720p+atrack:0"
-  output_ring → audio:atrack:0:from:720p (tokio task) → audio0_ring [H.265 720p + track0]
-  audio0_ring ──► TsMuxer → MPEG-TS
+  output_ring ──► TsMuxer → MPEG-TS
     ──► MemoryQueue → [int OS thread] libavcodec H.265 decode → H.264 encode
-    ──► TsDemuxer → h264_audio0_ring  (key: hevc_to_h264:from:audio:atrack:0:from:720p)
+    ──► TsDemuxer → h264_720p_ring  (key: hevc_to_h264:from:720p)
+  h264_720p_ring → audio:atrack:0:from:hevc_to_h264:from:720p (tokio task) → h264_audio0_ring [H.264 720p + track0]
   h264_audio0_ring ──► video_for_rtmp → FLV tag → RTMP socket
 
 SRT-720p  encoding = "720p+atrack:0,1"
@@ -422,7 +422,8 @@ SRT-720p  encoding = "720p+atrack:0,1"
 **Stages spawned:** 1 int OS thread (`hevc_to_h264:from:source`, for RTMP-src) +
 1 ext FFmpeg subprocess (`video:720p`, libx265) +
 2 audio-routing tokio tasks +
-1 int OS thread (`hevc_to_h264:from:audio:atrack:0:from:720p`, for RTMP-720p).
+1 int OS thread (`hevc_to_h264:from:720p`, shared by all RTMP selected-audio
+720p outputs).
 
 ---
 
@@ -434,17 +435,21 @@ a second subprocess.
 
 | Ingest config | Ext FFmpeg subprocesses | Int OS threads | Audio-routing tokio tasks |
 |---|:---:|:---:|:---:|
-| `h264-rtmp` | 1 (`video:720p`) | 0 | 0 |
-| `h264-srt` | 1 (`video:720p`) | 0 | 0 |
-| `h265-srt` | 1 (`video:720p`) | 2 (`hevc_to_h264:from:source` + `hevc_to_h264:from:720p`) | 0 |
-| `h264-srt-multi` | 1 (`video:720p`) | 0 | 2 |
-| `h265-srt-multi` | 1 (`video:720p`) | 2 (`hevc_to_h264:from:source` + `hevc_to_h264:from:audio:…`) | 2 |
+| `h264-*-single` | 2 (`video:720p`, `video:1080p`) | 0 | 0 |
+| `h265-*-single` | 2 (`video:720p`, `video:1080p`) | 3 (`hevc_to_h264` from `source`, `720p`, `1080p`) | 0 |
+| `h264-*-multi` | 2 (`video:720p`, `video:1080p`) | 0 | 6 |
+| `h265-*-multi` | 2 (`video:720p`, `video:1080p`) | 3 (`hevc_to_h264` from `source`, `720p`, `1080p`) | 12 |
 
-> **Why 2 OS threads for H.265 configs?** RTMP-passthrough and RTMP-720p feed
-> different upstream rings into `hevc_to_h264`, so the reconciler creates a
-> separate stage for each (keyed by upstream). Each stage runs its own
-> libavcodec thread. If the config has no RTMP-passthrough outputs, only 1
-> thread is needed.
+> **Why three H.265 codec-edge OS threads?** RTMP egress cannot publish HEVC,
+> so each RTMP video shape feeds a keyed `hevc_to_h264` stage. Audio selection
+> happens after that codec edge for selected-track RTMP outputs, so `atrack:0`
+> and `atrack:1` share the same source/720p/1080p HEVC→H.264 conversion. In
+> mixed multi-audio rows the SRT selected-track routes still preserve HEVC, so
+> those audio routes are distinct from the RTMP-after-codec audio routes.
+> This is not a global minimum for every node type: audio-route count rises
+> from 6 to 12 for H.265 multi rows. That is intentional because audio routing
+> is cheap compared with a libavcodec decode/encode OS thread, and because SRT
+> and RTMP selected-track outputs need different upstream codec shapes.
 
 The `ext_ffmpeg#` column in scale test output matches "Ext FFmpeg subprocesses".
 In-process RSS growth (restream parent) correlates with "Int OS threads" — each

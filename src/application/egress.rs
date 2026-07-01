@@ -27,24 +27,26 @@ pub async fn prepare_output_ring(engine: &Arc<MediaEngine>, output: &Output) -> 
         source_buf.clone()
     };
 
-    let pre_h264_buf = if let Some(stage) = output_path.audio_stage() {
+    let protocol_buf = if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
         engine
-            .get_or_create_transcoder(&output.pipeline_id, stage.kind, video_buf.clone(), None)
+            .get_or_create_h264_transcoder(
+                &output.pipeline_id,
+                output_path
+                    .codec_edge_upstream_kind(ingest_video_codec.as_deref())
+                    .clone(),
+                video_buf.clone(),
+            )
             .await
     } else {
         video_buf.clone()
     };
 
-    if output_path.needs_rtmp_h264_conv(ingest_video_codec.as_deref()) {
+    if let Some(stage) = output_path.routed_audio_stage(ingest_video_codec.as_deref()) {
         engine
-            .get_or_create_h264_transcoder(
-                &output.pipeline_id,
-                output_path.codec_edge_upstream_kind().clone(),
-                pre_h264_buf,
-            )
+            .get_or_create_transcoder(&output.pipeline_id, stage.kind, protocol_buf.clone(), None)
             .await
     } else {
-        pre_h264_buf
+        protocol_buf
     }
 }
 
@@ -105,5 +107,59 @@ mod tests {
 
         assert!(Arc::ptr_eq(&expected, &ring));
         assert_eq!(ring.codec_hint_str(), "h264");
+    }
+
+    #[tokio::test]
+    async fn prepare_output_ring_shares_hevc_codec_edge_before_audio_selection() {
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-hevc-audio", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-hevc-audio",
+                Some(VideoMeta {
+                    codec: "hevc".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+
+        let output_a = test_output("pipe-hevc-audio", "720p+atrack:0", "rtmp://example/live/a");
+        let output_b = test_output("pipe-hevc-audio", "720p+atrack:1", "rtmp://example/live/b");
+
+        let ring_a = prepare_output_ring(&engine, &output_a).await;
+        let ring_b = prepare_output_ring(&engine, &output_b).await;
+        let stages = engine.active_transcoder_stages("pipe-hevc-audio").await;
+
+        assert!(
+            !Arc::ptr_eq(&ring_a, &ring_b),
+            "different selected audio tracks must remain distinct terminal rings"
+        );
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|(kind, active)| { *active && matches!(kind, StageKind::CodecEdge { .. }) })
+                .count(),
+            1,
+            "selected-audio RTMP outputs should share one HEVC->H.264 stage per video shape"
+        );
+        assert!(stages.iter().any(|(kind, active)| {
+            *active
+                && *kind == StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
+        }));
+        assert_eq!(
+            stages
+                .iter()
+                .filter(|(kind, active)| {
+                    *active && matches!(kind, StageKind::AudioRoute { .. })
+                })
+                .count(),
+            2,
+            "audio selection should happen after the shared codec edge"
+        );
     }
 }

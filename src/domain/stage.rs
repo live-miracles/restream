@@ -263,6 +263,10 @@ impl EncodingStagePlan {
         }
     }
 
+    pub fn pipeline(&self) -> &PipelineId {
+        &self.pipeline
+    }
+
     pub fn video_stage(&self) -> Option<StageKey> {
         self.video_stage
             .clone()
@@ -273,6 +277,22 @@ impl EncodingStagePlan {
         self.audio_stage
             .clone()
             .map(|kind| StageKey::new(self.pipeline.clone(), kind))
+    }
+
+    pub fn audio_stage_from_upstream(&self, upstream: StageKind) -> Option<StageKey> {
+        self.audio_stage
+            .as_ref()
+            .and_then(StageKind::audio_operation)
+            .map(|operation| {
+                StageKey::new(
+                    self.pipeline.clone(),
+                    StageKind::audio_route(operation, upstream),
+                )
+            })
+    }
+
+    pub fn video_terminal_kind(&self) -> &StageKind {
+        self.video_stage.as_ref().unwrap_or(&self.source)
     }
 
     pub fn terminal_kind(&self) -> &StageKind {

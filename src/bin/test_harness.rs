@@ -340,6 +340,80 @@ fn mixed_output_cases_for_input(case: MixedInputCase) -> &'static [MixedOutputCa
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MixedStageCount {
+    video: usize,
+    audio: usize,
+    codec_edge: usize,
+}
+
+fn expected_mixed_stage_count(case: MixedInputCase) -> MixedStageCount {
+    match (case.codec, case.multi_track) {
+        // H.265 multi deliberately has more audio routes than H.264 multi:
+        // SRT selected-track outputs preserve HEVC while RTMP selected-track
+        // outputs select audio after the shared H.264 compatibility edge.
+        // The important expensive-stage invariant is codec_edge=3, one per
+        // video shape (source, 720p, 1080p), not one per selected audio track.
+        ("h265", true) => MixedStageCount {
+            video: 2,
+            audio: 12,
+            codec_edge: 3,
+        },
+        ("h265", false) => MixedStageCount {
+            video: 2,
+            audio: 0,
+            codec_edge: 3,
+        },
+        (_, true) => MixedStageCount {
+            video: 2,
+            audio: 6,
+            codec_edge: 0,
+        },
+        (_, false) => MixedStageCount {
+            video: 2,
+            audio: 0,
+            codec_edge: 0,
+        },
+    }
+}
+
+#[cfg(test)]
+fn planned_mixed_stage_count(
+    case: MixedInputCase,
+    duplicates_per_output: usize,
+) -> MixedStageCount {
+    use restream::application::output_path::OutputPath;
+    use restream::domain::stage::{StageKey, StageKind};
+
+    let mut stages = HashSet::<StageKey>::new();
+    let ingest_codec = mixed_input_expected_video_codec(case);
+    for output_case in mixed_output_cases_for_input(case) {
+        let url = match output_case.protocol {
+            MixedOutputProtocol::Rtmp => "rtmp://example/live/out",
+            MixedOutputProtocol::Srt => "srt://example:9000?streamid=publish:live/out",
+        };
+        for _ in 0..duplicates_per_output {
+            let path = OutputPath::resolve("pipe", output_case.encoding, url);
+            stages.extend(path.needed_stage_keys(Some(ingest_codec)));
+        }
+    }
+
+    let mut counts = MixedStageCount {
+        video: 0,
+        audio: 0,
+        codec_edge: 0,
+    };
+    for stage in stages {
+        match stage.kind {
+            StageKind::VideoPreset { .. } => counts.video += 1,
+            StageKind::AudioRoute { .. } => counts.audio += 1,
+            StageKind::CodecEdge { .. } => counts.codec_edge += 1,
+            StageKind::Source | StageKind::Hls | StageKind::Recording => {}
+        }
+    }
+    counts
+}
+
 fn mode_spec(name: &str) -> Option<&'static HarnessModeSpec> {
     HARNESS_MODE_SPECS.iter().find(|spec| spec.name == name)
 }
@@ -6416,6 +6490,7 @@ async fn run_mixed_anchor_config(
         )
         .await?;
     }
+    verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -6797,6 +6872,7 @@ async fn run_mixed_h265_srt_config(
         &mut output_ids,
     )
     .await?;
+    verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -6826,54 +6902,6 @@ async fn run_mixed_h265_srt_config(
     }
 
     verify_mixed_output_cases(env, cfg, output_cases, resume).await?;
-
-    if env.check_selected("tc-spawns") && resume.allows("MS-tc-spawns") {
-        let started = Instant::now();
-        let graph = api
-            .get_json(&format!("/api/v1/pipelines/{pipeline_id}/graph"))
-            .await?;
-        let tc_stages = graph_active_node_count(&graph, "codec_edge");
-        let ffmpeg = ffmpeg_pipe1_stats().await;
-        let tc_max = ffmpeg.count + 1;
-        if tc_stages < 1 || tc_stages as u64 > tc_max {
-            let message = format!(
-                "{cfg}: expected 1..{tc_max} active HEVC->H.264 codec-edge stages (got {tc_stages}; N={n} outputs - sharing broken if >{tc_max})"
-            );
-            emit_mixed_result(
-                env,
-                cfg,
-                "MS-tc-spawns",
-                "fail",
-                started.elapsed(),
-                Some(json!({
-                    "message": message,
-                    "tc_stages": tc_stages,
-                    "bound": tc_max,
-                    "graph": graph,
-                })),
-            )?;
-            stop_child(&mut publisher).await;
-            stop_mixed_outputs(api, &pipeline_id, &output_ids).await;
-            return Err(message);
-        }
-        emit_mixed_result(
-            env,
-            cfg,
-            "MS-tc-spawns",
-            "pass",
-            started.elapsed(),
-            Some(json!({
-                "tc_stages": tc_stages,
-                "bound": tc_max,
-            })),
-        )?;
-        log_mixed_ok(
-            env,
-            &format!(
-                "{cfg}: TC_STAGES={tc_stages} <= {tc_max} (stage sharing confirmed for {total} outputs)"
-            ),
-        )?;
-    }
 
     let mut sink_probe_result = None;
     if env.check_selected("sink-probe") && resume.allows("MS-sink-probe-h265-srt") {
@@ -6985,6 +7013,7 @@ async fn run_mixed_h264_rtmp_config(
         &mut output_ids,
     )
     .await?;
+    verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -7203,6 +7232,7 @@ async fn run_mixed_srt_multi_config(
         &mut output_ids,
     )
     .await?;
+    verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -9705,6 +9735,86 @@ fn graph_active_node_count(graph: &Value, node_type: &str) -> usize {
         .count()
 }
 
+async fn verify_mixed_graph_stage_sharing(
+    env: &MixedEnv,
+    api: &RampApi,
+    cfg: &str,
+    pipeline_id: &str,
+    case: MixedInputCase,
+    resume: &mut MixedResume,
+) -> Result<(), String> {
+    if !env.check_selected("stage-sharing") {
+        return Ok(());
+    }
+    let id = format!("MS-stage-sharing-{cfg}");
+    if !resume.allows(&id) {
+        return Ok(());
+    }
+    let started = Instant::now();
+    let expected = expected_mixed_stage_count(case);
+    let graph = api
+        .get_json(&format!("/api/v1/pipelines/{pipeline_id}/graph"))
+        .await?;
+    let got = MixedStageCount {
+        video: graph_active_node_count(&graph, "transcoder"),
+        audio: graph_active_node_count(&graph, "audio_filter"),
+        codec_edge: graph_active_node_count(&graph, "codec_edge"),
+    };
+    // A stage-sharing-only run creates outputs but does not necessarily attach
+    // every protocol reader. Audio-route stages are cheap and may be lazy until
+    // the selected-track output is consumed, so this live check treats the
+    // matrix audio count as an upper bound. The expensive HEVC->H.264
+    // codec-edge count must be exact; that is the regression this check exists
+    // to catch when N_PER_GROUP grows.
+    let passed = got.video == expected.video
+        && got.codec_edge == expected.codec_edge
+        && got.audio <= expected.audio;
+    emit_mixed_result(
+        env,
+        cfg,
+        &id,
+        if passed { "pass" } else { "fail" },
+        started.elapsed(),
+        Some(json!({
+            "expected": {
+                "video": expected.video,
+                "audio": expected.audio,
+                "codecEdge": expected.codec_edge,
+            },
+            "got": {
+                "video": got.video,
+                "audio": got.audio,
+                "codecEdge": got.codec_edge,
+            },
+            "audioUpperBound": expected.audio,
+            "exactCounts": ["video", "codecEdge"],
+            "nPerGroup": env.n_per_group,
+            "outputMatrix": mixed_output_matrix_json(mixed_output_cases_for_input(case)),
+            "graph": graph,
+        })),
+    )?;
+    if passed {
+        log_mixed_ok(
+            env,
+            &format!(
+                "stage-sharing {cfg}: video={} audio={}/{} codec_edge={} with N={}",
+                got.video, got.audio, expected.audio, got.codec_edge, env.n_per_group
+            ),
+        )?;
+        Ok(())
+    } else {
+        Err(format!(
+            "{cfg}: expected stage counts video={} codec_edge={} and audio<={}, got video={} audio={} codec_edge={}",
+            expected.video,
+            expected.codec_edge,
+            expected.audio,
+            got.video,
+            got.audio,
+            got.codec_edge
+        ))
+    }
+}
+
 async fn wait_for_probe_shape(
     label: &str,
     url: &str,
@@ -11412,6 +11522,7 @@ async fn run_mixed_file_config(
         )
         .await?;
     }
+    verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
 
     let duration_secs: u64 = 10;
     if env.check_selected("hls") {
@@ -15621,6 +15732,26 @@ stream|index=1|codec_type=audio\n";
                 );
                 assert!(cases.iter().all(|case| case.expected_audio_tracks == 1));
             }
+        }
+    }
+
+    #[test]
+    fn mixed_input_planning_shares_stages_across_duplicate_outputs() {
+        for case in MIXED_INPUT_CASES {
+            let single = planned_mixed_stage_count(*case, 1);
+            let duplicated = planned_mixed_stage_count(*case, 2);
+            let expected = expected_mixed_stage_count(*case);
+
+            assert_eq!(
+                single, expected,
+                "{} should plan the expected unique stage set",
+                case.name
+            );
+            assert_eq!(
+                duplicated, single,
+                "{} should not add unique processing stages when N_PER_GROUP grows",
+                case.name
+            );
         }
     }
 

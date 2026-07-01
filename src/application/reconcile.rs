@@ -359,13 +359,13 @@ mod tests {
         assert!(stages.contains(&StageKey::new("pipe", StageKind::video_preset("720p"))));
         assert!(stages.contains(&StageKey::new(
             "pipe",
-            StageKind::audio_route("atrack:0", StageKind::video_preset("720p"))
+            StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
         )));
         assert!(stages.contains(&StageKey::new(
             "pipe",
-            StageKind::codec_edge(
-                "hevc_to_h264",
-                StageKind::audio_route("atrack:0", StageKind::video_preset("720p"))
+            StageKind::audio_route(
+                "atrack:0",
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
             )
         )));
         assert_eq!(stages.len(), 3);

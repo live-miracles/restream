@@ -30,8 +30,19 @@ impl OutputPath {
     }
 
     pub fn codec_edge_candidate_stage(&self) -> Option<StageKey> {
-        self.is_rtmp
-            .then(|| self.stage_plan.codec_edge_stage("hevc_to_h264"))
+        // RTMP cannot carry HEVC in our current contract. Key the expensive
+        // HEVC->H.264 edge by video shape only, then apply selected-audio
+        // routing after it. That trades a few cheap audio-route stages for
+        // sharing one codec edge across atrack:0/atrack:1 outputs.
+        self.is_rtmp.then(|| {
+            StageKey::new(
+                self.stage_plan.pipeline().clone(),
+                StageKind::codec_edge(
+                    "hevc_to_h264",
+                    self.stage_plan.video_terminal_kind().clone(),
+                ),
+            )
+        })
     }
 
     pub fn needs_rtmp_h264_conv(&self, ingest_video_codec: Option<&str>) -> bool {
@@ -46,15 +57,28 @@ impl OutputPath {
 
     pub fn codec_edge_stage(&self, ingest_video_codec: Option<&str>) -> Option<StageKey> {
         self.needs_rtmp_h264_conv(ingest_video_codec)
-            .then(|| self.stage_plan.codec_edge_stage("hevc_to_h264"))
+            .then(|| self.codec_edge_candidate_stage())
+            .flatten()
     }
 
-    pub fn codec_edge_upstream_kind(&self) -> &StageKind {
-        self.stage_plan.terminal_kind()
+    pub fn codec_edge_upstream_kind(&self, ingest_video_codec: Option<&str>) -> &StageKind {
+        if self.needs_rtmp_h264_conv(ingest_video_codec) {
+            self.stage_plan.video_terminal_kind()
+        } else {
+            self.stage_plan.terminal_kind()
+        }
+    }
+
+    pub fn routed_audio_stage(&self, ingest_video_codec: Option<&str>) -> Option<StageKey> {
+        if let Some(codec_edge) = self.codec_edge_stage(ingest_video_codec) {
+            return self.stage_plan.audio_stage_from_upstream(codec_edge.kind);
+        }
+        self.stage_plan.audio_stage()
     }
 
     pub fn terminal_stage_kind(&self, ingest_video_codec: Option<&str>) -> StageKind {
-        self.codec_edge_stage(ingest_video_codec)
+        self.routed_audio_stage(ingest_video_codec)
+            .or_else(|| self.codec_edge_stage(ingest_video_codec))
             .map(|stage| stage.kind)
             .unwrap_or_else(|| self.stage_plan.terminal_kind().clone())
     }
@@ -64,10 +88,10 @@ impl OutputPath {
         if let Some(stage) = self.video_stage() {
             stages.push(stage);
         }
-        if let Some(stage) = self.audio_stage() {
+        if let Some(stage) = self.codec_edge_stage(ingest_video_codec) {
             stages.push(stage);
         }
-        if let Some(stage) = self.codec_edge_stage(ingest_video_codec) {
+        if let Some(stage) = self.routed_audio_stage(ingest_video_codec) {
             stages.push(stage);
         }
         stages
@@ -94,9 +118,9 @@ mod tests {
         assert_eq!(path.ingest_codec_override(Some("h265")), Some("hevc"));
         assert_eq!(
             path.terminal_stage_kind(Some("hevc")),
-            StageKind::codec_edge(
-                "hevc_to_h264",
-                StageKind::audio_route("atrack:0", StageKind::video_preset("720p")),
+            StageKind::audio_route(
+                "atrack:0",
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p")),
             )
         );
     }
@@ -148,14 +172,54 @@ mod tests {
         assert_eq!(stages[0].kind, StageKind::video_preset("720p"));
         assert_eq!(
             stages[1].kind,
-            StageKind::audio_route("remap:0:1", StageKind::video_preset("720p"))
+            StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
         );
         assert_eq!(
             stages[2].kind,
-            StageKind::codec_edge(
-                "hevc_to_h264",
-                StageKind::audio_route("remap:0:1", StageKind::video_preset("720p")),
+            StageKind::audio_route(
+                "remap:0:1",
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p")),
             )
+        );
+    }
+
+    #[test]
+    fn duplicate_outputs_share_planned_stage_keys() {
+        use std::collections::HashSet;
+
+        let matrix = [
+            ("source", "rtmp://example/live/a", Some("hevc")),
+            ("source", "rtmp://example/live/b", Some("hevc")),
+            ("720p+atrack:0", "rtmp://example/live/c", Some("hevc")),
+            ("720p+atrack:0", "rtmp://example/live/d", Some("hevc")),
+        ];
+        let unique: HashSet<_> = matrix
+            .iter()
+            .flat_map(|(encoding, url, codec)| {
+                OutputPath::resolve("pipe", *encoding, *url).needed_stage_keys(*codec)
+            })
+            .collect();
+
+        assert!(unique.contains(&StageKey::new(
+            "pipe",
+            StageKind::codec_edge("hevc_to_h264", StageKind::source())
+        )));
+        assert!(unique.contains(&StageKey::new("pipe", StageKind::video_preset("720p"))));
+        assert!(unique.contains(&StageKey::new(
+            "pipe",
+            StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
+        )));
+        assert!(unique.contains(&StageKey::new(
+            "pipe",
+            StageKind::audio_route(
+                "atrack:0",
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("720p"))
+            )
+        )));
+        assert_eq!(
+            unique.len(),
+            4,
+            "duplicate outputs must reuse stage keys instead of planning per-output stages"
         );
     }
 }
