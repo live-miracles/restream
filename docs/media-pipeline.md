@@ -201,7 +201,7 @@ Standard RTMP (non-Enhanced) does not carry H.265. The reconciler enforces:
 | RTMP | H.265 + video preset | `video:preset` runs first (H.265 output, shared); `hevc_to_h264:from:<preset>` converts after — H.264 to RTMP — **working** |
 | SRT | H.265 source | Passthrough (MPEG-TS carries HEVC natively) — **working** |
 | SRT | H.265 + video preset | `video:preset` with libx265 → H.265 720p output; same ring shared with RTMP — **working** |
-| HLS | H.265 source | Passthrough via TsMuxer; not E2E verified |
+| HLS preview | H.265 source | Preview-only `hevc_preview_h264` stage converts to H.264 720p before MPEG-TS HLS — **current browser-compatible path** |
 
 Enhanced RTMP/HEVC packetization is not implemented.
 
@@ -212,8 +212,15 @@ Enhanced RTMP/HEVC packetization is not implemented.
 | RTMP H.264 | Basic interop; B-frame timestamp gate | Implemented; full matrix gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
 | RTMP H.265 | Not supported without Enhanced RTMP | Not assumed | Not assumed | Not assumed |
 | SRT H.264 | Packetization implemented; live matrix gate | Locally validated | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
-| SRT H.265 | RTMP: `hevc_to_h264` conversion working; SRT: passthrough working | Passthrough implemented; E2E gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
+| SRT H.265 | RTMP: `hevc_to_h264` conversion working; SRT: passthrough working | Passthrough implemented; E2E gate | HEVC preview converts to H.264 720p before MPEG-TS HLS | Mux path exists; contract broken |
 | File | RTMP-shaped via child FFmpeg | Implemented for compatible FLV codecs | Live TsMuxer | Contract broken |
+
+HLS preview currently prioritizes browser compatibility over HEVC preservation.
+If ingest video is HEVC/H.265, the API starts a preview-only
+`hevc_preview_h264` stage, feeds that H.264 720p ring into the native MPEG-TS
+segmenter, and serves `.ts` segments. The code does not yet implement HEVC
+fMP4/CMAF HLS (`EXT-X-MAP`, init segment, `.m4s`). Product-level HEVC HLS
+passthrough would require that separate fMP4 path.
 
 ## Minimum Work Per Consumer
 

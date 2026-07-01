@@ -312,6 +312,15 @@ fn mixed_input_case_for_command(command: &str) -> Option<MixedInputCase> {
         .find(|case| case.name == case_name)
 }
 
+fn mixed_hls_preview_expected_dimensions(case: MixedInputCase) -> &'static str {
+    match case.codec {
+        // HEVC preview is browser-compat today: HEVC input is converted to the
+        // 720p H.264 preview ring before the MPEG-TS HLS segmenter sees it.
+        "h265" | "hevc" => "1280x720",
+        _ => "1920x1080",
+    }
+}
+
 fn mode_spec(name: &str) -> Option<&'static HarnessModeSpec> {
     HARNESS_MODE_SPECS.iter().find(|spec| spec.name == name)
 }
@@ -6689,7 +6698,8 @@ async fn run_mixed_h265_srt_config(
 ) -> Result<Value, String> {
     let cfg = "h265-srt-single";
     let n = env.n_per_group;
-    let total = n * 6;
+    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
@@ -6708,7 +6718,16 @@ async fn run_mixed_h265_srt_config(
     if env.check_selected("hls") {
         let case = mixed_input_case_for_command("mixed-h265-srt-single")
             .ok_or("missing h265-srt-single input case")?;
-        verify_mixed_hls_preview(env, api, cfg, &pipeline_id, "1920x1080", case, resume).await?;
+        verify_mixed_hls_preview(
+            env,
+            api,
+            cfg,
+            &pipeline_id,
+            mixed_hls_preview_expected_dimensions(case),
+            case,
+            resume,
+        )
+        .await?;
     }
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
@@ -6716,143 +6735,16 @@ async fn run_mixed_h265_srt_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
-    add_mixed_group(
+    add_mixed_output_cases(
+        env,
         api,
         &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
-                env.mtx_rtmp
-            )
-        },
+        restream_pid,
+        cfg,
+        output_cases,
         &mut output_ids,
     )
     .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-720p",
-            count: n,
-            encoding: "720p",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{index}",
-                env.mtx_rtmp
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 720p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-1080p",
-            count: n,
-            encoding: "1080p",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-{index}",
-                env.mtx_rtmp
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 1080p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-720p",
-            count: n,
-            encoding: "720p",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-720p-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT 720p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-1080p",
-            count: n,
-            encoding: "1080p",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-1080p-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(
-            env,
-            restream_pid,
-            cfg,
-            &format!("after all {total} outputs"),
-        )
-        .await?;
-    }
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -6881,98 +6773,7 @@ async fn run_mixed_h265_srt_config(
         )?;
     }
 
-    if env.check_selected("ffprobe") {
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-rtmp-src",
-                label: &format!("RTMP-src  out{n}"),
-                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-rtmp-720p",
-                label: &format!("RTMP-720p out{n}"),
-                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-                expected: "1280x720",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-rtmp-1080p",
-                label: &format!("RTMP-1080p out{n}"),
-                url: &format!(
-                    "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-{n}",
-                    env.mtx_rtmp
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-srt-src",
-                label: &format!("SRT-src   out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-srt-1080p",
-                label: &format!("SRT-1080p out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h265-srt-srt-720p",
-                label: &format!("SRT-720p  out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1280x720",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-    }
+    verify_mixed_output_cases(env, cfg, output_cases, resume).await?;
 
     if env.check_selected("tc-spawns") && resume.allows("MS-tc-spawns") {
         let started = Instant::now();
@@ -7066,6 +6867,7 @@ async fn run_mixed_h265_srt_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
+        "outputMatrix": mixed_output_matrix_json(output_cases),
     });
     if let Some(probe) = sink_probe_result {
         result["sinkProbe"] = probe.summary;
@@ -7082,7 +6884,8 @@ async fn run_mixed_h264_rtmp_config(
 ) -> Result<Value, String> {
     let cfg = "h264-rtmp-single";
     let n = env.n_per_group;
-    let total = n * 6;
+    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
@@ -7101,7 +6904,16 @@ async fn run_mixed_h264_rtmp_config(
     if env.check_selected("hls") {
         let case = mixed_input_case_for_command("mixed-h264-rtmp-single")
             .ok_or("missing h264-rtmp-single input case")?;
-        verify_mixed_hls_preview(env, api, cfg, &pipeline_id, "1920x1080", case, resume).await?;
+        verify_mixed_hls_preview(
+            env,
+            api,
+            cfg,
+            &pipeline_id,
+            mixed_hls_preview_expected_dimensions(case),
+            case,
+            resume,
+        )
+        .await?;
     }
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
@@ -7109,143 +6921,16 @@ async fn run_mixed_h264_rtmp_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
-    add_mixed_group(
+    add_mixed_output_cases(
+        env,
         api,
         &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
-                env.mtx_rtmp
-            )
-        },
+        restream_pid,
+        cfg,
+        output_cases,
         &mut output_ids,
     )
     .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-720p",
-            count: n,
-            encoding: "720p",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{index}",
-                env.mtx_rtmp
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 720p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-1080p",
-            count: n,
-            encoding: "1080p",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-{index}",
-                env.mtx_rtmp
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP 1080p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-720p",
-            count: n,
-            encoding: "720p",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-720p-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT 720p")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-1080p",
-            count: n,
-            encoding: "1080p",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-1080p-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(
-            env,
-            restream_pid,
-            cfg,
-            &format!("after all {total} outputs"),
-        )
-        .await?;
-    }
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -7274,98 +6959,7 @@ async fn run_mixed_h264_rtmp_config(
         )?;
     }
 
-    if env.check_selected("ffprobe") {
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-rtmp-src",
-                label: &format!("RTMP-src  out{n}"),
-                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-rtmp-720p",
-                label: &format!("RTMP-720p out{n}"),
-                url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-720p-{n}", env.mtx_rtmp),
-                expected: "1280x720",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-rtmp-1080p",
-                label: &format!("RTMP-1080p out{n}"),
-                url: &format!(
-                    "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-{n}",
-                    env.mtx_rtmp
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-srt-src",
-                label: &format!("SRT-src   out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-srt-1080p",
-                label: &format!("SRT-1080p out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1920x1080",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
-                cfg,
-                id: "MS-ffprobe-h264-rtmp-srt-720p",
-                label: &format!("SRT-720p  out{n}"),
-                url: &format!(
-                    "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                    env.mtx_srt
-                ),
-                expected: "1280x720",
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-    }
+    verify_mixed_output_cases(env, cfg, output_cases, resume).await?;
 
     let mut sink_probe_result = None;
     if env.check_selected("sink-probe") && resume.allows("MS-sink-probe-h264-rtmp") {
@@ -7411,6 +7005,7 @@ async fn run_mixed_h264_rtmp_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
+        "outputMatrix": mixed_output_matrix_json(output_cases),
     });
     if let Some(probe) = sink_probe_result {
         result["sinkProbe"] = probe.summary;
@@ -7451,7 +7046,16 @@ async fn run_mixed_srt_multi_config(
         let mode = format!("mixed-{cfg}");
         let case = mixed_input_case_for_command(&mode)
             .ok_or_else(|| format!("missing {cfg} input case"))?;
-        verify_mixed_hls_preview(env, api, cfg, &pipeline_id, "1920x1080", case, resume).await?;
+        verify_mixed_hls_preview(
+            env,
+            api,
+            cfg,
+            &pipeline_id,
+            mixed_hls_preview_expected_dimensions(case),
+            case,
+            resume,
+        )
+        .await?;
     }
 
     // Verify adaptive ring sizing: 2-audio-track SRT stream → 100+ pkt/s →
@@ -8411,6 +8015,73 @@ struct MixedGroupSpec<'a> {
     encoding: &'a str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MixedOutputProtocol {
+    Rtmp,
+    Srt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MixedOutputCase {
+    group: &'static str,
+    protocol: MixedOutputProtocol,
+    encoding: &'static str,
+    expected_dimensions: &'static str,
+    expected_audio_tracks: usize,
+    selected_audio_track: Option<usize>,
+}
+
+const SINGLE_TRACK_MIXED_OUTPUT_CASES: &[MixedOutputCase] = &[
+    MixedOutputCase {
+        group: "rtmp-src",
+        protocol: MixedOutputProtocol::Rtmp,
+        encoding: "source",
+        expected_dimensions: "1920x1080",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+    MixedOutputCase {
+        group: "rtmp-720p",
+        protocol: MixedOutputProtocol::Rtmp,
+        encoding: "720p",
+        expected_dimensions: "1280x720",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+    MixedOutputCase {
+        group: "rtmp-1080p",
+        protocol: MixedOutputProtocol::Rtmp,
+        encoding: "1080p",
+        expected_dimensions: "1920x1080",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+    MixedOutputCase {
+        group: "srt-src",
+        protocol: MixedOutputProtocol::Srt,
+        encoding: "source",
+        expected_dimensions: "1920x1080",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+    MixedOutputCase {
+        group: "srt-720p",
+        protocol: MixedOutputProtocol::Srt,
+        encoding: "720p",
+        expected_dimensions: "1280x720",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+    MixedOutputCase {
+        group: "srt-1080p",
+        protocol: MixedOutputProtocol::Srt,
+        encoding: "1080p",
+        expected_dimensions: "1920x1080",
+        expected_audio_tracks: 1,
+        selected_audio_track: None,
+    },
+];
+
 struct FfmpegSrtSink {
     group: String,
     index: usize,
@@ -8447,6 +8118,145 @@ where
         "[mixed-input] added {} {} outputs for {}",
         spec.count, spec.group, spec.cfg
     );
+    Ok(())
+}
+
+fn mixed_output_publish_url(
+    env: &MixedEnv,
+    cfg: &str,
+    case: MixedOutputCase,
+    index: usize,
+) -> String {
+    match case.protocol {
+        MixedOutputProtocol::Rtmp => {
+            format!(
+                "rtmp://127.0.0.1:{}/live/{cfg}-{}-{index}",
+                env.mtx_rtmp, case.group
+            )
+        }
+        MixedOutputProtocol::Srt => {
+            format!(
+                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-{}-{index}",
+                env.mtx_srt, case.group
+            )
+        }
+    }
+}
+
+fn mixed_output_read_url(env: &MixedEnv, cfg: &str, case: MixedOutputCase, index: usize) -> String {
+    match case.protocol {
+        MixedOutputProtocol::Rtmp => mixed_output_publish_url(env, cfg, case, index),
+        MixedOutputProtocol::Srt => {
+            format!(
+                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-{}-{index}&timeout=30000000",
+                env.mtx_srt, case.group
+            )
+        }
+    }
+}
+
+fn mixed_output_protocol_name(protocol: MixedOutputProtocol) -> &'static str {
+    match protocol {
+        MixedOutputProtocol::Rtmp => "rtmp",
+        MixedOutputProtocol::Srt => "srt",
+    }
+}
+
+fn mixed_output_matrix_json(cases: &[MixedOutputCase]) -> Vec<Value> {
+    cases
+        .iter()
+        .map(|case| {
+            let mut value = json!({
+                "group": case.group,
+                "protocol": mixed_output_protocol_name(case.protocol),
+                "encoding": case.encoding,
+                "expectedDimensions": case.expected_dimensions,
+                "expectedAudioTracks": case.expected_audio_tracks,
+            });
+            if let Some(track) = case.selected_audio_track {
+                value["selectedAudioTrack"] = json!(track);
+            }
+            value
+        })
+        .collect()
+}
+
+async fn add_mixed_output_cases(
+    env: &MixedEnv,
+    api: &RampApi,
+    pipeline_id: &str,
+    restream_pid: u32,
+    cfg: &str,
+    cases: &[MixedOutputCase],
+    output_ids: &mut Vec<String>,
+) -> Result<(), String> {
+    for case in cases {
+        add_mixed_group(
+            api,
+            pipeline_id,
+            MixedGroupSpec {
+                cfg,
+                group: case.group,
+                count: env.n_per_group,
+                encoding: case.encoding,
+            },
+            |index| mixed_output_publish_url(env, cfg, *case, index),
+            output_ids,
+        )
+        .await?;
+        if !env.skip_load {
+            snapshot_mixed(
+                env,
+                restream_pid,
+                cfg,
+                &format!("after {} {} outputs", env.n_per_group, case.group),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn verify_mixed_output_cases(
+    env: &MixedEnv,
+    cfg: &str,
+    cases: &[MixedOutputCase],
+    resume: &mut MixedResume,
+) -> Result<(), String> {
+    if !env.check_selected("ffprobe") {
+        return Ok(());
+    }
+    let index = env.n_per_group;
+    for case in cases {
+        let url = mixed_output_read_url(env, cfg, *case, index);
+        let label = format!("{} out{index}", case.group);
+        let ffprobe_id = format!("MS-ffprobe-{cfg}-{}", case.group);
+        verify_mixed_stream(
+            env,
+            MixedProbeSpec {
+                cfg,
+                id: &ffprobe_id,
+                label: &label,
+                url: &url,
+                expected: case.expected_dimensions,
+                cookie: None,
+            },
+            resume,
+        )
+        .await?;
+        let audio_id = format!("MS-audio-{cfg}-{}", case.group);
+        verify_mixed_audio_route(
+            env,
+            cfg,
+            &audio_id,
+            &label,
+            &url,
+            case.expected_dimensions,
+            case.expected_audio_tracks,
+            resume,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -11805,7 +11615,8 @@ async fn run_mixed_file_config(
 ) -> Result<Value, String> {
     let cfg = case.name;
     let n = env.n_per_group;
-    let total = n * 2;
+    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
     let fixture = mixed_file_fixture(case)?;
@@ -11861,54 +11672,31 @@ async fn run_mixed_file_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
-    add_mixed_group(
+    add_mixed_output_cases(
+        env,
         api,
         &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "rtmp-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{index}",
-                env.mtx_rtmp
-            )
-        },
+        restream_pid,
+        cfg,
+        output_cases,
         &mut output_ids,
     )
     .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} RTMP source")).await?;
-    }
-
-    add_mixed_group(
-        api,
-        &pipeline_id,
-        MixedGroupSpec {
-            cfg,
-            group: "srt-src",
-            count: n,
-            encoding: "source",
-        },
-        |index| {
-            format!(
-                "srt://127.0.0.1:{}?streamid=publish:live/{cfg}-srt-src-{index}",
-                env.mtx_srt
-            )
-        },
-        &mut output_ids,
-    )
-    .await?;
-    if !env.skip_load {
-        snapshot_mixed(env, restream_pid, cfg, &format!("after {n} SRT source")).await?;
-    }
 
     let duration_secs: u64 = 10;
     if env.check_selected("hls") {
-        verify_mixed_hls_preview(env, api, cfg, &pipeline_id, "1920x1080", case, resume).await?;
+        verify_mixed_hls_preview(
+            env,
+            api,
+            cfg,
+            &pipeline_id,
+            mixed_hls_preview_expected_dimensions(case),
+            case,
+            resume,
+        )
+        .await?;
     }
+    verify_mixed_output_cases(env, cfg, output_cases, resume).await?;
 
     println!("[{cfg}] sustaining {total} outputs for {duration_secs}s");
     tokio::time::sleep(Duration::from_secs(duration_secs)).await;
@@ -11949,6 +11737,7 @@ async fn run_mixed_file_config(
         "codec": case.codec,
         "trackLayout": if case.multi_track { "multi" } else { "single" },
         "outputCount": total,
+        "outputMatrix": mixed_output_matrix_json(output_cases),
         "rssBaselineKb": rss_baseline,
         "rssPeakKb": rss_peak,
         "rssGrowthKb": growth_kb,
@@ -16040,6 +15829,26 @@ stream|index=1|codec_type=audio\n";
     }
 
     #[test]
+    fn mixed_hls_preview_expectations_match_current_hevc_preview_contract() {
+        for case in MIXED_INPUT_CASES {
+            let expected = mixed_hls_preview_expected_dimensions(*case);
+            if matches!(case.codec, "h265" | "hevc") {
+                assert_eq!(
+                    expected, "1280x720",
+                    "{} should assert HEVC preview transcode dimensions",
+                    case.name
+                );
+            } else {
+                assert_eq!(
+                    expected, "1920x1080",
+                    "{} should assert source-size H.264 preview",
+                    case.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mixed_input_suite_default_runs_aggregate_not_duplicate_rows() {
         let matrix_spec =
             mode_spec("mixed-input-matrix").expect("mixed-input-matrix must be listed");
@@ -16052,5 +15861,49 @@ stream|index=1|codec_type=audio\n";
                 "{mode} is covered by mixed-input-matrix and should not duplicate default suite work"
             );
         }
+    }
+
+    #[test]
+    fn single_track_output_matrix_exercises_all_protocol_encoding_pairs() {
+        let pairs: Vec<_> = SINGLE_TRACK_MIXED_OUTPUT_CASES
+            .iter()
+            .map(|case| (mixed_output_protocol_name(case.protocol), case.encoding))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("rtmp", "source"),
+                ("rtmp", "720p"),
+                ("rtmp", "1080p"),
+                ("srt", "source"),
+                ("srt", "720p"),
+                ("srt", "1080p"),
+            ]
+        );
+        assert!(
+            SINGLE_TRACK_MIXED_OUTPUT_CASES
+                .iter()
+                .all(|case| case.expected_audio_tracks == 1)
+        );
+    }
+
+    #[test]
+    fn single_track_output_matrix_reports_same_rows_it_executes() {
+        let rows = mixed_output_matrix_json(SINGLE_TRACK_MIXED_OUTPUT_CASES);
+        let groups: Vec<_> = rows
+            .iter()
+            .map(|row| row["group"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            groups,
+            vec![
+                "rtmp-src",
+                "rtmp-720p",
+                "rtmp-1080p",
+                "srt-src",
+                "srt-720p",
+                "srt-1080p",
+            ]
+        );
     }
 }
