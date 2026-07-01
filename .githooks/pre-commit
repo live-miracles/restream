@@ -14,21 +14,39 @@ rust_files=()
 frontend_files=()
 stashed=0
 stash_label="pre-commit-$(date +%s)-$$"
+overlap_files=()
+
+mapfile -t unstaged_files < <(git diff --name-only --diff-filter=ACMR)
+
+declare -A unstaged_lookup=()
+for file in "${unstaged_files[@]}"; do
+    unstaged_lookup["$file"]=1
+done
+
+for file in "${staged_files[@]}"; do
+    if [[ -n "${unstaged_lookup[$file]+x}" ]]; then
+        overlap_files+=("$file")
+    fi
+done
 
 stash_unstaged() {
-    if git stash push --keep-index --include-untracked -q -m "$stash_label"; then
-        stashed=1
+    if ((${#overlap_files[@]} == 0)); then
         return 0
     fi
 
-    echo "pre-commit: stash with untracked files failed; retrying with tracked-only changes"
-    if git stash push --keep-index -q -m "$stash_label"; then
-        stashed=1
-        return 0
+    local before_ref
+    local after_ref
+    before_ref="$(git rev-parse -q --verify refs/stash || true)"
+
+    if ! git stash push --keep-index -q -m "$stash_label" -- "${overlap_files[@]}"; then
+        echo "pre-commit: failed to stash unstaged changes in staged files; aborting"
+        return 1
     fi
 
-    echo "pre-commit: failed to stash unstaged changes; aborting"
-    return 1
+    after_ref="$(git rev-parse -q --verify refs/stash || true)"
+    if [[ "$before_ref" != "$after_ref" ]]; then
+        stashed=1
+    fi
 }
 
 restore_unstaged() {
@@ -40,7 +58,7 @@ restore_unstaged() {
     fi
 }
 
-if ! git diff --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+if ! git diff --quiet; then
     stash_unstaged
 fi
 
