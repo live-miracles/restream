@@ -129,6 +129,8 @@ surface already covers it.
   - `health_endpoint_surfaces_repeated_transient_disconnects_as_flapping`
   - `recovered_output_surfaces_flapping_after_repeated_sink_failures`
   - `output_status_and_health_preserve_recent_egress_failure_after_unregister`
+- `tests/output_status_contract.rs`
+  - `active_output_status_matches_health_runtime_fields`
 - `tests/ring_migration.rs`
   - `prop_no_loss_no_gap_no_duplication`
 - `src/media/engine.rs`

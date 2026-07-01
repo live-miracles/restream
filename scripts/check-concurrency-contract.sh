@@ -13,6 +13,7 @@ done
 scripts/resource-limit cargo test health_endpoint_exposes_probe_and_egress_fault_fields --test api -- --nocapture
 scripts/resource-limit cargo test output_status_and_health_preserve_recent_egress_failure_after_unregister --test api -- --nocapture
 scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state_after_restart --test api -- --nocapture
+scripts/resource-limit cargo test active_output_status_matches_health_runtime_fields --test output_status_contract -- --nocapture
 scripts/resource-limit cargo test health_endpoint_clears_recent_disconnect_details_after_reconnect --test api -- --nocapture
 scripts/resource-limit cargo test health_endpoint_surfaces_repeated_transient_disconnects_as_flapping --test api -- --nocapture
 scripts/resource-limit cargo test recovered_output_surfaces_flapping_after_repeated_sink_failures --test api -- --nocapture
