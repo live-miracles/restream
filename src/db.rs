@@ -617,6 +617,9 @@ pub async fn list_app_logs(
     if filters.target.is_some() {
         clauses.push("target LIKE ?".to_string());
     }
+    if filters.after_id.is_some() {
+        clauses.push("id > ?".to_string());
+    }
     match filters.scope.as_deref() {
         Some("restream") => {
             clauses.push("pipeline_id IS NULL".to_string());
@@ -683,6 +686,9 @@ pub async fn list_app_logs(
     }
     if let Some(ref t) = filters.target {
         q = q.bind(format!("{}%", t));
+    }
+    if let Some(after_id) = filters.after_id {
+        q = q.bind(after_id);
     }
     if let Some(ref p) = filters.pipeline_id {
         q = q.bind(p);

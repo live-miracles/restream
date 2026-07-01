@@ -263,7 +263,9 @@ Each log entry in the response includes `id`, `ts`, `level`, `target`,
 
 ### `GET /api/logs/stream`
 
-SSE live tail. Accepts the same filter parameters as `GET /api/logs`.
+SSE live tail. Accepts the same core filter parameters as `GET /api/logs`,
+plus `include_restream=true` when a `pipeline_id` subscription should also
+receive restream-wide process lifecycle events on the same stream.
 On connect, the handler backfills entries newer than the `Last-Event-ID`
 header (or `?last_event_id=`) from the database, then streams new entries
 from the broadcast channel. A `": ping"` comment is sent every 20 seconds.
@@ -278,6 +280,10 @@ Pipeline, inspect, control-room, and publisher-health runtime surfaces
 subscribe to this SSE endpoint with `event_class=lifecycle` so they refresh
 immediately on process lifecycle transitions instead of waiting for the next
 periodic poll.
+Focused pipeline and inspect views now add `pipeline_id=<selected>` plus
+`include_restream=true` on that lifecycle SSE feed so the browser receives only
+the selected pipeline's lifecycle events alongside restream-wide process
+transitions, instead of every sibling pipeline event.
 Settings and media also keep a narrower restream-scoped `event_class=lifecycle`
 feed open so the global Rust-process indicator can react to
 shutdown/fault/ready events without waking the heavier runtime health polls in
@@ -629,9 +635,10 @@ The dashboard currently uses:
 - `health_view=summary&pipeline_id=<selected>` for selected-pipeline detail
   paths so the dashboard keeps summary liveness for every pipeline while
   returning full runtime detail for the active pipeline in the same snapshot;
-  focused pipeline and inspect modes only let selected-pipeline or restream-wide
-  lifecycle events wake that immediate SSE refresh path, while unrelated
-  pipelines stay on the steady summary poll
+  focused pipeline and inspect modes pair that with
+  `/api/v1/logs/stream?pipeline_id=<selected>&event_class=lifecycle&include_restream=true`
+  so selected-pipeline and restream-wide lifecycle events wake the immediate
+  refresh path while unrelated pipelines stay off the wire
 - `health_view=full` without `pipeline_id` for publisher-health paths that need
   the full runtime view across pipelines
 - lifecycle-SSE-driven output start/stop convergence in pipeline/control modes,

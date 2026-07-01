@@ -237,6 +237,14 @@ test("frontend API helpers preserve response fields and build diagnostics URLs c
     }),
     "/api/v1/logs/stream?level=warn&scope=restream&event_class=lifecycle&last_event_id=12&prefix=stderr%2Cexit",
   );
+  assert.equal(
+    api.buildLogsStreamUrl({
+      pipelineId: "pipe-1",
+      eventClass: "lifecycle",
+      includeRestream: true,
+    }),
+    "/api/v1/logs/stream?pipeline_id=pipe-1&include_restream=true&event_class=lifecycle",
+  );
 });
 
 test("pipeline parsing preserves probe and runtime fault status fields", async () => {

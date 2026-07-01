@@ -210,6 +210,7 @@ interface BuildLogsStreamUrlOptions {
   pipelineId?: string | null;
   outputId?: string | null;
   eventClass?: string | null;
+  includeRestream?: boolean;
   lastEventId?: number | null;
   prefixes?: string[] | null;
 }
@@ -220,6 +221,7 @@ function buildLogsStreamUrl(options: BuildLogsStreamUrlOptions = {}): string {
   if (options.target) query.set("target", String(options.target));
   if (options.scope) query.set("scope", String(options.scope));
   if (options.pipelineId) query.set("pipeline_id", String(options.pipelineId));
+  if (options.includeRestream) query.set("include_restream", "true");
   if (options.outputId) query.set("output_id", String(options.outputId));
   if (options.eventClass) query.set("event_class", String(options.eventClass));
   if (Number.isFinite(options.lastEventId as number)) {

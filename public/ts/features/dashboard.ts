@@ -385,10 +385,17 @@ function openDashboardRuntimeStream(): void {
   if (dashboardRuntimeStream) return;
 
   try {
+    const focusedPipelineId = selectedDashboardRuntimePipelineId();
     const stream = new EventSource(
       buildLogsStreamUrl({
-        scope: shouldFetchRuntimeHealth() ? null : "restream",
+        scope: focusedPipelineId
+          ? null
+          : shouldFetchRuntimeHealth()
+            ? null
+            : "restream",
+        pipelineId: focusedPipelineId,
         eventClass: "lifecycle",
+        includeRestream: Boolean(focusedPipelineId),
         lastEventId: dashboardRuntimeLastEventId,
       }),
     );

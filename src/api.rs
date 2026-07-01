@@ -2093,6 +2093,7 @@ async fn output_status_handler(
 
 #[derive(Deserialize)]
 struct LogsQuery {
+    after_id: Option<i64>,
     level: Option<String>,
     since: Option<String>,
     until: Option<String>,
@@ -2120,6 +2121,7 @@ async fn logs_handler(
     }
 
     let filters = AppLogFilters {
+        after_id: query.after_id,
         level: query.level,
         since: query.since,
         until: query.until,
@@ -2156,6 +2158,7 @@ struct LogsStreamQuery {
     pipeline_id: Option<String>,
     output_id: Option<String>,
     event_class: Option<String>,
+    include_restream: Option<bool>,
     prefix: Option<String>,
     last_event_id: Option<i64>,
 }
@@ -2192,6 +2195,7 @@ fn log_broadcast_matches_stream_filters(
     pipeline_id: Option<&str>,
     output_id: Option<&str>,
     event_class: Option<&str>,
+    include_restream: bool,
     prefix: Option<&str>,
 ) -> bool {
     if let Some(target) = target
@@ -2206,10 +2210,15 @@ fn log_broadcast_matches_stream_filters(
     ) {
         return false;
     }
-    if let Some(pipeline_id) = pipeline_id
-        && entry.pipeline_id.as_deref() != Some(pipeline_id)
-    {
-        return false;
+    if let Some(pipeline_id) = pipeline_id {
+        let matches_pipeline = entry.pipeline_id.as_deref() == Some(pipeline_id);
+        let matches_restream = include_restream
+            && output_id.is_none()
+            && entry.pipeline_id.is_none()
+            && entry.output_id.is_none();
+        if !matches_pipeline && !matches_restream {
+            return false;
+        }
     }
     if let Some(output_id) = output_id
         && entry.output_id.as_deref() != Some(output_id)
@@ -2222,6 +2231,40 @@ fn log_broadcast_matches_stream_filters(
         return false;
     }
     log_stream_prefix_matches(prefix, &entry.message)
+}
+
+async fn list_logs_stream_backfill(
+    db_pool: &sqlx::SqlitePool,
+    filters: &AppLogFilters,
+    include_restream: bool,
+) -> Vec<crate::logging::types::AppLogRow> {
+    let limit = filters.limit.unwrap_or(200).clamp(1, 1000);
+    if !include_restream || filters.pipeline_id.is_none() || filters.output_id.is_some() {
+        return db::list_app_logs(db_pool, filters)
+            .await
+            .unwrap_or_default();
+    }
+
+    let mut restream_filters = filters.clone();
+    restream_filters.scope = Some("restream".to_string());
+    restream_filters.pipeline_id = None;
+    restream_filters.output_id = None;
+
+    let (pipeline_logs, restream_logs) = tokio::join!(
+        db::list_app_logs(db_pool, filters),
+        db::list_app_logs(db_pool, &restream_filters),
+    );
+
+    let mut merged = std::collections::BTreeMap::new();
+    for row in pipeline_logs
+        .unwrap_or_default()
+        .into_iter()
+        .chain(restream_logs.unwrap_or_default().into_iter())
+    {
+        merged.insert(row.id, row);
+    }
+
+    merged.into_values().take(limit as usize).collect()
 }
 
 async fn logs_stream_handler(
@@ -2250,6 +2293,9 @@ async fn logs_stream_handler(
     let filter_pipeline = query.pipeline_id;
     let filter_output = query.output_id;
     let filter_event_class = query.event_class;
+    let include_restream = query.include_restream.unwrap_or(false)
+        && filter_pipeline.is_some()
+        && filter_output.is_none();
     let filter_prefix = query.prefix;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -2268,9 +2314,10 @@ async fn logs_stream_handler(
         };
         // 1. Backfill entries missed since last_event_id.
         if let Some(since_id) = resume_from {
-            let backfill = db::list_app_logs(
+            let backfill = list_logs_stream_backfill(
                 &db_pool,
                 &AppLogFilters {
+                    after_id: Some(since_id),
                     level: Some(min_level.clone()),
                     since: None,
                     until: None,
@@ -2283,11 +2330,9 @@ async fn logs_stream_handler(
                     limit: Some(200),
                     order: Some("asc".to_string()),
                 },
+                include_restream,
             )
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|r| r.id > since_id);
+            .await;
 
             for row in backfill {
                 let data = serde_json::json!({
@@ -2319,6 +2364,7 @@ async fn logs_stream_handler(
                                 filter_pipeline.as_deref(),
                                 filter_output.as_deref(),
                                 filter_event_class.as_deref(),
+                                include_restream,
                                 filter_prefix.as_deref(),
                             ) {
                                 continue;
@@ -7309,6 +7355,7 @@ mod tests {
             None,
             None,
             Some("lifecycle"),
+            false,
             Some("stderr,exit"),
         ));
         assert!(!log_broadcast_matches_stream_filters(
@@ -7318,6 +7365,7 @@ mod tests {
             None,
             None,
             Some("lifecycle"),
+            false,
             Some("stderr,exit"),
         ));
         assert!(!log_broadcast_matches_stream_filters(
@@ -7327,6 +7375,7 @@ mod tests {
             None,
             None,
             Some("lifecycle"),
+            false,
             Some("control"),
         ));
         assert!(log_broadcast_matches_stream_filters(
@@ -7336,6 +7385,17 @@ mod tests {
             Some("pipe-1"),
             Some("out-1"),
             Some("lifecycle"),
+            false,
+            Some("stderr"),
+        ));
+        assert!(log_broadcast_matches_stream_filters(
+            &restream_entry,
+            Some("restream::"),
+            None,
+            Some("pipe-1"),
+            None,
+            Some("lifecycle"),
+            true,
             Some("stderr"),
         ));
     }

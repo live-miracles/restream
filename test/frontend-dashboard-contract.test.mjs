@@ -2694,6 +2694,62 @@ test("focused pipeline lifecycle filter ignores sibling events but keeps selecte
   );
 });
 
+test("focused pipeline runtime mode subscribes to selected-pipeline lifecycle events plus restream process events", async () => {
+  const { window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+
+  const streams = [];
+  class FakeEventSource {
+    constructor(url) {
+      this.url = String(url);
+      this.handlers = new Map();
+      streams.push(this);
+    }
+
+    addEventListener(type, handler) {
+      const handlers = this.handlers.get(type) || [];
+      handlers.push(handler);
+      this.handlers.set(type, handlers);
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+
+  const originalEventSource = globalThis.EventSource;
+  Object.defineProperty(globalThis, "EventSource", {
+    value: FakeEventSource,
+    configurable: true,
+  });
+
+  try {
+    const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+    dashboard.syncDashboardRuntimeStream();
+
+    assert.equal(streams.length, 1);
+    assert.equal(
+      String(streams[0].url).startsWith(
+        "/api/v1/logs/stream?pipeline_id=pipe-1&include_restream=true&event_class=lifecycle",
+      ),
+      true,
+      "focused pipeline mode should narrow the lifecycle stream to the selected pipeline while keeping restream-wide process events",
+    );
+  } finally {
+    for (const stream of streams) {
+      stream.close?.();
+    }
+    if (originalEventSource === undefined) {
+      delete globalThis.EventSource;
+    } else {
+      Object.defineProperty(globalThis, "EventSource", {
+        value: originalEventSource,
+        configurable: true,
+      });
+    }
+  }
+});
+
 test("focused pipeline runtime refresh keeps sibling summaries while enriching the selected pipeline", async () => {
   const scopedRuntimeUrl =
     "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary&pipeline_id=pipe-1";

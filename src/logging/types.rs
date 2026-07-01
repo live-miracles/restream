@@ -36,6 +36,7 @@ pub struct AppLogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppLogFilters {
+    pub after_id: Option<i64>,
     pub level: Option<String>,
     pub since: Option<String>,
     pub until: Option<String>,
