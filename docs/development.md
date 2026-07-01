@@ -141,10 +141,12 @@ already open, while cold/no-stream file-ingest controls still fall back
 directly to a runtime refresh. The file-ingest button now also shows its own
 `Starting...` / `Stopping...` in-flight state immediately so operators do not
 have to infer whether the backend accepted the click. Recording start/stop is
-different: the mutation
+different in transport shape: the mutation
 response already contains the operator-facing `enabled` / `active` state, so
 the dashboard patches local recording state immediately instead of forcing a
-follow-up runtime fetch. Status mode now reuses its own restream log SSE
+follow-up runtime fetch, while the button itself still shows immediate
+`Starting...` / `Stopping...` feedback during the request. Status mode now
+reuses its own restream log SSE
 instead of opening a second lifecycle-only dashboard stream on top. Settings
 and media modes also use their existing metrics refresh to mark the Rust
 process indicator as running immediately, rather than waiting for a later

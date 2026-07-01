@@ -55,7 +55,30 @@ const sourceFileMetadataCache = new Map<string, MediaFile | null>();
 const sourceFileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
 let sourceFileMetadataLoadPromise: Promise<void> | null = null;
 let sourceFileAnalysisLoadPromise: Promise<void> | null = null;
+const pendingRecordingIntents = new Map<string, "starting" | "stopping">();
 const pendingFileIngestIntents = new Map<string, "starting" | "stopping">();
+
+function recordingIntentKey(pipeId: string): string {
+  return pipeId;
+}
+
+function getPendingRecordingIntent(
+  pipeId: string,
+): "starting" | "stopping" | null {
+  return pendingRecordingIntents.get(recordingIntentKey(pipeId)) || null;
+}
+
+function setPendingRecordingIntent(
+  pipeId: string,
+  intent: "starting" | "stopping" | null,
+): void {
+  const key = recordingIntentKey(pipeId);
+  if (intent === null) {
+    pendingRecordingIntents.delete(key);
+  } else {
+    pendingRecordingIntents.set(key, intent);
+  }
+}
 
 function fileIngestIntentKey(pipeId: string): string {
   return pipeId;
@@ -499,19 +522,51 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     const isRecordingEnabled = pipe.recording.enabled;
     const inputOn = pipe.input.status === "on";
     const canStart = inputOn || isRecordingEnabled;
-    recordBtn.textContent = isRecordingEnabled ? "Stop Rec" : "Record";
-    recordBtn.classList.toggle("btn-error", isRecordingEnabled);
-    recordBtn.classList.toggle("btn-accent", !isRecordingEnabled);
-    recordBtn.classList.toggle("btn-outline", !isRecordingEnabled);
-    recordBtn.disabled = !canStart;
-    recordBtn.classList.toggle("btn-disabled", !canStart);
-    recordBtn.title = !canStart ? "Input must be on to start recording" : "";
+    const pendingIntent = getPendingRecordingIntent(pipe.id);
+    const pending = pendingIntent !== null;
+    recordBtn.textContent = pending
+      ? pendingIntent === "starting"
+        ? "Starting..."
+        : "Stopping..."
+      : isRecordingEnabled
+        ? "Stop Rec"
+        : "Record";
+    recordBtn.classList.toggle(
+      "btn-error",
+      pendingIntent === "stopping" || (!pending && isRecordingEnabled),
+    );
+    recordBtn.classList.toggle(
+      "btn-accent",
+      pendingIntent === "starting" || (!pending && !isRecordingEnabled),
+    );
+    recordBtn.classList.toggle(
+      "btn-outline",
+      pendingIntent !== "starting" && !isRecordingEnabled,
+    );
+    recordBtn.disabled = pending || !canStart;
+    recordBtn.classList.toggle("btn-disabled", pending || !canStart);
+    recordBtn.title = pending
+      ? ""
+      : !canStart
+        ? "Input must be on to start recording"
+        : "";
     recordBtn.onclick = async () => {
-      const res = isRecordingEnabled
-        ? await stopRecording(pipe.id)
-        : await startRecording(pipe.id);
-      if (res !== null) {
-        updateDashboardPipelineRecordingState(pipe.id, res);
+      if (pending) return;
+      setPendingRecordingIntent(
+        pipe.id,
+        isRecordingEnabled ? "stopping" : "starting",
+      );
+      renderPipelineInfoColumn(pipe.id);
+      try {
+        const res = isRecordingEnabled
+          ? await stopRecording(pipe.id)
+          : await startRecording(pipe.id);
+        if (res !== null) {
+          updateDashboardPipelineRecordingState(pipe.id, res);
+        }
+      } finally {
+        setPendingRecordingIntent(pipe.id, null);
+        renderPipelineInfoColumn(pipe.id);
       }
     };
   }

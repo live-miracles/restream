@@ -1369,6 +1369,10 @@ test("recording patches local state immediately, while file-ingest falls back to
   appendRoot(document, "div", "input-stats");
 
   const requests = [];
+  let resolveStartRecordingRequest;
+  const startRecordingResponseReady = new Promise((resolve) => {
+    resolveStartRecordingRequest = resolve;
+  });
   let resolveStartIngestRequest;
   const startIngestResponseReady = new Promise((resolve) => {
     resolveStartIngestRequest = resolve;
@@ -1450,6 +1454,7 @@ test("recording patches local state immediately, while file-ingest falls back to
     }
 
     if (href === startRecordingUrl) {
+      await startRecordingResponseReady;
       return new Response(
         JSON.stringify({ enabled: true, active: true }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -1488,7 +1493,17 @@ test("recording patches local state immediately, while file-ingest falls back to
   pipelineView.renderPipelineInfoColumn("pipe-1");
   requests.length = 0;
 
-  await document.getElementById("record-pipe-btn").onclick();
+  const recordButton = document.getElementById("record-pipe-btn");
+  const startRecordingPromise = recordButton.onclick();
+  await flushAsyncWork();
+
+  assert.equal(recordButton.textContent, "Starting...");
+  assert.equal(recordButton.disabled, true);
+  assert.equal(recordButton.classList.contains("btn-disabled"), true);
+  assert.deepEqual(requests, [["POST", startRecordingUrl]]);
+
+  resolveStartRecordingRequest();
+  await startRecordingPromise;
   await flushAsyncWork();
 
   assert.deepEqual(requests, [["POST", startRecordingUrl]]);
