@@ -12,7 +12,8 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
@@ -811,8 +812,8 @@ async fn write_generalized_sink_results(
     results: Vec<ServerSessionResult>,
     metrics: &GeneralizedSinkMetrics,
 ) -> Result<(), String> {
-    let mut pending: VecDeque<_> = results.into();
-    while let Some(result) = pending.pop_front() {
+    let mut pending = results;
+    while let Some(result) = pending.pop() {
         match result {
             ServerSessionResult::OutboundResponse(packet) => {
                 socket
@@ -825,14 +826,14 @@ async fn write_generalized_sink_results(
                     let mut accepted = session
                         .accept_request(request_id)
                         .map_err(|e| format!("{e:?}"))?;
-                    pending.extend(accepted.drain(..));
+                    pending.append(&mut accepted);
                 }
                 ServerSessionEvent::PublishStreamRequested { request_id, .. } => {
                     let mut accepted = session
                         .accept_request(request_id)
                         .map_err(|e| format!("{e:?}"))?;
                     metrics.publishing.fetch_add(1, Ordering::Relaxed);
-                    pending.extend(accepted.drain(..));
+                    pending.append(&mut accepted);
                 }
                 ServerSessionEvent::VideoDataReceived {
                     data, timestamp, ..
@@ -1041,7 +1042,7 @@ async fn handle_stalled_rtmp_sink_client(
 
     let (mut session, initial) =
         ServerSession::new(ServerSessionConfig::new()).map_err(|e| format!("{e:?}"))?;
-    let mut pending: VecDeque<_> = initial.into();
+    let mut pending = initial;
     if !remaining.is_empty() {
         pending.extend(
             session
@@ -1051,7 +1052,7 @@ async fn handle_stalled_rtmp_sink_client(
     }
 
     loop {
-        while let Some(result) = pending.pop_front() {
+        while let Some(result) = pending.pop() {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
                     socket
@@ -1064,15 +1065,15 @@ async fn handle_stalled_rtmp_sink_client(
                         let mut accepted = session
                             .accept_request(request_id)
                             .map_err(|e| format!("{e:?}"))?;
-                        pending.extend(accepted.drain(..));
+                        pending.append(&mut accepted);
                     }
                     ServerSessionEvent::PublishStreamRequested { request_id, .. } => {
                         let mut accepted = session
                             .accept_request(request_id)
                             .map_err(|e| format!("{e:?}"))?;
                         publish_accepted.store(true, Ordering::Relaxed);
-                        pending.extend(accepted.drain(..));
-                        while let Some(response) = pending.pop_front() {
+                        pending.append(&mut accepted);
+                        while let Some(response) = pending.pop() {
                             if let ServerSessionResult::OutboundResponse(packet) = response {
                                 socket
                                     .write_all(&packet.bytes)
@@ -1099,7 +1100,6 @@ async fn handle_stalled_rtmp_sink_client(
         }
         pending = session
             .handle_input(&buffer[..n])
-            .map(|results| results.into())
             .map_err(|e| format!("{e:?}"))?;
     }
 }
