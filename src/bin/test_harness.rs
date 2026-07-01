@@ -4737,6 +4737,23 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn effective_fault_output_stall_siblings(
+    configured_siblings: usize,
+    n_per_group: Option<usize>,
+) -> usize {
+    let configured = configured_siblings.max(1);
+    let n_per_group = n_per_group.unwrap_or(configured).max(1);
+    configured.min(n_per_group)
+}
+
+fn fault_output_stall_sibling_count() -> usize {
+    let configured = env_usize("FAULT_OUTPUT_STALL_SIBLINGS", 12);
+    let n_per_group = std::env::var("N_PER_GROUP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    effective_fault_output_stall_siblings(configured, n_per_group)
+}
+
 // ── api-smoke (Phase 3) ─────────────────────────────────────────────────────
 //
 // Lightweight live test for the API/DB/lifecycle layer. No media — just spin up
@@ -13125,6 +13142,278 @@ async fn fault_rtmp_egress_sink_stalls(
     }))
 }
 
+async fn wait_for_outputs_live_and_progressing(
+    api: &RampApi,
+    pipeline_id: &str,
+    output_ids: &[String],
+    timeout: Duration,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + timeout;
+    let mut stabilized = Vec::new();
+    let mut attempts = 0u32;
+    let mut latest = Value::Null;
+
+    while Instant::now() < deadline {
+        attempts = attempts.saturating_add(1);
+        let health = api.get_json("/api/v1/engine/health").await?;
+        let mut snapshots = Vec::with_capacity(output_ids.len());
+        let mut all_live = true;
+
+        for output_id in output_ids {
+            let output = health["pipelines"][pipeline_id]["outputs"][output_id].clone();
+            let status = output["status"].as_str().unwrap_or("unknown");
+            let phase = output["phase"].as_str().unwrap_or("unknown");
+            let raw_status = output["rawStatus"].as_str().unwrap_or("unknown");
+            let bytes_out = output["bytesOut"].as_u64().unwrap_or(0);
+            let total_size = output["totalSize"].as_u64().unwrap_or(0);
+            let retrying = output["retrying"].as_bool().unwrap_or(false);
+            let failure_phase = output["failurePhase"].as_str().unwrap_or("");
+            let last_error = output["lastError"].as_str().unwrap_or("");
+            let last_progress_age_ms = output["lastProgressAgeMs"].as_u64();
+            let healthy = status == "running"
+                && matches!(phase, "sending" | "uploading")
+                && raw_status == "running"
+                && bytes_out > 0
+                && total_size > 0
+                && !retrying
+                && failure_phase.is_empty()
+                && last_error.is_empty()
+                && last_progress_age_ms.is_some_and(|age| age <= 5_000);
+            if !healthy {
+                all_live = false;
+            }
+            snapshots.push(json!({
+                "outputId": output_id,
+                "status": status,
+                "phase": phase,
+                "rawStatus": raw_status,
+                "bytesOut": bytes_out,
+                "totalSize": total_size,
+                "lastProgressAgeMs": last_progress_age_ms,
+                "retrying": retrying,
+                "failurePhase": output["failurePhase"],
+                "lastError": output["lastError"],
+                "healthy": healthy,
+            }));
+        }
+
+        latest = json!({
+            "attempt": attempts,
+            "outputs": snapshots,
+        });
+
+        if all_live {
+            stabilized.push(latest.clone());
+            if stabilized.len() >= 2 {
+                return Ok(json!({
+                    "attempts": attempts,
+                    "stabilizedSamples": stabilized,
+                }));
+            }
+        } else {
+            stabilized.clear();
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Err(format!(
+        "{} output(s) for pipeline {pipeline_id} did not stay live/progressing within {}s; latest={latest}",
+        output_ids.len(),
+        timeout.as_secs()
+    ))
+}
+
+async fn fault_rtmp_stalled_sink_isolation_under_many_outputs(
+    api: &RampApi,
+    ports: &TestPorts,
+    fixture_h264: &Path,
+    stall_sink_port: u16,
+    healthy_sink_base_port: u16,
+    sibling_outputs: usize,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let sibling_outputs = sibling_outputs.max(1);
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({
+                "name": "fault-egress-rtmp-stall-isolation",
+                "streamKey": "fault-egress-rtmp-stall-isolation"
+            }),
+        )
+        .await?;
+    let pid = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let stalled_output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            json!({
+                "name": "rtmp-stall-sink-isolation",
+                "url": format!("rtmp://127.0.0.1:{stall_sink_port}/live/fault-egress-rtmp-stall-isolation-stalled"),
+                "encoding": "source"
+            }),
+        )
+        .await?;
+    let stalled_oid = stalled_output["output"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let mut healthy_servers = Vec::with_capacity(sibling_outputs);
+    let mut healthy_output_ids = Vec::with_capacity(sibling_outputs);
+    let mut healthy_metrics = Vec::with_capacity(sibling_outputs);
+    for index in 0..sibling_outputs {
+        let port = healthy_sink_base_port.saturating_add(index as u16);
+        let metrics = Arc::new(GeneralizedSinkMetrics::default());
+        let server = start_generalized_sink_server(port, metrics.clone()).await?;
+        let output = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs"),
+                json!({
+                    "name": format!("rtmp-healthy-sink-{index:02}"),
+                    "url": format!("rtmp://127.0.0.1:{port}/live/fault-egress-rtmp-stall-isolation-healthy-{index:02}"),
+                    "encoding": "source"
+                }),
+            )
+            .await?;
+        let oid = output["output"]["id"]
+            .as_str()
+            .ok_or("missing id")?
+            .to_string();
+        healthy_output_ids.push(oid);
+        healthy_metrics.push(metrics);
+        healthy_servers.push(server);
+    }
+
+    let stall_server = start_stalled_rtmp_sink_server(stall_sink_port).await?;
+    let mut pub_child = spawn_publisher(
+        fixture_h264,
+        &format!(
+            "rtmp://127.0.0.1:{}/live/fault-egress-rtmp-stall-isolation",
+            ports.rtmp
+        ),
+        "flv",
+        false,
+    )
+    .await?;
+    wait_for_api_input_live(api, &pid, timeout).await?;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pid}/outputs/{stalled_oid}/start"),
+        json!({}),
+    )
+    .await?;
+    for output_id in &healthy_output_ids {
+        api.post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{output_id}/start"),
+            json!({}),
+        )
+        .await?;
+    }
+
+    let stalled_accept_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < stalled_accept_deadline
+        && !stall_server.publish_accepted.load(Ordering::Relaxed)
+    {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let stalled_publish_accepted = stall_server.publish_accepted.load(Ordering::Relaxed);
+    let healthy_accept_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < healthy_accept_deadline {
+        let accepted = healthy_metrics
+            .iter()
+            .all(|metrics| metrics.publishing.load(Ordering::Relaxed) > 0);
+        if accepted {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let healthy_publish_accepted = healthy_metrics
+        .iter()
+        .all(|metrics| metrics.publishing.load(Ordering::Relaxed) > 0);
+
+    let healthy_progress_result = wait_for_outputs_live_and_progressing(
+        api,
+        &pid,
+        &healthy_output_ids,
+        Duration::from_secs(25),
+    )
+    .await;
+    let stalled_result =
+        wait_for_output_stalled_status(api, &pid, &stalled_oid, Duration::from_secs(25)).await;
+
+    let healthy_snapshots = healthy_progress_result.as_ref().ok().cloned();
+    let stalled_snapshots = stalled_result
+        .as_ref()
+        .map(|(status, health)| json!({ "status": status, "health": health }))
+        .ok();
+
+    let mut healthy_metric_summaries = Vec::with_capacity(healthy_metrics.len());
+    for (index, metrics) in healthy_metrics.iter().enumerate() {
+        healthy_metric_summaries.push(json!({
+            "index": index,
+            "publishing": metrics.publishing.load(Ordering::Relaxed),
+            "videoCount": metrics.video_count.load(Ordering::Relaxed),
+            "audioCount": metrics.audio_count.load(Ordering::Relaxed),
+            "bytes": metrics.bytes.load(Ordering::Relaxed),
+        }));
+    }
+
+    let passed = stalled_publish_accepted
+        && healthy_publish_accepted
+        && healthy_progress_result.is_ok()
+        && stalled_result.is_ok();
+
+    println!(
+        "[fault] RTMP stalled sink isolation under sibling load: {} (siblings={} stalledAccepted={} healthyAccepted={} healthyProgress={} stalledVisible={})",
+        if passed { "PASS" } else { "FAIL" },
+        sibling_outputs,
+        stalled_publish_accepted,
+        healthy_publish_accepted,
+        healthy_progress_result.is_ok(),
+        stalled_result.is_ok(),
+    );
+
+    let _ = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{stalled_oid}/stop"),
+            json!({}),
+        )
+        .await;
+    for output_id in &healthy_output_ids {
+        let _ = api
+            .post_json(
+                &format!("/api/v1/pipelines/{pid}/outputs/{output_id}/stop"),
+                json!({}),
+            )
+            .await;
+    }
+    stop_child(&mut pub_child).await;
+    stop_stalled_rtmp_sink_server(stall_server);
+    for server in healthy_servers {
+        stop_generalized_sink_server(server);
+    }
+
+    Ok(json!({
+        "test": "rtmp-stalled-sink-isolation-under-many-outputs",
+        "passed": passed,
+        "siblingOutputs": sibling_outputs,
+        "stalledOutputId": stalled_oid,
+        "healthyOutputIds": healthy_output_ids,
+        "stalledPublishAccepted": stalled_publish_accepted,
+        "healthyPublishAccepted": healthy_publish_accepted,
+        "healthyProgress": healthy_snapshots,
+        "stalledSnapshot": stalled_snapshots,
+        "healthySinkMetrics": healthy_metric_summaries,
+        "healthyProgressError": healthy_progress_result.err(),
+        "stalledError": stalled_result.err(),
+    }))
+}
+
 async fn create_pipeline_with_stream_key(
     api: &RampApi,
     name: &str,
@@ -13257,16 +13546,31 @@ async fn fault_output_stall() -> Result<Value, String> {
     api.login().await?;
 
     let fixture_h264 = checked_h264_fixture()?;
-    let result =
+    let stall_single =
         fault_rtmp_egress_sink_stalls(&api, &ports, &fixture_h264, sink_port, timeout).await?;
+    let sibling_outputs = fault_output_stall_sibling_count();
+    let isolation = fault_rtmp_stalled_sink_isolation_under_many_outputs(
+        &api,
+        &ports,
+        &fixture_h264,
+        sink_port.saturating_add(10),
+        sink_port.saturating_add(100),
+        sibling_outputs,
+        timeout,
+    )
+    .await?;
 
     stop_child(&mut child).await;
 
-    let passed = result["passed"].as_bool().unwrap_or(false);
+    let tests = vec![stall_single, isolation];
+    let passed = tests
+        .iter()
+        .all(|result| result["passed"].as_bool().unwrap_or(false));
     let payload = json!({
         "mode": "fault-output-stall",
         "passed": passed,
-        "tests": [result],
+        "siblingOutputs": sibling_outputs,
+        "tests": tests,
     });
 
     let result_path = work_dir.join("fault-output-stall.json");
@@ -16508,6 +16812,14 @@ mod tests {
         assert!(suite_mode_is_parallelizable("recovery", false));
         assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));
         assert!(!suite_mode_is_parallelizable("preflight", true));
+    }
+
+    #[test]
+    fn fault_output_stall_sibling_count_honors_n_per_group_cap() {
+        assert_eq!(effective_fault_output_stall_siblings(12, None), 12);
+        assert_eq!(effective_fault_output_stall_siblings(12, Some(1)), 1);
+        assert_eq!(effective_fault_output_stall_siblings(4, Some(8)), 4);
+        assert_eq!(effective_fault_output_stall_siblings(0, Some(0)), 1);
     }
 
     #[test]
