@@ -20,6 +20,9 @@ pub(crate) async fn output_status(
         let mut value = api_view_models::egress_runtime_json(egress, false, true);
         api_view_models::apply_recent_egress_instability_json(&mut value, recent.as_ref());
         api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        value["totalSize"] = serde_json::json!(egress.bytes_sent.load(Ordering::Relaxed));
+        value["bitrateKbps"] = serde_json::json!(MediaEngine::sample_egress_bitrate_kbps(egress));
+        value["startedAt"] = serde_json::Value::String(egress.started_at.clone());
         return Some(value);
     }
     drop(egresses);
@@ -28,6 +31,9 @@ pub(crate) async fn output_status(
         let mut value = api_view_models::recent_egress_runtime_json(outcome, false);
         api_view_models::apply_recent_egress_instability_json(&mut value, Some(outcome));
         api_view_models::apply_egress_retry_state_json(&mut value, retry.as_ref());
+        value["totalSize"] = serde_json::json!(outcome.bytes_sent);
+        value["bitrateKbps"] = serde_json::Value::Null;
+        value["startedAt"] = serde_json::Value::String(outcome.started_at.clone());
         value
     })
 }
@@ -38,11 +44,17 @@ pub(crate) async fn health_snapshot(
     recording_enabled: &HashMap<String, bool>,
     disconnect_grace_ms: u64,
 ) -> serde_json::Value {
+    let mut hls_snapshots = HashMap::new();
+    for pipeline_id in pipeline_ids {
+        hls_snapshots.insert(
+            pipeline_id.clone(),
+            engine.hls_dependency_snapshot(pipeline_id).await,
+        );
+    }
+
     let ingests = engine.ingests.active.read().await;
     let egresses = engine.egresses.active.read().await;
     let rec_tokens = engine.recordings.cancel_tokens.read().await;
-    let hls_consumers = engine.hls.consumers.read().await;
-    let hls_stores = engine.hls.stores.read().await;
     let recent_ingests = engine.ingests.recent.read().await;
     let recent_egresses = engine.egresses.recent.read().await;
     let retry_egresses = engine.egresses.retry.read().await;
@@ -135,26 +147,9 @@ pub(crate) async fn health_snapshot(
         let rec_active = rec_tokens
             .get(pipeline_id.as_str())
             .is_some_and(|token| !token.is_cancelled());
-        let hls_consumer = hls_consumers.get(pipeline_id.as_str());
-        let hls_store = hls_stores.get(pipeline_id.as_str());
-        let hls_active = hls_consumer.is_some_and(|consumer| !consumer.cancel_token.is_cancelled());
-        let hls_persistent_consumers = hls_consumer
-            .map(|consumer| consumer.persistent.load(Ordering::Relaxed))
-            .unwrap_or(0);
-        let hls_last_access_age_ms = hls_consumer.map(|consumer| {
-            let now = consumer.reference_instant.elapsed().as_millis() as u64;
-            let last = consumer.last_access_ms.load(Ordering::Relaxed);
-            now.saturating_sub(last)
-        });
-        let hls_snapshot = hls_store.and_then(|store| store.snapshot());
-        let hls_segments = hls_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.segments.len())
-            .unwrap_or(0);
-        let hls_playlist_bytes = hls_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.playlist.len())
-            .unwrap_or(0);
+        let hls_snapshot = hls_snapshots
+            .get(pipeline_id)
+            .expect("precomputed HLS snapshot");
 
         pipelines_json.insert(
             pipeline_id.clone(),
@@ -164,11 +159,11 @@ pub(crate) async fn health_snapshot(
                 rec_enabled,
                 rec_active,
                 api_view_models::hls_preview_json(
-                    hls_active,
-                    hls_persistent_consumers,
-                    hls_last_access_age_ms,
-                    hls_segments,
-                    hls_playlist_bytes,
+                    hls_snapshot.active,
+                    hls_snapshot.persistent_consumers,
+                    hls_snapshot.last_access_age_ms,
+                    hls_snapshot.segments,
+                    hls_snapshot.playlist_bytes,
                 ),
             ),
         );

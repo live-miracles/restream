@@ -4859,6 +4859,81 @@ async fn wait_for_api_health_matches_probe(
     }
 }
 
+fn output_runtime_matches(a: &Value, b: &Value) -> bool {
+    a["protocol"] == b["protocol"]
+        && a["status"] == b["status"]
+        && a["rawStatus"] == b["rawStatus"]
+        && a["phase"] == b["phase"]
+        && a["targetAddr"] == b["targetAddr"]
+        && a["bytesOut"] == b["bytesOut"]
+        && a["totalSize"] == b["totalSize"]
+        && a["startedAt"] == b["startedAt"]
+        && a["lastProgressAt"] == b["lastProgressAt"]
+        && a["lastError"] == b["lastError"]
+        && a["failurePhase"] == b["failurePhase"]
+        && a["retrying"] == b["retrying"]
+        && a["retryAttempts"] == b["retryAttempts"]
+        && a["retryBackoffMs"] == b["retryBackoffMs"]
+}
+
+fn output_runtime_is_live_and_progressing(snapshot: &Value) -> bool {
+    snapshot["status"].as_str() == Some("running")
+        && matches!(snapshot["phase"].as_str(), Some("sending" | "uploading"))
+        && snapshot["bytesOut"].as_u64().unwrap_or(0) > 0
+        && snapshot["totalSize"].as_u64().unwrap_or(0) > 0
+        && snapshot["startedAt"].is_string()
+        && snapshot["lastProgressAt"].is_string()
+        && snapshot["lastProgressAgeMs"].as_u64().is_some()
+        && snapshot["lastError"].is_null()
+        && snapshot["failurePhase"].is_null()
+        && snapshot["bitrateKbps"].as_f64().unwrap_or(0.0) > 0.0
+}
+
+async fn wait_for_output_status_matches_health(
+    api: &RampApi,
+    pipeline_id: &str,
+    output_id: &str,
+    timeout: Duration,
+) -> Result<(Value, Value), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_status = Value::Null;
+    let mut last_health = Value::Null;
+
+    loop {
+        if let Ok(status) = api
+            .get_json(&format!(
+                "/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/status"
+            ))
+            .await
+        {
+            last_status = status.clone();
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                && let Some(output) = health["pipelines"][pipeline_id]["outputs"]
+                    .as_object()
+                    .and_then(|outputs| outputs.get(output_id).cloned())
+            {
+                last_health = output.clone();
+                if output_runtime_is_live_and_progressing(&status)
+                    && output_runtime_matches(&status, &output)
+                {
+                    return Ok((status, output));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}/{output_id}: output status did not converge to a healthy runtime snapshot within {}s; last_status={} last_health={}",
+                timeout.as_secs(),
+                last_status,
+                last_health
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn wait_for_api_input_off(
     api: &RampApi,
     pipeline_id: &str,
@@ -8702,6 +8777,13 @@ async fn egress_correctness() -> Result<Value, String> {
     let rtmp_probe = ffprobe(&rtmp_sink_read_url).await?;
     assert_media_only(&rtmp_probe, "RTMP egress sink read")?;
     let rtmp_normalized = normalized_streams(&rtmp_probe)?;
+    let (rtmp_output_status, rtmp_output_health) = wait_for_output_status_matches_health(
+        &api,
+        &pipeline_id,
+        &rtmp_probe_output_id,
+        Duration::from_secs(15),
+    )
+    .await?;
     let rtmp_passed = video_count >= 30 && audio_count > 0 && dts_ok;
     results["rtmpEgress"] = json!({
         "passed": rtmp_passed,
@@ -8710,6 +8792,8 @@ async fn egress_correctness() -> Result<Value, String> {
         "audioCount": audio_count,
         "sink": sink_metrics.summary(),
         "readUrl": rtmp_sink_read_url,
+        "outputStatus": rtmp_output_status,
+        "outputHealth": rtmp_output_health,
         "probe": rtmp_probe,
         "normalizedStreams": rtmp_normalized,
     });
@@ -8729,12 +8813,21 @@ async fn egress_correctness() -> Result<Value, String> {
         Duration::from_secs(15),
     )
     .await?;
+    let (srt_output_status, srt_output_health) = wait_for_output_status_matches_health(
+        &api,
+        &pipeline_id,
+        &srt_output_id,
+        Duration::from_secs(15),
+    )
+    .await?;
     assert_snapshot_matches_probe(&srt_snapshot, &srt_normalized, "SRT sink probe")?;
     assert_snapshot_matches_probe(&srt_health, &srt_normalized, "SRT sink health")?;
     results["srtEgress"] = json!({
         "passed": true,
         "srtSinkPipelineId": srt_pipeline_id,
         "readUrl": srt_sink_read_url,
+        "outputStatus": srt_output_status,
+        "outputHealth": srt_output_health,
         "snapshot": srt_snapshot,
         "health": srt_health,
         "probe": srt_probe,
