@@ -235,7 +235,9 @@ borrowed payload slice is returned directly (zero copy).
 
 ## Scale Test Pipeline Paths
 
-`scripts/resource-limit ./test/run-integration.sh mixed-scale` exercises five ingest configurations, each
+`scripts/resource-limit target/debug/test_harness mixed-anchor` exercises the closed-GOP ingest matrix,
+while `mixed-h264-rtmp`, `mixed-h265-srt`, `mixed-h264-srt-multi`, and
+`mixed-h265-srt-multi` cover the remaining ingest configurations.
 fanned out to N RTMP-src + N RTMP-720p + N SRT-src + N SRT-720p outputs.
 The traces below show the exact mux/demux, conversion, and transcoding at
 every hop for each path.

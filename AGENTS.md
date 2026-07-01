@@ -62,7 +62,7 @@ npx playwright test
 
 # Benchmarks and integration tests
 scripts/resource-limit cargo bench --bench <name>
-scripts/resource-limit ./test/run-integration.sh mixed-scale   # also: ramp, bonding
+scripts/resource-limit target/debug/test_harness mixed-anchor   # also: ramp-family, bonding
 ```
 
 Edit `public/ts/` and `public/input.css`. Do not hand-edit generated files in `public/js/`.
@@ -71,7 +71,7 @@ coverage gate is `npm run test:frontend:coverage`, which measures the
 deterministic Node/fake-DOM TypeScript surface. `npm run test:frontend:coverage:all`
 is a broader diagnostic report and `npm run test:frontend:js-smoke` keeps a
 small direct guard on generated `public/js/`.
-Integration tests use a private loopback namespace by default; use `--host` only when required.
+Integration tests use a private loopback namespace by default; use `--no-netns` only when required.
 
 ### Build Safety (WSL2)
 
@@ -180,7 +180,7 @@ keep a scalar fallback; use runtime feature detection; minimize `unsafe` and doc
   measurement-oriented harness modes stay serial unless the run is intentionally resource-isolated.
 - `cargo test av_sync` for timestamp/DTS/PTS changes; protocol-matched probes for RTMP/SRT.
 - UI changes: `npm run test:frontend` plus relevant Playwright tests when browser-only behavior is touched.
-- Scale/integration: `scripts/resource-limit ./test/run-integration.sh mixed-scale` (ramp, bonding).
+- Scale/integration: `scripts/resource-limit target/debug/test_harness mixed-anchor` (ramp-family, bonding).
 
 ## Session Hygiene
 

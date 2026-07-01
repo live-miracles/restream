@@ -299,15 +299,15 @@ Important:
 
 When Docker is not available, rely on the current repo behavior:
 
-- `test/run-integration.sh` already re-execs into a private network namespace
-- `test_harness` already uses `unshare` when `--no-netns` is not set
+- `test_harness` re-execs into a private network namespace unless `--no-netns`
+  is set
 - `suite` already parallelizes only correctness modes when namespace isolation
   exists
 
 Native fallback command shape:
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh --fast mixed-scale
+scripts/resource-limit target/debug/test_harness mixed-anchor
 ```
 
 or:
@@ -433,7 +433,6 @@ Rules:
 Allowed:
 
 - `test_harness` correctness modes
-- `test/run-integration.sh` correctness slices
 
 Rules:
 

@@ -127,7 +127,7 @@ For the broader testing story, use [Testing](testing.md). The short version:
 
 ```sh
 scripts/resource-limit cargo test
-scripts/resource-limit ./test/run-integration.sh mixed-scale
+scripts/resource-limit target/debug/test_harness mixed-anchor
 ```
 
 Prefer scoped tests first, then broaden when the change crosses module or

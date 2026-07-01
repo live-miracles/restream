@@ -161,7 +161,7 @@ opaque blocker.
 | 1. Changed behavior | Fastest proof for the exact code path touched by a change. | `cargo test --lib <filter>`, `cargo test --test api <filter>` |
 | 2. Contract slice | Neighboring API, graph, stage, protocol, or lifecycle contracts that consume the changed behavior. | Filtered package/integration tests by module, endpoint, protocol, or stage kind |
 | 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> -- <criterion-filter>` |
-| 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `run-integration.sh --fast --only smoke,ffprobe,hls,lifecycle mixed-scale` |
+| 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `target/debug/test_harness mixed-anchor` |
 | 5. Scale/degradation slice | A bounded load, ramp, restart, queue-pressure, or bonding slice for resource shape. | `N_OUTPUTS=<small>` ramp, `N_PER_GROUP=<small>` mixed-scale, `bonding` |
 | 6. Full confidence gate | Release or milestone pass assembled from the relevant stages above. | Full `cargo test`, selected full benches, full integration modes |
 
@@ -403,12 +403,12 @@ the live integration harness which is not captured by `llvm-cov`.
 All live integration tests are unified under one entry point:
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh [--host] [--fast] [--json path] [--only checks] <mode>
+scripts/resource-limit target/debug/test_harness [--no-netns] <mode>
 ```
 
 By default every mode that manages its own server processes runs inside a
 private loopback network namespace (`unshare --net`) so ports never conflict
-with the host. Pass `--host` to skip the namespace wrapper.
+with the host. Pass `--no-netns` to skip namespace re-exec.
 When no explicit `RESTREAM_*` or `MTX_*` port env vars are set, the harness
 also synthesizes a per-process high-port bundle instead of reusing the legacy
 3030/1935/10080 defaults, so correctness runs stay isolated even when the
@@ -459,9 +459,9 @@ The runner applies two disk-safety guards before starting live services:
   three runs remain. The active run directory is protected. Set
   `KEEP_ARTIFACTS=1` only for a deliberate manual-retention/debug session.
 
-`--preflight` emits an `artifact-disk` JSON record with the artifact root,
+`preflight` emits an `artifact-disk` JSON record with the artifact root,
 current free MB, configured floor, and pass/fail status. Protocol-matrix runs
-inherit the same guard for each delegated mode. When `--host` is used,
+inherit the same guard for each delegated mode. When `--no-netns` is used,
 preflight emits the candidate `ports` list and checks the actual ports a mode
 binds: legacy live modes check the configured Restream/MediaMTX ports, while
 Rust-only harness modes check the harness loopback ports (`11935` for RTMP,
@@ -474,8 +474,8 @@ build step.
 Typical quick agent loop:
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh --preflight --json /tmp/restream-preflight.jsonl mixed-scale
-scripts/resource-limit ./test/run-integration.sh --fast --json /tmp/restream-mixed.jsonl --only smoke,hls,lifecycle mixed-scale
+scripts/resource-limit target/debug/test_harness preflight
+scripts/resource-limit target/debug/test_harness mixed-anchor
 ```
 
 ### Manual Dashboard Live Env
@@ -520,7 +520,7 @@ Expected sink-probe behavior:
 ### `ramp` — Sequential output ramp
 
 ```sh
-N_OUTPUTS=10 scripts/resource-limit ./test/run-integration.sh ramp
+N_OUTPUTS=10 scripts/resource-limit target/debug/test_harness ramp
 ```
 
 Sweeps eight ingest×egress×encoding combinations (RTMP/SRT ingest × RTMP/SRT
@@ -542,7 +542,7 @@ legacy all-bash ramp path while bisecting harness behavior, or set
 ### `mixed-scale` — Concurrent group load
 
 ```sh
-N_PER_GROUP=25 scripts/resource-limit ./test/run-integration.sh mixed-scale
+N_PER_GROUP=25 scripts/resource-limit target/debug/test_harness mixed-scale
 ```
 
 Exercises five ingest configurations covering every codec/protocol/audio-track
@@ -739,7 +739,7 @@ Useful env vars:
 ### `bonding` — SRT socket bonding
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh bonding
+scripts/resource-limit target/debug/test_harness bonding
 ```
 
 Verifies libsrt group-socket bonding using dedicated C helper binaries compiled
@@ -760,7 +760,7 @@ attach to the group, or backup delivery does not continue after the primary
 member closes.
 
 Note: `bonding` runs on the host network (random ports) so it is exempt from
-the netns wrapper even without `--host`.
+netns re-exec even without `--no-netns`.
 For real multi-NIC or dual-WAN validation, remember that upstream SRT also
 recommends `ENABLE_PKTINFO=ON`; otherwise a wildcard listener may reply from
 the wrong source IP and make a healthy bonding implementation look broken.
@@ -768,7 +768,7 @@ the wrong source IP and make a healthy bonding implementation look broken.
 ### `mixed-anchor` — Closed-GOP probe bundle
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh mixed-anchor
+scripts/resource-limit target/debug/test_harness mixed-anchor
 ```
 
 Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
@@ -802,7 +802,7 @@ recovery behavior.
 ### `bframe-rtmp` — RTMP B-frame timestamp round-trip
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh bframe-rtmp
+scripts/resource-limit target/debug/test_harness bframe-rtmp
 ```
 
 Publishes one RTMP H.264/AAC input with B-frames, starts an RTMP source output,
@@ -993,13 +993,13 @@ baseline on stop.
 Currently checked in:
 
 ```text
-scripts/resource-limit ./test/run-integration.sh ramp-family
-scripts/resource-limit ./test/run-integration.sh mixed-anchor
-scripts/resource-limit ./test/run-integration.sh bonding
-scripts/resource-limit ./test/run-integration.sh bframe-rtmp
-scripts/resource-limit ./test/run-integration.sh correctness-srt-rtmp
-scripts/resource-limit ./test/run-integration.sh correctness-hevc-rtmp
-scripts/resource-limit ./test/run-integration.sh correctness-hevc-srt
+scripts/resource-limit target/debug/test_harness ramp-family
+scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/debug/test_harness bonding
+scripts/resource-limit target/debug/test_harness bframe-rtmp
+scripts/resource-limit target/debug/test_harness correctness-srt-rtmp
+scripts/resource-limit target/debug/test_harness correctness-hevc-rtmp
+scripts/resource-limit target/debug/test_harness correctness-hevc-srt
 ./target/bench/test_harness resource-sweep
 ./target/bench/test_harness bitrate-sweep
 test/run-media-validation.sh
@@ -1043,7 +1043,7 @@ harness entry points, and `ramp-family` runs the full eight-config ramp matrix.
 `mixed-anchor` delegates its probe bundle to Rust and leaves the shell layer
 only for per-mode compatibility launching.
 
-`test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
+`test_harness` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
 `PASS` or `FAIL` with timestamps, git head, network mode, and primary artifact
 paths. This applies even to setup failures after the mode has initialized its
@@ -1071,11 +1071,11 @@ These capabilities must be treated as test results, not assumptions:
 
 | Capability | Gate |
 |---|---|
-| RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip through `test/run-integration.sh bframe-rtmp` |
+| RTMP H.264/AAC ingest and egress | B-frame timestamp round-trip through `target/debug/test_harness bframe-rtmp` |
 | SRT H.264 and H.265 ingest/egress | Full correctness matrix |
-| H.265 SRT passthrough | Live HEVC identity preservation through `test/run-integration.sh correctness-hevc-srt` |
-| H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `test/run-integration.sh correctness-hevc-rtmp` |
-| Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `test/run-integration.sh correctness-srt-rtmp` |
+| H.265 SRT passthrough | Live HEVC identity preservation through `target/debug/test_harness correctness-hevc-srt` |
+| H.265 source to RTMP egress | Live H.265→H.264 edge conversion through `target/debug/test_harness correctness-hevc-rtmp` |
+| Cross-protocol SRT→RTMP | Live H.264/AAC packetization through `target/debug/test_harness correctness-srt-rtmp` |
 | Built-in video presets (`h264`, `720p`, `1080p`) | Decode/filter/encode loop is covered by transcoder integration tests |
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Embedded FFmpeg subprocess feature set | `scripts/build-static.sh` runs `restream-ffmpeg-capabilities` to prove the required codecs, `file`/`pipe` protocols, and `mov`/`matroska`/`mpegts` mux/demux surface are present |

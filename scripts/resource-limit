@@ -5,7 +5,7 @@
 # Usage:
 #   scripts/resource-limit cargo build --release
 #   scripts/resource-limit cargo test
-#   scripts/resource-limit ./test/run-integration.sh mixed-scale
+#   scripts/resource-limit target/debug/test_harness mixed-anchor
 #   scripts/resource-limit ./scripts/setup-static-build.sh
 #
 # Defaults:
