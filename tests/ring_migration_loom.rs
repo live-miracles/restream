@@ -86,6 +86,40 @@ mod loom_tests {
         });
     }
 
+    /// Model: a seal wakes every blocked reader, not just the first waiter.
+    /// Different reader positions represent independent egress consumers that
+    /// may arrive at the migration boundary with different old-ring lag.
+    #[test]
+    fn loom_seal_wakes_multiple_readers() {
+        loom::model(|| {
+            let ring = FakeRing::new();
+            let r1_ring = ring.clone();
+            let r2_ring = ring.clone();
+
+            let migrated = Arc::new(AtomicUsize::new(0));
+            let r1_migrated = migrated.clone();
+            let r2_migrated = migrated.clone();
+
+            let r1 = thread::spawn(move || {
+                let mut read_idx = 0usize;
+                assert!(r1_ring.wait_for_data(&mut read_idx));
+                r1_migrated.fetch_add(1, Ordering::Release);
+            });
+
+            let r2 = thread::spawn(move || {
+                let mut read_idx = 0usize;
+                assert!(r2_ring.wait_for_data(&mut read_idx));
+                r2_migrated.fetch_add(1, Ordering::Release);
+            });
+
+            ring.seal();
+
+            r1.join().unwrap();
+            r2.join().unwrap();
+            assert_eq!(migrated.load(Ordering::Acquire), 2);
+        });
+    }
+
     /// Model: writer pushes data then seals.  Reader must see data before or after seal.
     #[test]
     fn loom_push_then_seal_no_loss() {

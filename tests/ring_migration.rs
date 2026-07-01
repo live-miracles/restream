@@ -44,6 +44,13 @@ fn drain(reader: &mut Reader) -> Vec<u64> {
         .collect()
 }
 
+fn seqs_from_packets(packets: &[Arc<MediaPacket>]) -> Vec<u64> {
+    packets
+        .iter()
+        .map(|p| i64::from_le_bytes(p.payload.as_ref().try_into().unwrap()) as u64)
+        .collect()
+}
+
 /// Seal `old` and install `new_ring` as successor; returns the new ring.
 fn seal(old: &Arc<RingBuffer>, new_capacity: usize) -> Arc<RingBuffer> {
     let new = Arc::new(RingBuffer::new_continuing(
@@ -404,6 +411,75 @@ proptest! {
         for w in seqs.windows(2) {
             prop_assert!(w[1] > w[0], "P2 regression: {} not > {}", w[1], w[0]);
         }
+    }
+
+    /// P1 + P2 for multiple readers: each reader may be at a different old-ring
+    /// position when the seal fires, but both must drain old data before
+    /// migrating and then continue on the new ring without gaps or duplicates.
+    #[test]
+    fn prop_multi_reader_migration_preserves_each_reader_order(
+        n_before in 1usize..50,
+        n_after in 0usize..50,
+        r1_drain_before_seal in 0usize..50,
+        r2_drain_before_seal in 0usize..50,
+        old_cap_extra in 0usize..100,
+        new_cap_extra in 1usize..200,
+    ) {
+        let old_cap = n_before + old_cap_extra + 1;
+        let new_cap = (n_after + 1).max(old_cap + 1) + new_cap_extra;
+        let r1_pre_drain = r1_drain_before_seal.min(n_before);
+        let r2_pre_drain = r2_drain_before_seal.min(n_before);
+
+        let rt = Runtime::new().unwrap();
+        let (r1_seqs, r2_seqs): (Vec<u64>, Vec<u64>) = rt.block_on(async move {
+            let old = Arc::new(RingBuffer::new(old_cap));
+            let mut r1 = Reader::new("r1".into(), old.clone());
+            let mut r2 = Reader::new("r2".into(), old.clone());
+
+            push_seq(&old, 0, n_before as u64);
+
+            let mut r1_out = Vec::new();
+            let mut r2_out = Vec::new();
+            for _ in 0..r1_pre_drain {
+                r1.pull_burst(&mut r1_out, 1).ok();
+            }
+            for _ in 0..r2_pre_drain {
+                r2.pull_burst(&mut r2_out, 1).ok();
+            }
+
+            let new = Arc::new(RingBuffer::new_continuing(new_cap, old.get_write_idx()));
+            old.seal_and_forward(new.clone());
+            push_seq(&new, n_before as u64, n_after as u64);
+
+            loop {
+                let before = r1_out.len();
+                r1.pull_burst(&mut r1_out, 64).ok();
+                if r1_out.len() == before { break; }
+            }
+            loop {
+                let before = r2_out.len();
+                r2.pull_burst(&mut r2_out, 64).ok();
+                if r2_out.len() == before { break; }
+            }
+
+            if n_after > 0 {
+                r1.wait_for_data().await;
+                while r1.lag() > 0 {
+                    r1.pull_burst(&mut r1_out, 64).ok();
+                }
+
+                r2.wait_for_data().await;
+                while r2.lag() > 0 {
+                    r2.pull_burst(&mut r2_out, 64).ok();
+                }
+            }
+
+            (seqs_from_packets(&r1_out), seqs_from_packets(&r2_out))
+        });
+
+        let expected: Vec<u64> = (0..(n_before + n_after) as u64).collect();
+        prop_assert_eq!(&r1_seqs, &expected, "P1/P2: reader 1 stream mismatch");
+        prop_assert_eq!(&r2_seqs, &expected, "P1/P2: reader 2 stream mismatch");
     }
 }
 
