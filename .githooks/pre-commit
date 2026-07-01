@@ -12,6 +12,24 @@ fi
 
 rust_files=()
 frontend_files=()
+stashed=0
+stash_label="pre-commit-$(date +%s)-$$"
+
+restore_unstaged() {
+    if ((stashed == 1)); then
+        if ! git stash pop -q; then
+            echo "pre-commit: failed to restore unstaged changes; recover with: git stash list && git stash pop"
+            exit 1
+        fi
+    fi
+}
+
+if ! git diff --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    git stash push --keep-index --include-untracked -q -m "$stash_label"
+    stashed=1
+fi
+
+trap restore_unstaged EXIT
 
 for file in "${staged_files[@]}"; do
     if [[ "$file" == *.rs ]]; then
@@ -37,3 +55,6 @@ if ((${#frontend_files[@]} > 0)); then
     npx --no-install prettier --write "${frontend_files[@]}"
     git add -- "${frontend_files[@]}"
 fi
+
+trap - EXIT
+restore_unstaged
