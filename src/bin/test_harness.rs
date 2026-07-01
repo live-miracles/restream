@@ -12,8 +12,7 @@ use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
@@ -812,8 +811,8 @@ async fn write_generalized_sink_results(
     results: Vec<ServerSessionResult>,
     metrics: &GeneralizedSinkMetrics,
 ) -> Result<(), String> {
-    let mut pending = results;
-    while let Some(result) = pending.pop() {
+    let mut pending: VecDeque<_> = results.into();
+    while let Some(result) = pending.pop_front() {
         match result {
             ServerSessionResult::OutboundResponse(packet) => {
                 socket
@@ -826,14 +825,14 @@ async fn write_generalized_sink_results(
                     let mut accepted = session
                         .accept_request(request_id)
                         .map_err(|e| format!("{e:?}"))?;
-                    pending.append(&mut accepted);
+                    pending.extend(accepted.drain(..));
                 }
                 ServerSessionEvent::PublishStreamRequested { request_id, .. } => {
                     let mut accepted = session
                         .accept_request(request_id)
                         .map_err(|e| format!("{e:?}"))?;
                     metrics.publishing.fetch_add(1, Ordering::Relaxed);
-                    pending.append(&mut accepted);
+                    pending.extend(accepted.drain(..));
                 }
                 ServerSessionEvent::VideoDataReceived {
                     data, timestamp, ..
@@ -1042,7 +1041,7 @@ async fn handle_stalled_rtmp_sink_client(
 
     let (mut session, initial) =
         ServerSession::new(ServerSessionConfig::new()).map_err(|e| format!("{e:?}"))?;
-    let mut pending = initial;
+    let mut pending: VecDeque<_> = initial.into();
     if !remaining.is_empty() {
         pending.extend(
             session
@@ -1052,7 +1051,7 @@ async fn handle_stalled_rtmp_sink_client(
     }
 
     loop {
-        while let Some(result) = pending.pop() {
+        while let Some(result) = pending.pop_front() {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
                     socket
@@ -1065,15 +1064,15 @@ async fn handle_stalled_rtmp_sink_client(
                         let mut accepted = session
                             .accept_request(request_id)
                             .map_err(|e| format!("{e:?}"))?;
-                        pending.append(&mut accepted);
+                        pending.extend(accepted.drain(..));
                     }
                     ServerSessionEvent::PublishStreamRequested { request_id, .. } => {
                         let mut accepted = session
                             .accept_request(request_id)
                             .map_err(|e| format!("{e:?}"))?;
                         publish_accepted.store(true, Ordering::Relaxed);
-                        pending.append(&mut accepted);
-                        while let Some(response) = pending.pop() {
+                        pending.extend(accepted.drain(..));
+                        while let Some(response) = pending.pop_front() {
                             if let ServerSessionResult::OutboundResponse(packet) = response {
                                 socket
                                     .write_all(&packet.bytes)
@@ -1100,6 +1099,7 @@ async fn handle_stalled_rtmp_sink_client(
         }
         pending = session
             .handle_input(&buffer[..n])
+            .map(|results| results.into())
             .map_err(|e| format!("{e:?}"))?;
     }
 }
@@ -7080,7 +7080,7 @@ async fn run_mixed_srt_multi_config(
             cfg,
             group: "rtmp-src",
             count: n,
-            encoding: "source",
+            encoding: "source+atrack:0",
         },
         |index| {
             format!(
@@ -7201,7 +7201,7 @@ async fn run_mixed_srt_multi_config(
             MixedProbeSpec {
                 cfg,
                 id: &format!("MS-ffprobe-{cfg}-rtmp-src"),
-                label: &format!("RTMP-src  out{n}"),
+                label: &format!("RTMP-src+atrack out{n}"),
                 url: &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
                 expected: "1920x1080",
                 cookie: None,
@@ -7251,6 +7251,17 @@ async fn run_mixed_srt_multi_config(
                 expected: "1280x720",
                 cookie: None,
             },
+            resume,
+        )
+        .await?;
+        verify_mixed_audio_route(
+            env,
+            cfg,
+            &format!("MS-audio-{cfg}-rtmp-src"),
+            &format!("RTMP-src+atrack audio out{n}"),
+            &format!("rtmp://127.0.0.1:{}/live/{cfg}-rtmp-src-{n}", env.mtx_rtmp),
+            "1920x1080",
+            1,
             resume,
         )
         .await?;
@@ -7327,6 +7338,7 @@ async fn run_mixed_srt_multi_config(
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
         "audioTracks": 2,
+        "rtmpSourceEncoding": "source+atrack:0",
         "rtmp720pEncoding": "720p+atrack:0",
         "srt720pEncoding": "720p+atrack:0,1",
     });

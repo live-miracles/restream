@@ -10,6 +10,10 @@ fi
 
 scripts/resource-limit cargo build --profile bench --bin restream --bin test_harness
 
+mkdir -p target/bench
+cp target/release/restream target/bench/restream
+cp target/release/test_harness target/bench/test_harness
+
 for binary in target/bench/restream target/bench/test_harness; do
   if [[ ! -x "$binary" ]]; then
     echo "expected bench-profile binary missing: $binary" >&2
