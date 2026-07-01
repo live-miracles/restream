@@ -3477,7 +3477,7 @@ pub fn start_shared_ts_muxer(
             }
         };
 
-        let mut reader = Reader::new(
+        let mut reader = Reader::new_live(
             format!("ts_shared_muxer:{}", pipeline_id_str),
             source_ring.clone(),
         );
@@ -4093,7 +4093,7 @@ pub async fn start_srt_egress(
     });
     engine.register_os_thread(egress_sender_handle);
 
-    let mut reader = TsChunkReader::new(format!("srt_egress:{}", output_id), &shared_muxer);
+    let mut reader = TsChunkReader::new_live(format!("srt_egress:{}", output_id), &shared_muxer);
     // Accumulation buffer: collect all muxed TS bytes for a burst, then
     // write them in a single out_queue.write() call (one lock acquisition
     // per burst instead of one per packet).

@@ -71,6 +71,13 @@ impl TsChunkReader {
         }
     }
 
+    pub fn new_live(name: String, ring: &TsChunkRing) -> Self {
+        Self {
+            inner: Reader::new_live(name, ring.ring.clone()),
+            cancel: ring.cancel.clone(),
+        }
+    }
+
     pub async fn wait_for_data_or_cancelled(&mut self) -> TsChunkWaitResult {
         tokio::select! {
             _ = self.cancel.cancelled() => TsChunkWaitResult::Cancelled,
@@ -127,6 +134,21 @@ mod tests {
             payloads2,
             vec![b"chunk1" as &[u8], b"chunk2", b"chunk3", b"chunk4"]
         );
+    }
+
+    #[test]
+    fn live_reader_starts_after_existing_chunks() {
+        let cancel = CancellationToken::new();
+        let ts_ring = TsChunkRing::new(16, cancel);
+        ts_ring.push(Bytes::from_static(b"old"), true);
+
+        let mut reader = TsChunkReader::new_live("live_reader".to_string(), &ts_ring);
+        let mut out = Vec::new();
+        assert_eq!(reader.pull_burst(&mut out, 10).unwrap(), 0);
+
+        ts_ring.push(Bytes::from_static(b"new"), false);
+        assert_eq!(reader.pull_burst(&mut out, 10).unwrap(), 1);
+        assert_eq!(&*out[0].payload, b"new");
     }
 
     #[tokio::test]

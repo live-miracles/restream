@@ -46,7 +46,7 @@ use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::pipe_metrics::PipeMetrics;
-use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
+use crate::media::ring_buffer::{DtsEnforcer, MediaType, Reader, RingBuffer};
 use crate::media::{engine::AudioMeta, engine::VideoMeta};
 
 /// Stdin writes or stdout reads exceeding this threshold are counted as stalls/idles.
@@ -109,6 +109,10 @@ fn build_stage_ffmpeg_args_inner(
         "nobuffer".to_string(),
         "-flags".to_string(),
         "low_delay".to_string(),
+        "-analyzeduration".to_string(),
+        "0".to_string(),
+        "-probesize".to_string(),
+        "32768".to_string(),
         "-f".to_string(),
         "mpegts".to_string(),
         "-i".to_string(),
@@ -655,6 +659,8 @@ async fn start_external_transcoder_stage_inner(
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
         let label_out = label.clone();
+        let out_audio_tracks = audio_tracks.clone();
+        let out_include_audio = include_audio;
         let out_stage_metrics = stage_metrics.clone();
         let out_pipe_metrics = pipe_metrics.clone();
         let out_timing_clock = timing_clock;
@@ -663,6 +669,13 @@ async fn start_external_transcoder_stage_inner(
             let mut demuxer = TsDemuxer::new();
             let mut buf = vec![0u8; 65536];
             let mut pkts = Vec::with_capacity(32);
+            let mut dts_enforcer = DtsEnforcer::new(
+                1 + if out_include_audio {
+                    out_audio_tracks.len()
+                } else {
+                    0
+                },
+            );
             loop {
                 let t0 = out_timing_clock.now();
                 let result = stdout.read(&mut buf).await;
@@ -678,7 +691,24 @@ async fn start_external_transcoder_stage_inner(
                         }
                         demuxer.feed(&buf[..n]);
                         demuxer.drain_into(&mut pkts);
-                        for pkt in &pkts {
+                        for pkt in &mut pkts {
+                            let stream_idx = match pkt.media_type {
+                                MediaType::Video => 0,
+                                MediaType::Audio => {
+                                    if !out_include_audio {
+                                        continue;
+                                    }
+                                    let video_offset = 1;
+                                    out_audio_tracks
+                                        .iter()
+                                        .position(|track| track.track_index == pkt.track_index)
+                                        .map(|index| index + video_offset)
+                                        .unwrap_or(video_offset)
+                                }
+                            };
+                            let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+                            pkt.pts = pts;
+                            pkt.dts = dts;
                             out_stage_metrics.record_out(pkt.payload.len() as u64);
                         }
                         out_ring.push_batch(pkts.drain(..));
@@ -748,8 +778,13 @@ async fn start_external_transcoder_stage_inner(
     }
 
     let _ = stdin.shutdown().await;
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    if tokio::time::timeout(std::time::Duration::from_millis(500), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
     cancel.cancel();
 
     engine.remove_stage_metrics(&stage_key).await;
@@ -835,6 +870,29 @@ mod tests {
         let path = dir.join("artifact.ts");
         std::fs::write(&path, bytes).expect("write temp TS artifact");
         path
+    }
+
+    fn assert_strict_video_dts<'a, I>(label: &str, packets: I)
+    where
+        I: IntoIterator<Item = &'a crate::media::ring_buffer::MediaPacket>,
+    {
+        let mut previous = None;
+        let mut count = 0usize;
+        for packet in packets
+            .into_iter()
+            .filter(|packet| packet.media_type == MediaType::Video)
+        {
+            if let Some(previous_dts) = previous {
+                assert!(
+                    packet.dts > previous_dts,
+                    "{label} video DTS must be strictly increasing: {previous_dts} >= {}",
+                    packet.dts
+                );
+            }
+            previous = Some(packet.dts);
+            count += 1;
+        }
+        assert!(count > 0, "{label} should include video packets");
     }
 
     #[test]
@@ -1527,6 +1585,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_1080p_stage_remuxes_marker_fixture_with_monotone_dts() {
+        let path = crate::test_fixtures::av_marker_transport_fixture("h264", false)
+            .expect("H.264 marker fixture");
+        let file_bytes = std::fs::read(&path).expect("read H.264 marker fixture");
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in file_bytes.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("probe H.264 marker fixture");
+        let video = probe.video.expect("marker fixture should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-h264-marker-1080p", "stream-key", "file")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-h264-marker-1080p",
+                Some(video.clone()),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-h264-marker-1080p", audio_tracks.clone())
+            .await;
+
+        let source_ring = Arc::new(RingBuffer::new(16_384));
+        source_ring.set_codec_hint("h264");
+        source_ring.set_audio_tracks(audio_tracks.clone());
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let mut reader = Reader::new_live(
+            "test_ext_h264_marker_1080p_output".to_string(),
+            output_ring.clone(),
+        );
+        let cancel = CancellationToken::new();
+        let stage_key = StageKey::new(
+            "pipe-ext-h264-marker-1080p",
+            StageKind::video_preset("1080p"),
+        );
+
+        tokio::spawn(start_external_transcoder_stage(
+            "pipe-ext-h264-marker-1080p".to_string(),
+            "video:1080p".to_string(),
+            source_ring.clone(),
+            output_ring,
+            engine,
+            cancel.clone(),
+            None,
+            stage_key,
+        ));
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if source_ring.reader_snapshots().iter().any(|snapshot| {
+                snapshot
+                    .name
+                    .contains("ext-stage:pipe-ext-h264-marker-1080p:video:1080p")
+            }) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "external H.264 marker 1080p stage reader did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        source_ring.push_batch(packets.drain(..));
+        let output_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut output_packets = Vec::new();
+        loop {
+            while let Ok(Some(packet)) = reader.pull() {
+                output_packets.push(packet);
+            }
+            if output_packets
+                .iter()
+                .filter(|packet| packet.media_type == MediaType::Video)
+                .count()
+                >= 120
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= output_deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        cancel.cancel();
+
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "external 1080p H.264 marker stage should emit live video packets"
+        );
+
+        let mut feeder = TsPacketFeeder::new(
+            Some(&video),
+            std::sync::Arc::new(audio_tracks),
+            PacketFeedConfig::default(),
+        );
+        let mut ts_bytes = Vec::new();
+        let mut packet_buf = Vec::new();
+        for packet in &output_packets {
+            packet_buf.clear();
+            if feeder.extend_ts_for_packet(packet, &mut packet_buf) {
+                ts_bytes.extend_from_slice(&packet_buf);
+            }
+        }
+        assert_strict_video_dts(
+            "stage output",
+            output_packets.iter().map(std::sync::Arc::as_ref),
+        );
+
+        let mut remux_demuxer = TsDemuxer::new();
+        let mut remuxed_packets = Vec::new();
+        for chunk in ts_bytes.chunks(1316) {
+            remux_demuxer.feed(chunk);
+            remux_demuxer.drain_into(&mut remuxed_packets);
+        }
+        remux_demuxer.flush();
+        remux_demuxer.drain_into(&mut remuxed_packets);
+        assert_strict_video_dts("remuxed output", remuxed_packets.iter());
+    }
+
+    #[tokio::test]
     async fn external_720p_stage_emits_live_packets_for_single_audio_hevc_fixture() {
         let (video, audio_tracks, mut packets) =
             crate::test_fixtures::primary_av_packets_for_codec("h265")
@@ -1822,6 +2014,109 @@ mod tests {
                 .map(|meta| meta.len() > 0)
                 .unwrap_or(false),
             "file-based transcode should produce a non-empty TS output"
+        );
+    }
+
+    #[test]
+    fn feeder_remuxed_h264_marker_fixture_transcodes_as_file_input() {
+        let path =
+            crate::test_fixtures::av_marker_transport_fixture("h264", false).expect("marker path");
+        let file_bytes = std::fs::read(&path).expect("read H.264 marker fixture");
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in file_bytes.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("probe H.264 marker fixture");
+        let video = probe.video.expect("marker fixture should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let mut feeder = TsPacketFeeder::new(
+            Some(&video),
+            std::sync::Arc::new(audio_tracks),
+            PacketFeedConfig::default(),
+        );
+        let mut ts_bytes = Vec::new();
+        let mut packet_buf = Vec::new();
+
+        for packet in &packets {
+            packet_buf.clear();
+            if feeder.extend_ts_for_packet(packet, &mut packet_buf) {
+                ts_bytes.extend_from_slice(&packet_buf);
+            }
+        }
+
+        assert!(
+            !ts_bytes.is_empty(),
+            "remuxed H.264 marker fixture should produce TS bytes"
+        );
+
+        let input_path = write_temp_ts_artifact("h264-marker-transcode-input", &ts_bytes);
+        let output_path = input_path
+            .parent()
+            .expect("temp artifact dir")
+            .join("output.ts");
+        let ffmpeg = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+        let mut args = build_stage_ffmpeg_args("720p", "h264");
+        let input_pos = args
+            .iter()
+            .position(|arg| arg == "-i")
+            .expect("stage args should contain input flag");
+        args[input_pos + 1] = input_path.to_string_lossy().to_string();
+        let last = args.last_mut().expect("stage args should contain output");
+        *last = output_path.to_string_lossy().to_string();
+
+        let output = std::process::Command::new(ffmpeg)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("spawn bundled ffmpeg transcode");
+
+        assert!(
+            output.status.success(),
+            "ffmpeg should transcode feeder-remuxed H.264 marker TS file input: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            std::fs::metadata(&output_path)
+                .map(|meta| meta.len() > 0)
+                .unwrap_or(false),
+            "file-based marker transcode should produce a non-empty TS output"
+        );
+
+        let video_only_path = input_path
+            .parent()
+            .expect("temp artifact dir")
+            .join("output-video-only.ts");
+        let decode_video = std::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                output_path.to_string_lossy().as_ref(),
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-f",
+                "mpegts",
+                video_only_path.to_string_lossy().as_ref(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("probe transcoded marker TS video stream");
+        assert!(
+            decode_video.status.success(),
+            "transcoded marker output should contain a decodable video stream: {}",
+            String::from_utf8_lossy(&decode_video.stderr)
         );
     }
 }
