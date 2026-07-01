@@ -687,6 +687,7 @@ pub struct MuxStreamConfig {
     pub pid: u16,
     pub media_type: MediaType,
     pub track_index: u32,
+    pub sample_rate: u32,
     pub language: Option<String>,
 }
 
@@ -744,6 +745,7 @@ impl TsMuxer {
                 pid,
                 media_type: MediaType::Video,
                 track_index: 0,
+                sample_rate: 0,
                 language: None,
             });
             pid += 1;
@@ -759,6 +761,7 @@ impl TsMuxer {
                 pid,
                 media_type: MediaType::Audio,
                 track_index: a.track_index,
+                sample_rate: a.sample_rate,
                 language: a.language.clone(),
             });
             pid += 1;
@@ -813,16 +816,19 @@ impl TsMuxer {
         let pid = self.streams[stream_idx].pid;
         let mut pts_90k = ms_to_ts(pts_ms);
         let mut dts_90k = ms_to_ts(dts_ms);
+        let pts_offset_90k = (pts_90k - dts_90k).max(0);
         if let Some(prev) = self.last_dts_90k.get(stream_idx).copied()
             && dts_90k <= prev
         {
             dts_90k = prev + 1;
+            pts_90k = dts_90k + pts_offset_90k;
         }
         if pts_90k < dts_90k {
             pts_90k = dts_90k;
         }
+        let packet_span_end_90k = self.packet_span_end_90k(stream_idx, dts_90k, payload);
         if let Some(slot) = self.last_dts_90k.get_mut(stream_idx) {
-            *slot = dts_90k;
+            *slot = packet_span_end_90k;
         }
 
         // Insert PAT/PMT before keyframes or every ~500ms
@@ -1131,6 +1137,21 @@ impl TsMuxer {
         ts[crc_end + 3] = crc as u8;
 
         self.output.extend_from_slice(&ts);
+    }
+
+    fn packet_span_end_90k(&self, stream_idx: usize, dts_90k: i64, payload: &[u8]) -> i64 {
+        let Some(stream) = self.streams.get(stream_idx) else {
+            return dts_90k;
+        };
+        if stream.media_type != MediaType::Audio || stream.sample_rate == 0 {
+            return dts_90k;
+        }
+        let frame_count = crate::media::codec::adts_frame_count(payload);
+        if frame_count <= 1 {
+            return dts_90k;
+        }
+        let frame_ticks = (90_000_i64 * 1024_i64) / stream.sample_rate as i64;
+        dts_90k + frame_ticks * (frame_count as i64 - 1)
     }
 }
 
@@ -2537,6 +2558,53 @@ mod tests {
         assert_eq!(
             muxer.last_dts_90k[1], 90_000,
             "DTS repair must be isolated per elementary stream"
+        );
+    }
+
+    #[test]
+    fn muxer_reserves_internal_adts_frame_timestamps() {
+        let audio = AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+        };
+        let mut muxer = TsMuxer::new(None, &[audio]);
+        let mut two_frame_payload = Vec::new();
+        let frame_a = crate::media::codec::build_adts_header(2, 48000, 2);
+        two_frame_payload.extend_from_slice(&frame_a);
+        two_frame_payload.extend_from_slice(&[0x11, 0x22]);
+        let frame_b = crate::media::codec::build_adts_header(2, 48000, 2);
+        two_frame_payload.extend_from_slice(&frame_b);
+        two_frame_payload.extend_from_slice(&[0x33, 0x44]);
+
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1000, 1000, false, &two_frame_payload)
+                .is_empty()
+        );
+        assert_eq!(
+            muxer.last_dts_90k[0], 91_920,
+            "two 48 kHz AAC frames occupy the PES start plus one 1024-sample step"
+        );
+
+        let mut one_frame_payload = Vec::new();
+        let frame = crate::media::codec::build_adts_header(2, 48000, 2);
+        one_frame_payload.extend_from_slice(&frame);
+        one_frame_payload.extend_from_slice(&[0x55, 0x66]);
+        assert!(
+            !muxer
+                .mux_packet(MediaType::Audio, 0, 1021, 1021, false, &one_frame_payload)
+                .is_empty()
+        );
+        assert_eq!(
+            muxer.last_dts_90k[0], 91_921,
+            "next PES must start after the previous payload's final internal ADTS frame"
         );
     }
 

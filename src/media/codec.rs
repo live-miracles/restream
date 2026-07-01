@@ -594,6 +594,27 @@ fn has_adts_sync(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0xFF && (data[1] & 0xF0) == 0xF0
 }
 
+/// Count complete AAC ADTS frames in a payload.
+pub fn adts_frame_count(data: &[u8]) -> usize {
+    let mut pos = 0usize;
+    let mut count = 0usize;
+    while pos + 7 <= data.len() {
+        let frame = &data[pos..];
+        if !has_adts_sync(frame) {
+            break;
+        }
+        let frame_len = (((frame[3] & 0x03) as usize) << 11)
+            | ((frame[4] as usize) << 3)
+            | (((frame[5] & 0xE0) as usize) >> 5);
+        if frame_len < 7 || pos + frame_len > data.len() {
+            break;
+        }
+        count += 1;
+        pos += frame_len;
+    }
+    count
+}
+
 fn prepend_adts(raw_aac: &[u8], sample_rate: u32, channels: u32) -> Vec<u8> {
     let adts = build_adts_header(raw_aac.len(), sample_rate, channels);
     let mut out = Vec::with_capacity(7 + raw_aac.len());
@@ -625,6 +646,7 @@ pub fn strip_adts(data: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn avcc_annexb_round_trip() {
@@ -682,6 +704,47 @@ mod tests {
         assert!(has_adts_sync(&with_adts));
         let stripped = strip_adts(&with_adts);
         assert_eq!(stripped, &raw_aac[..]);
+    }
+
+    #[test]
+    fn adts_frame_count_counts_complete_frames() {
+        let mut payload = Vec::new();
+        let frame_a = build_adts_header(2, 48000, 2);
+        payload.extend_from_slice(&frame_a);
+        payload.extend_from_slice(&[0x11, 0x22]);
+        let frame_b = build_adts_header(3, 48000, 2);
+        payload.extend_from_slice(&frame_b);
+        payload.extend_from_slice(&[0x33, 0x44, 0x55]);
+
+        assert_eq!(adts_frame_count(&payload), 2);
+        payload.pop();
+        assert_eq!(
+            adts_frame_count(&payload),
+            1,
+            "truncated trailing frames must not be counted"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn adts_frame_count_matches_generated_complete_frames(
+            frame_sizes in proptest::collection::vec(1usize..64, 0..12),
+            truncate_tail in 0usize..8,
+        ) {
+            let mut payload = Vec::new();
+            for (idx, frame_size) in frame_sizes.iter().copied().enumerate() {
+                let frame = build_adts_header(frame_size, 48000, 2);
+                payload.extend_from_slice(&frame);
+                payload.extend(std::iter::repeat_n(idx as u8, frame_size));
+            }
+            let mut expected = frame_sizes.len();
+            if truncate_tail > 0 && !payload.is_empty() {
+                let remove = truncate_tail.min(payload.len());
+                payload.truncate(payload.len() - remove);
+                expected = expected.saturating_sub(1);
+            }
+            prop_assert_eq!(adts_frame_count(&payload), expected);
+        }
     }
 
     #[test]

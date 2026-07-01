@@ -1165,3 +1165,58 @@ Current bitrate-sweep takeaways:
   active. Combined memory is `~534-582 MB`, and total CPU is `~267-430%`
   depending on bitrate and audio shape.
 - All 15 current cases passed output correctness.
+
+## Media Correctness Findings (2026-07-01)
+
+These issues were found while hardening the `mixed-h265-srt-multi` live matrix
+around the checked-in H.265 + two-audio fixture.
+
+### Fixed Runtime Issues
+
+- RTMP egress could emit equal or backward timestamps when source packets had
+  repeated millisecond DTS/PTS. Runtime now guards RTMP video and audio
+  timestamps independently, and unit tests cover repeated video DTS, repeated
+  audio PTS, and A/V stream independence.
+- MPEG-TS muxing could emit equal DTS when packet timestamps repeated at
+  millisecond precision. The muxer now enforces strictly increasing 90 kHz DTS
+  per elementary stream, with unit coverage for repeated timestamps and
+  independent audio tracks.
+- SRT selected-track egress could advertise ingest audio tracks that were not
+  present in the routed output ring. The shared TS muxer now prefers routed
+  `RingBuffer::audio_tracks()` metadata when available, and the regression test
+  verifies the PMT contains only the selected audio track.
+- ADTS audio payloads can contain multiple AAC frames inside one PES. Treating
+  only the PES start timestamp as occupied allowed the next PES to collide with
+  the final internal AAC frame after FFprobe split the frames. The muxer now
+  reserves the full ADTS frame span before accepting the next DTS. Unit coverage
+  includes deterministic multi-frame AAC and a property test for ADTS frame
+  counting.
+
+### Validator Lessons
+
+- MediaMTX remains valuable as an interoperability sink, but it is not the only
+  correctness oracle. Direct `ffprobe`/`ffmpeg` sinks are required when debugging
+  muxer-level timestamp failures.
+- MediaMTX SRT readback reproduced non-monotonic DTS with Restream bypassed in
+  a direct FFmpeg-to-MediaMTX control. That specific path is therefore treated
+  as a compatibility/readback signal, not strict proof of Restream muxer output.
+- FFmpeg decode-to-`null` can introduce muxer-layer DTS warnings after decode,
+  especially with multi-audio PCM output. The direct SRT sink now uses
+  `ffprobe` compact packet output for stream shape and packet timestamp checks,
+  avoiding false positives from a newly-created output muxer.
+- FFprobe packet dumps may print elementary streams in demuxer flush order, not
+  raw physical TS packet order. The harness validates duplicate DTS and large
+  per-stream gaps after sorting each stream's timestamps instead of requiring
+  the printed order to be monotonic.
+
+### Required Controls
+
+- Probe the checked-in fixture before blaming Restream:
+  `ffprobe -v warning -show_entries program=:stream=index,codec_type,width,height:packet=stream_index,dts_time,pts_time -of compact=p=1:nk=0 test/fixtures/bench-h265-1_5m-2a.ts`.
+- For sink disputes, run FFmpeg/FFprobe directly against the sink path with
+  Restream bypassed. If the control reproduces the warning, keep MediaMTX in
+  the matrix for interoperability but use a direct FFmpeg-family sink for muxer
+  correctness.
+- The direct SRT correctness mode is `SRT_SINK=ffmpeg` on
+  `mixed-h265-srt-multi`; it validates stream dimensions, selected audio-track
+  count, duplicate DTS, large DTS gaps, and FFmpeg-family probe warnings.

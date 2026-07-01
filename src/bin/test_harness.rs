@@ -7610,6 +7610,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT source all-tracks",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 2,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7638,6 +7640,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT source audio0",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7672,6 +7676,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT source audio1",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7706,6 +7712,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 720p all-tracks",
+            expected_dimensions: "1280x720",
+            expected_audio_tracks: 2,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7740,6 +7748,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 720p audio0",
+            expected_dimensions: "1280x720",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7774,6 +7784,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 720p audio1",
+            expected_dimensions: "1280x720",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7808,6 +7820,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 1080p all-tracks",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 2,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7842,6 +7856,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 1080p audio1",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7876,6 +7892,8 @@ async fn run_mixed_srt_multi_config(
         },
         MixedSrtGroupValidation {
             label: "SRT 1080p audio0",
+            expected_dimensions: "1920x1080",
+            expected_audio_tracks: 1,
         },
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
@@ -7943,95 +7961,41 @@ async fn run_mixed_srt_multi_config(
             "rtmp://127.0.0.1:{}/live/{cfg}-rtmp-1080p-a1-{n}",
             env.mtx_rtmp
         );
-        let srt_src_url = mixed_srt_validation_target(
-            env,
-            "srt-src",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_src_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_src_atrack_url = mixed_srt_validation_target(
-            env,
-            "srt-src-atrack",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-atrack-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_src_atrack_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-atrack-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_src_a1_url = mixed_srt_validation_target(
-            env,
-            "srt-src-a1",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-a1-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_src_a1_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-src-a1-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_720p_all_url = mixed_srt_validation_target(
-            env,
-            "srt-720p-all",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-all-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_720p_all_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-all-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_720p_url = mixed_srt_validation_target(
-            env,
-            "srt-720p",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_720p_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_720p_a1_url = mixed_srt_validation_target(
-            env,
-            "srt-720p-a1",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-a1-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_720p_a1_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-720p-a1-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_1080p_all_url = mixed_srt_validation_target(
-            env,
-            "srt-1080p-all",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-all-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_1080p_all_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-all-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_1080p_url = mixed_srt_validation_target(
-            env,
-            "srt-1080p",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_1080p_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-{n}&timeout=30000000",
+            env.mtx_srt
         );
-        let srt_1080p_a1_url = mixed_srt_validation_target(
-            env,
-            "srt-1080p-a1",
-            n,
-            format!(
-                "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-a1-{n}&timeout=30000000",
-                env.mtx_srt
-            ),
-            &ffmpeg_srt_sinks,
+        let srt_1080p_a1_url = format!(
+            "srt://127.0.0.1:{}?streamid=read:live/{cfg}-srt-1080p-a1-{n}&timeout=30000000",
+            env.mtx_srt
         );
         let output_matrix = [
             (
@@ -8141,6 +8105,9 @@ async fn run_mixed_srt_multi_config(
             ),
         ];
         for (id_suffix, label, url, dimensions, audio_tracks) in output_matrix {
+            if env.ffmpeg_srt_sink && id_suffix.starts_with("srt-") {
+                continue;
+            }
             verify_mixed_stream(
                 env,
                 MixedProbeSpec {
@@ -8360,8 +8327,9 @@ struct FfmpegSrtSink {
     group: String,
     index: usize,
     port: u16,
-    capture_path: PathBuf,
     log_path: PathBuf,
+    expected_dimensions: String,
+    expected_audio_tracks: usize,
     child: Child,
 }
 
@@ -8396,6 +8364,8 @@ where
 
 struct MixedSrtGroupValidation<'a> {
     label: &'a str,
+    expected_dimensions: &'a str,
+    expected_audio_tracks: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8421,7 +8391,7 @@ where
                 spec.cfg,
                 spec.group,
                 index,
-                validation.label,
+                &validation,
                 *next_sink_offset,
             )
             .await?;
@@ -8455,14 +8425,15 @@ async fn spawn_ffmpeg_srt_sink(
     cfg: &str,
     group: &str,
     index: usize,
-    label: &str,
+    validation: &MixedSrtGroupValidation<'_>,
     offset: usize,
 ) -> Result<FfmpegSrtSink, String> {
     let port = env
         .ffmpeg_srt_sink_base
         .checked_add(offset as u16)
         .ok_or("FFmpeg SRT sink port range overflowed")?;
-    let safe_label = label
+    let safe_label = validation
+        .label
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' {
@@ -8473,30 +8444,28 @@ async fn spawn_ffmpeg_srt_sink(
         })
         .collect::<String>();
     let stem = format!("{cfg}-{group}-{index}-{safe_label}");
-    let capture_path = env.work_dir.join(format!("{stem}.ffmpeg-srt-sink.ts"));
     let log_path = env.work_dir.join(format!("{stem}.ffmpeg-srt-sink.log"));
     let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
     let listener_url =
         format!("srt://127.0.0.1:{port}?mode=listener&transtype=live&timeout=30000000");
-    let capture_seconds = env.ffmpeg_srt_sink_seconds.to_string();
-    let child = Command::new("ffmpeg")
+    let probe_interval = format!("%+{}", env.ffmpeg_srt_sink_seconds);
+    let child = Command::new("ffprobe")
         .args([
-            "-nostdin",
-            "-hide_banner",
             "-v",
             "warning",
-            "-y",
-            "-i",
+            "-probesize",
+            "10000000",
+            "-analyzeduration",
+            "10000000",
+            "-read_intervals",
+            &probe_interval,
+            "-show_entries",
+            "program=:stream=index,codec_type,width,height:packet=stream_index,dts_time,pts_time",
+            "-of",
+            "compact=p=1:nk=0",
             &listener_url,
-            "-t",
-            &capture_seconds,
-            "-map",
-            "0",
-            "-c",
-            "copy",
         ])
-        .arg(&capture_path)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(err))
         .kill_on_drop(true)
@@ -8507,8 +8476,9 @@ async fn spawn_ffmpeg_srt_sink(
         group: group.to_string(),
         index,
         port,
-        capture_path,
         log_path,
+        expected_dimensions: validation.expected_dimensions.to_string(),
+        expected_audio_tracks: validation.expected_audio_tracks,
         child,
     })
 }
@@ -8527,35 +8497,69 @@ async fn finish_ffmpeg_srt_sinks(sinks: &mut [FfmpegSrtSink]) -> Result<(), Stri
             Err(_) => {
                 let _ = sink.child.kill().await;
                 return Err(format!(
-                    "FFmpeg SRT sink {}[{}] timed out waiting for capture {}",
-                    sink.group,
-                    sink.index,
-                    sink.capture_path.display()
+                    "FFmpeg SRT sink {}[{}] timed out waiting for probe",
+                    sink.group, sink.index
                 ));
             }
         };
+        let stderr = std::fs::read_to_string(&sink.log_path).unwrap_or_default();
         if !status.success() {
-            let stderr = std::fs::read_to_string(&sink.log_path).unwrap_or_default();
             return Err(format!(
-                "FFmpeg SRT sink {}[{}] failed status={status}: {}",
+                "FFmpeg SRT sink {}[{}] probe failed status={status}: {}",
                 sink.group,
                 sink.index,
                 stderr.lines().take(5).collect::<Vec<_>>().join(" | ")
             ));
         }
-        let bytes = std::fs::metadata(&sink.capture_path)
-            .map_err(|e| {
-                format!(
-                    "FFmpeg SRT sink {}[{}] missing capture {}: {e}",
-                    sink.group,
-                    sink.index,
-                    sink.capture_path.display()
-                )
-            })?
-            .len();
-        if bytes == 0 {
+        let stderr_lower = stderr.to_ascii_lowercase();
+        let bad_patterns = [
+            "non-monoton",
+            "non monoton",
+            "invalid data",
+            "error while decoding",
+            "timestamp discontinuity",
+            "queue input is backward in time",
+            "too many packets buffered",
+            "aac bitstream error",
+            "missing picture",
+        ];
+        if let Some(pattern) = bad_patterns
+            .iter()
+            .find(|pattern| stderr_lower.contains(**pattern))
+        {
             return Err(format!(
-                "FFmpeg SRT sink {}[{}] produced an empty capture",
+                "FFmpeg SRT sink {}[{}] probe log matched {pattern:?}: {}",
+                sink.group,
+                sink.index,
+                stderr.lines().take(8).collect::<Vec<_>>().join(" | ")
+            ));
+        }
+        let dimensions = ffprobe_compact_video_dimensions(&stderr).unwrap_or_default();
+        let audio_tracks = ffprobe_compact_audio_track_count(&stderr);
+        if dimensions != sink.expected_dimensions || audio_tracks != sink.expected_audio_tracks {
+            return Err(format!(
+                "FFmpeg SRT sink {}[{}] expected {} with {} audio tracks, got {} with {} audio tracks",
+                sink.group,
+                sink.index,
+                sink.expected_dimensions,
+                sink.expected_audio_tracks,
+                if dimensions.is_empty() {
+                    "<no video>"
+                } else {
+                    &dimensions
+                },
+                audio_tracks
+            ));
+        }
+        let packet_count = ffprobe_compact_validate_dts(&stderr).map_err(|error| {
+            format!(
+                "FFmpeg SRT sink {}[{}] packet DTS validation failed: {error}",
+                sink.group, sink.index
+            )
+        })?;
+        if packet_count == 0 {
+            return Err(format!(
+                "FFmpeg SRT sink {}[{}] probe did not return any packets",
                 sink.group, sink.index
             ));
         }
@@ -8563,30 +8567,77 @@ async fn finish_ffmpeg_srt_sinks(sinks: &mut [FfmpegSrtSink]) -> Result<(), Stri
     Ok(())
 }
 
-fn ffmpeg_srt_sink_capture<'a>(
-    sinks: &'a [FfmpegSrtSink],
-    group: &str,
-    index: usize,
-) -> Option<&'a Path> {
-    sinks
-        .iter()
-        .find(|sink| sink.group == group && sink.index == index)
-        .map(|sink| sink.capture_path.as_path())
+fn ffprobe_compact_video_dimensions(log: &str) -> Option<String> {
+    ffprobe_compact_stream_lines(log).find_map(|line| {
+        let codec_type = ffprobe_compact_field(line, "codec_type")?;
+        if codec_type != "video" {
+            return None;
+        }
+        let width = ffprobe_compact_field(line, "width")?;
+        let height = ffprobe_compact_field(line, "height")?;
+        Some(format!("{width}x{height}"))
+    })
 }
 
-fn mixed_srt_validation_target(
-    env: &MixedEnv,
-    group: &str,
-    index: usize,
-    mediamtx_url: String,
-    sinks: &[FfmpegSrtSink],
-) -> String {
-    if env.ffmpeg_srt_sink
-        && let Some(path) = ffmpeg_srt_sink_capture(sinks, group, index)
-    {
-        return path.to_string_lossy().into_owned();
+fn ffprobe_compact_audio_track_count(log: &str) -> usize {
+    ffprobe_compact_stream_lines(log)
+        .filter(|line| ffprobe_compact_field(line, "codec_type") == Some("audio"))
+        .filter_map(|line| ffprobe_compact_field(line, "index"))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn ffprobe_compact_validate_dts(log: &str) -> Result<usize, String> {
+    let mut by_stream = HashMap::<usize, Vec<f64>>::new();
+    let mut packet_count = 0usize;
+    for line in log.lines().filter(|line| line.starts_with("packet|")) {
+        let Some(stream_index) =
+            ffprobe_compact_field(line, "stream_index").and_then(|value| value.parse().ok())
+        else {
+            continue;
+        };
+        let Some(dts) = ffprobe_compact_field(line, "dts_time").and_then(|value| {
+            if value == "N/A" {
+                None
+            } else {
+                value.parse().ok()
+            }
+        }) else {
+            continue;
+        };
+        by_stream.entry(stream_index).or_default().push(dts);
+        packet_count += 1;
     }
-    mediamtx_url
+    for (stream_index, dts_values) in &mut by_stream {
+        dts_values.sort_by(|left, right| left.total_cmp(right));
+        for pair in dts_values.windows(2) {
+            let previous = pair[0];
+            let current = pair[1];
+            let delta = current - previous;
+            if delta <= f64::EPSILON {
+                return Err(format!(
+                    "stream {stream_index} has duplicate DTS: {previous:.6} >= {current:.6}"
+                ));
+            }
+            if delta > 0.500 {
+                return Err(format!(
+                    "stream {stream_index} has DTS gap {delta:.6}s between {previous:.6} and {current:.6}"
+                ));
+            }
+        }
+    }
+    Ok(packet_count)
+}
+
+fn ffprobe_compact_stream_lines(log: &str) -> impl Iterator<Item = &str> {
+    log.lines().filter(|line| line.starts_with("stream|"))
+}
+
+fn ffprobe_compact_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split('|').find_map(|field| {
+        let (field_key, value) = field.split_once('=')?;
+        (field_key == key).then_some(value)
+    })
 }
 
 async fn snapshot_mixed(
@@ -15684,6 +15735,45 @@ mod tests {
         ]);
 
         assert!(metrics.dts_monotone());
+    }
+
+    #[test]
+    fn ffprobe_compact_validator_accepts_reordered_packet_dump() {
+        let log = "\
+packet|stream_index=1|pts_time=10.021333|dts_time=10.021333\n\
+packet|stream_index=0|pts_time=10.100000|dts_time=10.100000\n\
+packet|stream_index=1|pts_time=10.000000|dts_time=10.000000\n\
+stream|index=0|codec_type=video|width=1920|height=1080\n\
+stream|index=1|codec_type=audio\n";
+
+        assert_eq!(
+            ffprobe_compact_video_dimensions(log).as_deref(),
+            Some("1920x1080")
+        );
+        assert_eq!(ffprobe_compact_audio_track_count(log), 1);
+        assert_eq!(ffprobe_compact_validate_dts(log), Ok(3));
+    }
+
+    #[test]
+    fn ffprobe_compact_validator_rejects_duplicate_dts() {
+        let log = "\
+packet|stream_index=1|pts_time=10.000000|dts_time=10.000000\n\
+packet|stream_index=1|pts_time=10.000000|dts_time=10.000000\n\
+stream|index=1|codec_type=audio\n";
+
+        let error = ffprobe_compact_validate_dts(log).expect_err("duplicate DTS must fail");
+        assert!(error.contains("duplicate DTS"));
+    }
+
+    #[test]
+    fn ffprobe_compact_validator_rejects_large_dts_gap() {
+        let log = "\
+packet|stream_index=1|pts_time=10.000000|dts_time=10.000000\n\
+packet|stream_index=1|pts_time=11.000000|dts_time=11.000000\n\
+stream|index=1|codec_type=audio\n";
+
+        let error = ffprobe_compact_validate_dts(log).expect_err("large DTS gap must fail");
+        assert!(error.contains("DTS gap"));
     }
 
     #[test]
