@@ -1322,7 +1322,7 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
   assert.equal(state.config.pipelines[0].fileIngest?.filename, "recording-1.ts");
 });
 
-test("recording and file-ingest controls refresh runtime without invalidating dashboard settings", async () => {
+test("recording patches local state immediately, while file-ingest falls back to runtime refresh when no lifecycle stream is open", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
     "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
@@ -1476,6 +1476,7 @@ test("recording and file-ingest controls refresh runtime without invalidating da
 
   const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
   const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
 
   pipelineView.setPipelineViewDependencies({
     refreshDashboardRuntime: dashboard.refreshDashboardRuntime,
@@ -1488,10 +1489,14 @@ test("recording and file-ingest controls refresh runtime without invalidating da
   await document.getElementById("record-pipe-btn").onclick();
   await flushAsyncWork();
 
-  assert.deepEqual(requests, [
-    ["POST", startRecordingUrl],
-    ["GET", steadyRuntimeUrl],
-  ]);
+  assert.deepEqual(requests, [["POST", startRecordingUrl]]);
+  assert.equal(state.pipelines[0].recording.enabled, true);
+  assert.equal(state.pipelines[0].recording.active, true);
+  assert.equal(
+    document.getElementById("edit-pipe-btn").disabled,
+    true,
+    "active recording should lock pipeline editing immediately from the mutation response",
+  );
 
   pipelineView.renderPipelineInfoColumn("pipe-1");
   requests.length = 0;
@@ -1503,6 +1508,7 @@ test("recording and file-ingest controls refresh runtime without invalidating da
     ["POST", startIngestUrl],
     ["GET", steadyRuntimeUrl],
   ]);
+  assert.equal(state.config.pipelines[0].fileIngest?.running, true);
   assert.equal(
     requests.some(([, href]) => href === settingsUrl),
     false,

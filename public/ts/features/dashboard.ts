@@ -541,6 +541,39 @@ export function upsertDashboardPipelineConfig(
   rerenderDashboardFromState();
 }
 
+export function updateDashboardPipelineFileIngestState(
+  pipelineId: string,
+  fileIngest: PipelineFileIngestState | null,
+): void {
+  const existingPipeline = Array.isArray(state.config.pipelines)
+    ? state.config.pipelines.find((candidate) => candidate.id === pipelineId)
+    : null;
+  if (!existingPipeline) return;
+  upsertDashboardPipelineConfig(existingPipeline, fileIngest);
+}
+
+export function updateDashboardPipelineRecordingState(
+  pipelineId: string,
+  recording: { enabled: boolean; active: boolean },
+): void {
+  const nextHealthPipelines = {
+    ...(state.health.pipelines || {}),
+  };
+  const previousPipelineHealth = nextHealthPipelines[pipelineId] || {};
+  nextHealthPipelines[pipelineId] = {
+    ...previousPipelineHealth,
+    recording: {
+      enabled: Boolean(recording.enabled),
+      active: Boolean(recording.active),
+    },
+  };
+  state.health = {
+    ...state.health,
+    pipelines: nextHealthPipelines,
+  };
+  rerenderDashboardFromState();
+}
+
 export function removeDashboardPipelineConfig(pipelineId: string): void {
   const nextPipelines = Array.isArray(state.config.pipelines)
     ? state.config.pipelines.filter((candidate) => candidate.id !== pipelineId)

@@ -614,8 +614,12 @@ The dashboard currently uses:
   that need detailed runtime state
 - lifecycle-SSE-driven output start/stop convergence in pipeline/control modes,
   with a short runtime-refresh fallback when no lifecycle wakeup arrives
-- runtime-only recording and file-ingest follow-up refreshes so direct operator
-  controls do not invalidate cached dashboard settings on every toggle
+- lifecycle-SSE-driven file-ingest start/stop convergence when the pipeline
+  dashboard stream is already open, with direct runtime-refresh fallback
+  otherwise
+- direct local recording-state patching from `POST /recording/start|stop`
+  mutation responses, because recording enable/active state is not carried by
+  the lifecycle SSE feed
 - standalone `/metrics/system` fetches only in modes that do not need runtime
   health in the same refresh
 

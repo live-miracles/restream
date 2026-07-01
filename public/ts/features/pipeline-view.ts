@@ -35,6 +35,11 @@ import {
   setAudioTrackStoredLabel,
 } from "./audio-track-labels.js";
 import {
+  awaitDashboardRuntimeMutationConvergence,
+  updateDashboardPipelineFileIngestState,
+  updateDashboardPipelineRecordingState,
+} from "./dashboard.js";
+import {
   pipelineViewDependencies,
   setPipelineViewDependencies,
 } from "./pipeline-dependencies.js";
@@ -483,7 +488,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
         ? await stopRecording(pipe.id)
         : await startRecording(pipe.id);
       if (res !== null) {
-        await pipelineViewDependencies.refreshDashboardRuntime?.();
+        updateDashboardPipelineRecordingState(pipe.id, res);
       }
     };
   }
@@ -513,7 +518,18 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
           ? await stopIngest(fileIngest.id as string)
           : await startIngest(fileIngest.id as string);
         if (res !== null) {
-          await pipelineViewDependencies.refreshDashboardRuntime?.();
+          updateDashboardPipelineFileIngestState(pipe.id, {
+            configured: true,
+            id: res.id,
+            filename: res.filename,
+            streamKey: res.streamKey,
+            loop: res.loop,
+            startTime: res.startTime,
+            liveOptimized: res.liveOptimized,
+            targetGopSeconds: res.targetGopSeconds,
+            running: res.running,
+          });
+          await awaitDashboardRuntimeMutationConvergence();
         }
       };
     }
