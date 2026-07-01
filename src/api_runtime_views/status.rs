@@ -260,7 +260,11 @@ pub(crate) async fn health_summary_snapshot(
             outputs_json.insert(
                 output_id.to_string(),
                 serde_json::json!({
-                    "status": if retry_state.is_some() { "retrying" } else { status },
+                    "status": if retry_state.is_some() {
+                        "retrying".to_string()
+                    } else {
+                        status
+                    },
                     "uptimeSecs": egress.start_instant.elapsed().as_secs_f64(),
                     "totalSize": bytes_sent,
                     "bitrateKbps": bitrate_kbps,
@@ -278,7 +282,11 @@ pub(crate) async fn health_summary_snapshot(
             outputs_json.insert(
                 output_id.to_string(),
                 serde_json::json!({
-                    "status": if retry_state.is_some() { "retrying" } else { outcome.status.clone() },
+                    "status": if retry_state.is_some() {
+                        "retrying".to_string()
+                    } else {
+                        outcome.status.clone()
+                    },
                     "uptimeSecs": outcome.uptime_secs,
                     "totalSize": outcome.bytes_sent,
                     "bitrateKbps": serde_json::Value::Null,

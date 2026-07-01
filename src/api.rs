@@ -1493,7 +1493,9 @@ async fn pipelines_update_handler(
     let existing_encoding = existing.encoding.clone();
     let existing_srt_ingest_policy = existing.srt_ingest_policy.clone();
 
-    let stream_key = payload.stream_key.unwrap_or(existing_stream_key);
+    let stream_key = payload
+        .stream_key
+        .unwrap_or_else(|| existing_stream_key.clone());
     let input_source = payload.input_source.unwrap_or(existing_input_source);
     let encoding = payload.encoding.or(existing_encoding);
     let srt_ingest_policy = match payload

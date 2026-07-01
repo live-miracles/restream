@@ -10,5 +10,5 @@ mod status;
 mod telemetry;
 
 pub(crate) use graph::processing_graph;
-pub(crate) use status::{health_snapshot, output_status};
+pub(crate) use status::{health_snapshot, health_summary_snapshot, output_status};
 pub(crate) use telemetry::{engine_telemetry, pipeline_telemetry, stage_telemetry_by_display};
