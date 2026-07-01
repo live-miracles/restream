@@ -36,11 +36,21 @@ the build lock and sizes jobs to available RAM/CPU (parallel agents share resour
 Use `--profile bench` instead of `--release` for local/agent builds (same opt-level,
 incremental, keeps debug symbols). Never use `--release` from agents.
 
+When parallel agent work is needed, start from `docs/parallel-agent-framework.md`
+and prefer `scripts/agent-worktree.sh <id>` over manually assembling a new
+worktree. The helper creates `worktrees/<id>`, seeds a pruned high-value debug
+cache by default, shares static native outputs by default, and writes
+recommended `WORK_ROOT` defaults into `.agent-state/setup.env`.
+
 ```sh
 scripts/resource-limit cargo build --profile bench
 scripts/resource-limit cargo test
 scripts/resource-limit cargo clippy
 cargo fmt --all
+
+# Parallel agent worktree setup
+scripts/agent-worktree.sh <id>
+source worktrees/<id>/.agent-state/setup.env
 
 # Frontend
 npx tsc -p tsconfig.json
@@ -68,9 +78,37 @@ Integration tests use a private loopback namespace by default; use `--host` only
 Static FFmpeg libraries push VSZ to ~3.9 GB; adding a rustc invocation on top can
 exhaust the 8 GB WSL2 limit and kernel-panic the VM.
 
+For multi-worktree agent sessions, export a host-global lock file before heavy
+builds so separate worktrees do not compile concurrently by accident:
+
+```sh
+export RESTREAM_BUILD_LOCK_FILE=/tmp/restream-build.lock
+```
+
 ```sh
 pkill -x restream; pkill -x mediamtx; pkill -x ffmpeg
 ```
+
+### Parallel Agent Setup
+
+- Use one worktree per agent/task. Prefer `scripts/agent-worktree.sh <id>` so
+  cache and artifact layout stay consistent.
+- Treat `target/`, `.cargo/`, and `node_modules/` as copied seed caches owned
+  by the destination worktree after setup. The default target warmup is a
+  pruned debug subset, not a full `target/` clone. Do not point multiple
+  worktrees at the same live `target/` directory.
+- Use `scripts/agent-worktree.sh --full-target-cache <id>` only when you
+  explicitly want a full `target/` copy despite the size and time cost.
+- Use `scripts/agent-worktree.sh --with-incremental <id>` only when you know a
+  small warm incremental slice is worth the extra disk cost for that task.
+- Treat `.build/static/` and `public/bin/` as shared warm artifacts by default
+  when the task does not modify the native/static build layer.
+- Disable static sharing with `scripts/agent-worktree.sh --no-share-static <id>`
+  when touching `scripts/setup-static-build.sh`, `scripts/build-static.sh`,
+  `scripts/bootstrap-dev.sh`, `Dockerfile`, `build.rs`, native `test/*.c`
+  helpers, or other native-linkage inputs.
+- Use the `.agent-state/setup.env` emitted by the helper as the source of truth
+  for `WORK_ROOT`, `RESTREAM_BUILD_LOCK_FILE`, and the shared static root.
 
 ## Configuration Defaults
 
