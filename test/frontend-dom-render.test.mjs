@@ -394,6 +394,31 @@ runCheck("restream process indicator keeps explicit lifecycle states ahead of AP
   );
 
   indicator.updateRestreamProcessIndicatorFromLog({
+    eventType: "restream.shutdown.started",
+  });
+  assert.equal(label.textContent, "Stopping");
+
+  indicator.syncRestreamProcessIndicatorFromApiReachability();
+  assert.equal(
+    label.textContent,
+    "Stopping",
+    "API reachability should not overwrite an explicit lifecycle state",
+  );
+});
+
+runCheck("restream process indicator lets API reachability confirm recovery from terminal states", async () => {
+  const { document } = installFakeDom();
+  const badge = appendRoot(document, "div", "restream-process-indicator");
+  const dot = appendRoot(document, "span", "restream-process-dot");
+  const label = appendRoot(document, "span", "restream-process-text");
+  badge.appendChild(dot);
+  badge.appendChild(label);
+
+  const indicator = await loadCompiledFrontendModule(
+    "features/restream-process-indicator.js",
+  );
+
+  indicator.updateRestreamProcessIndicatorFromLog({
     eventType: "restream.shutdown.completed",
   });
   assert.equal(label.textContent, "Stopped");
@@ -401,8 +426,32 @@ runCheck("restream process indicator keeps explicit lifecycle states ahead of AP
   indicator.syncRestreamProcessIndicatorFromApiReachability();
   assert.equal(
     label.textContent,
-    "Stopped",
-    "API reachability should not overwrite an explicit lifecycle state",
+    "Running",
+    "reachable API telemetry should revive a previously stopped process indicator",
+  );
+
+  indicator.updateRestreamProcessIndicatorFromLog({
+    message: "task exited unexpectedly",
+  });
+  assert.equal(label.textContent, "Faulted");
+
+  indicator.syncRestreamProcessIndicatorFromApiReachability();
+  assert.equal(
+    label.textContent,
+    "Running",
+    "reachable API telemetry should also clear a stale fault once the process is back",
+  );
+
+  indicator.updateRestreamProcessIndicatorFromLog({
+    eventType: "restream.shutdown.started",
+  });
+  assert.equal(label.textContent, "Stopping");
+
+  indicator.syncRestreamProcessIndicatorFromApiReachability();
+  assert.equal(
+    label.textContent,
+    "Stopping",
+    "shutdown-in-progress should stay ahead of plain API reachability hints",
   );
 });
 

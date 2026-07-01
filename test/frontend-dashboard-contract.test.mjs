@@ -1861,6 +1861,9 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
   try {
     const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
     const modes = await loadCompiledFrontendModule("features/modes.js");
+    const indicator = await loadCompiledFrontendModule(
+      "features/restream-process-indicator.js",
+    );
     window.history.pushState = (_state, _title, url) => {
       window.location.href = String(url);
     };
@@ -1904,6 +1907,15 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
       "settings mode should mark the Rust process as reachable after its metrics refresh",
     );
 
+    indicator.updateRestreamProcessIndicatorFromLog({
+      eventType: "restream.shutdown.completed",
+    });
+    assert.equal(
+      document.getElementById("restream-process-text")?.textContent,
+      "Stopped",
+      "explicit lifecycle shutdown should still surface immediately",
+    );
+
     requests.length = 0;
     await dashboard.refreshDashboardRuntime();
     await flushAsyncWork();
@@ -1922,6 +1934,11 @@ test("dashboard non-runtime modes skip health polling until a runtime mode resum
       requests.filter((href) => href === settingsUrl).length,
       0,
       "settings mode runtime refreshes should continue skipping dashboard config",
+    );
+    assert.equal(
+      document.getElementById("restream-process-text")?.textContent,
+      "Running",
+      "metrics-only refreshes should revive the Rust process indicator after the API is reachable again",
     );
 
     requests.length = 0;

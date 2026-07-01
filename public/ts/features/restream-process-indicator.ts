@@ -96,7 +96,11 @@ export function syncRestreamProcessIndicatorFromHealth(
 }
 
 export function syncRestreamProcessIndicatorFromApiReachability(): void {
-  if (currentIndicatorState === "connecting") {
+  if (
+    currentIndicatorState === "connecting" ||
+    currentIndicatorState === "stopped" ||
+    currentIndicatorState === "faulted"
+  ) {
     setIndicatorState("running");
   }
 }

@@ -151,7 +151,9 @@ reuses its own restream log SSE
 instead of opening a second lifecycle-only dashboard stream on top. Settings
 and media modes also use their existing metrics refresh to mark the Rust
 process indicator as running immediately, rather than waiting for a later
-lifecycle event to clear the initial "Connecting" state. Output create/update
+lifecycle event to clear the initial "Connecting" state. The same reachability
+hint now also clears stale `Stopped` / `Faulted` badges once the API is back,
+without overriding an in-progress `Stopping` state. Output create/update
 flows, output deletes, pipeline create/update flows, and pipeline deletes now
 reuse returned mutation payloads or apply targeted local removals to patch
 dashboard state immediately instead of following each mutation with another
