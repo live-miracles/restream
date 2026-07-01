@@ -335,10 +335,7 @@ test("output start and stop controls refresh runtime without invalidating dashbo
   await editor.startOutBtn("pipe-1", "out-1");
   await flushAsyncWork();
 
-  assert.deepEqual(requests, [
-    ["POST", startUrl],
-    ["GET", steadyRuntimeUrl],
-  ]);
+  assert.deepEqual(requests, [["POST", startUrl]]);
 
   requests.length = 0;
 

@@ -80,6 +80,27 @@ const DEFAULT_FILE_INGEST_GOP_SECONDS = 2;
 const fileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
 let pendingFileAnalysisRequest = 0;
 
+function currentOutputView(pipeId: string, outId: string): OutputView | null {
+  return (
+    state.pipelines
+      .find((pipe) => pipe.id === pipeId)
+      ?.outs.find((out) => out.id === outId) || null
+  );
+}
+
+function outputControlConverged(
+  pipeId: string,
+  outId: string,
+  intent: "starting" | "stopping",
+): boolean {
+  const output = currentOutputView(pipeId, outId);
+  if (!output) return false;
+  if (intent === "stopping") {
+    return output.desiredState === "stopped" && !isOutputManagedActive(output);
+  }
+  return output.desiredState !== "stopped" && output.status !== "off";
+}
+
 function populateOutputServerOptions(
   protocol: string,
   selectedValue = "",
@@ -731,7 +752,9 @@ export async function startOutBtn(
       if (res.output?.id && res.output?.pipelineId) {
         upsertDashboardOutputConfig(res.output);
       }
-      await awaitDashboardRuntimeMutationConvergence();
+      await awaitDashboardRuntimeMutationConvergence(() =>
+        outputControlConverged(pipeId, outId, "starting"),
+      );
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);
@@ -755,7 +778,9 @@ export async function stopOutBtn(
       if (res.output?.id && res.output?.pipelineId) {
         upsertDashboardOutputConfig(res.output);
       }
-      await awaitDashboardRuntimeMutationConvergence();
+      await awaitDashboardRuntimeMutationConvergence(() =>
+        outputControlConverged(pipeId, outId, "stopping"),
+      );
     }
   } finally {
     finishOutputControlIntent(pipeId, outId);

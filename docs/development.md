@@ -132,7 +132,10 @@ the backend can keep summary liveness for every pipeline while upgrading the
 active pipeline entry to the full runtime shape in the same response.
 Output start/stop now reuse the mutation response to patch local desired state
 immediately, then let the already-open lifecycle SSE drive the runtime re-sync
-with a short `/api/v1/dashboard/runtime` fallback if no wakeup arrives.
+with a short `/api/v1/dashboard/runtime` fallback if no wakeup arrives. The
+button busy state now stays pinned until the selected output actually reaches
+the requested runtime state, so unrelated lifecycle wakeups do not clear
+operator feedback early.
 File-ingest start/stop now follow the same pattern when a lifecycle stream is
 already open, while cold/no-stream file-ingest controls still fall back
 directly to a runtime refresh. Recording start/stop is different: the mutation

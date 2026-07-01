@@ -47,8 +47,12 @@ let dashboardRuntimeMutationFallbackTimer: ReturnType<
   typeof setTimeout
 > | null = null;
 let dashboardRuntimeLastEventId: number | null = null;
-let dashboardRuntimeMutationConvergencePromise: Promise<void> | null = null;
-let resolveDashboardRuntimeMutationConvergence: (() => void) | null = null;
+type DashboardRuntimeMutationConvergenceWaiter = {
+  predicate: (() => boolean) | null;
+  resolve: () => void;
+};
+let dashboardRuntimeMutationConvergenceWaiters: DashboardRuntimeMutationConvergenceWaiter[] =
+  [];
 const DASHBOARD_RUNTIME_MODES = new Set([
   "overview",
   "pipeline",
@@ -274,7 +278,7 @@ function scheduleDashboardRuntimeRefresh(): void {
     dashboardRuntimeRefreshTimer = null;
     if (document.hidden || !shouldFetchRuntimeHealth()) return;
     void requestDashboardRefresh(false).finally(() => {
-      finishDashboardRuntimeMutationConvergence();
+      resolveDashboardRuntimeMutationConvergenceWaiters();
     });
   }, DASHBOARD_RUNTIME_STREAM_DEBOUNCE_MS);
 }
@@ -285,36 +289,72 @@ function clearDashboardRuntimeMutationFallbackTimer(): void {
   dashboardRuntimeMutationFallbackTimer = null;
 }
 
-function finishDashboardRuntimeMutationConvergence(): void {
-  clearDashboardRuntimeMutationFallbackTimer();
-  if (!resolveDashboardRuntimeMutationConvergence) return;
-  const resolve = resolveDashboardRuntimeMutationConvergence;
-  resolveDashboardRuntimeMutationConvergence = null;
-  dashboardRuntimeMutationConvergencePromise = null;
-  resolve();
+function resolveDashboardRuntimeMutationConvergenceWaiters(
+  force = false,
+): void {
+  if (dashboardRuntimeMutationConvergenceWaiters.length === 0) {
+    clearDashboardRuntimeMutationFallbackTimer();
+    return;
+  }
+
+  const pending: DashboardRuntimeMutationConvergenceWaiter[] = [];
+  for (const waiter of dashboardRuntimeMutationConvergenceWaiters) {
+    const satisfied =
+      force ||
+      waiter.predicate === null ||
+      (() => {
+        try {
+          return waiter.predicate();
+        } catch {
+          return false;
+        }
+      })();
+    if (satisfied) {
+      waiter.resolve();
+    } else {
+      pending.push(waiter);
+    }
+  }
+
+  dashboardRuntimeMutationConvergenceWaiters = pending;
+  if (dashboardRuntimeMutationConvergenceWaiters.length === 0) {
+    clearDashboardRuntimeMutationFallbackTimer();
+  }
 }
 
-export function awaitDashboardRuntimeMutationConvergence(): Promise<void> {
+function armDashboardRuntimeMutationFallbackTimer(): void {
+  clearDashboardRuntimeMutationFallbackTimer();
+  if (dashboardRuntimeMutationConvergenceWaiters.length === 0) return;
+  dashboardRuntimeMutationFallbackTimer = setTimeout(() => {
+    dashboardRuntimeMutationFallbackTimer = null;
+    void requestDashboardRefresh(false).finally(() => {
+      resolveDashboardRuntimeMutationConvergenceWaiters(true);
+    });
+  }, DASHBOARD_RUNTIME_MUTATION_FALLBACK_MS);
+}
+
+export function awaitDashboardRuntimeMutationConvergence(
+  predicate: (() => boolean) | null = null,
+): Promise<void> {
+  if (predicate) {
+    try {
+      if (predicate()) return Promise.resolve();
+    } catch {
+      // Wait for the next runtime refresh if the predicate cannot be evaluated yet.
+    }
+  }
+
   clearDashboardRuntimeMutationFallbackTimer();
 
   if (!dashboardRuntimeStreamingEnabled() || !dashboardRuntimeStream) {
     return requestDashboardRefresh(false);
   }
 
-  if (!dashboardRuntimeMutationConvergencePromise) {
-    dashboardRuntimeMutationConvergencePromise = new Promise((resolve) => {
-      resolveDashboardRuntimeMutationConvergence = resolve;
-    });
-  }
-
-  dashboardRuntimeMutationFallbackTimer = setTimeout(() => {
-    dashboardRuntimeMutationFallbackTimer = null;
-    void requestDashboardRefresh(false).finally(() => {
-      finishDashboardRuntimeMutationConvergence();
-    });
-  }, DASHBOARD_RUNTIME_MUTATION_FALLBACK_MS);
-
-  return dashboardRuntimeMutationConvergencePromise;
+  const waiter = new Promise<void>((resolve) => {
+    dashboardRuntimeMutationConvergenceWaiters.push({ predicate, resolve });
+  });
+  armDashboardRuntimeMutationFallbackTimer();
+  return waiter;
 }
 
 export function handleDashboardRuntimeLifecycleLog(log: AppLogRow): void {
@@ -429,10 +469,10 @@ async function fetchAndRerender(): Promise<void> {
   } else {
     syncRestreamProcessIndicatorFromHealth(state.health?.status);
   }
-  if (runtimeResult?.health) {
-    finishDashboardRuntimeMutationConvergence();
-  }
   rerenderDashboardFromState();
+  if (runtimeResult?.health) {
+    resolveDashboardRuntimeMutationConvergenceWaiters();
+  }
 }
 
 const DASHBOARD_POLL_INTERVAL_MS = 5000;
