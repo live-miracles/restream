@@ -442,6 +442,7 @@ pub async fn start_hls_segmenter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::{Mutex, MutexGuard};
     use tokio_util::sync::CancellationToken;
 
@@ -881,5 +882,135 @@ mod tests {
 
         cancel.cancel();
         task.await.expect("segmenter task should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn hls_segment_boundaries_preserve_non_decreasing_dts_per_stream() {
+        let store = Arc::new(HlsStore::with_config(HlsConfig {
+            min_segment_secs: 0.0,
+            segment_capacity: 2 * 1024 * 1024,
+            max_segments: 64,
+        }));
+        let engine = Arc::new(MediaEngine::new());
+        let source_ring = Arc::new(RingBuffer::new(4096));
+        let cancel = CancellationToken::new();
+
+        let (video, audio_tracks, packets) =
+            crate::test_fixtures::primary_av_packets_for_codec("h264").expect("fixture packets");
+        let keyframes = packets
+            .iter()
+            .filter(|packet| packet.media_type == MediaType::Video && packet.is_keyframe)
+            .count();
+        assert!(
+            keyframes >= 2,
+            "fixture needs at least two video keyframes to exercise segment boundaries"
+        );
+
+        source_ring.set_codec_hint("h264");
+        source_ring.set_audio_tracks(audio_tracks);
+
+        let task = tokio::spawn(start_hls_segmenter(
+            "hls-ts-monotonic".to_string(),
+            store.clone(),
+            source_ring.clone(),
+            None,
+            engine,
+            cancel.clone(),
+            Some(video),
+        ));
+
+        let attach_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let attached = source_ring
+                .reader_snapshots()
+                .iter()
+                .any(|snapshot| snapshot.name == "hls:hls-ts-monotonic");
+            if attached {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < attach_deadline,
+                "hls segmenter reader did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        source_ring.push_batch(packets);
+
+        let segment_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let segment_count = store
+                .snapshot()
+                .map(|snapshot| snapshot.segments.len())
+                .unwrap_or(0);
+            if segment_count >= 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < segment_deadline,
+                "hls segmenter did not emit multiple segments in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        cancel.cancel();
+        task.await.expect("segmenter task should stop cleanly");
+
+        let snapshot = store.snapshot().expect("snapshot should contain segments");
+        assert!(
+            snapshot.segments.len() >= 2,
+            "segment boundary proof requires at least two segments"
+        );
+
+        let mut global_last_dts: HashMap<(u8, u32), i64> = HashMap::new();
+        let mut prev_segment_last_dts: Option<HashMap<(u8, u32), i64>> = None;
+
+        for segment in snapshot.segments {
+            let mut demuxer = crate::media::mpegts::TsDemuxer::new();
+            demuxer.feed(&segment.data);
+            demuxer.flush();
+            let packets = demuxer.drain();
+            assert!(
+                !packets.is_empty(),
+                "hls segment {} should contain muxed packets",
+                segment.index
+            );
+
+            let mut segment_first_dts: HashMap<(u8, u32), i64> = HashMap::new();
+            let mut segment_last_dts: HashMap<(u8, u32), i64> = HashMap::new();
+
+            for packet in packets {
+                let stream = (packet.media_type as u8, packet.track_index);
+                if let Some(previous) = global_last_dts.get(&stream) {
+                    assert!(
+                        packet.dts >= *previous,
+                        "stream {:?} DTS regressed across HLS segments: {} < {}",
+                        stream,
+                        packet.dts,
+                        previous
+                    );
+                }
+                segment_first_dts.entry(stream).or_insert(packet.dts);
+                segment_last_dts.insert(stream, packet.dts);
+                global_last_dts.insert(stream, packet.dts);
+            }
+
+            if let Some(previous_segment) = prev_segment_last_dts.as_ref() {
+                for (stream, first_dts) in &segment_first_dts {
+                    if let Some(previous_last) = previous_segment.get(stream) {
+                        assert!(
+                            *first_dts >= *previous_last,
+                            "stream {:?} first DTS in segment {} regressed at boundary: {} < {}",
+                            stream,
+                            segment.index,
+                            first_dts,
+                            previous_last
+                        );
+                    }
+                }
+            }
+
+            prev_segment_last_dts = Some(segment_last_dts);
+        }
     }
 }
