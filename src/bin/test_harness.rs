@@ -321,6 +321,25 @@ fn mixed_hls_preview_expected_dimensions(case: MixedInputCase) -> &'static str {
     }
 }
 
+fn mixed_input_expected_video_codec(case: MixedInputCase) -> &'static str {
+    match case.codec {
+        "h265" | "hevc" => "hevc",
+        _ => "h264",
+    }
+}
+
+fn mixed_input_expected_audio_tracks(case: MixedInputCase) -> usize {
+    if case.multi_track { 2 } else { 1 }
+}
+
+fn mixed_output_cases_for_input(case: MixedInputCase) -> &'static [MixedOutputCase] {
+    if case.multi_track {
+        MULTI_TRACK_MIXED_OUTPUT_CASES
+    } else {
+        SINGLE_TRACK_MIXED_OUTPUT_CASES
+    }
+}
+
 fn mode_spec(name: &str) -> Option<&'static HarnessModeSpec> {
     HARNESS_MODE_SPECS.iter().find(|spec| spec.name == name)
 }
@@ -5849,6 +5868,7 @@ async fn probe_dims_ramp_with_cookie(url: &str, cookie: Option<&str>) -> Result<
 
 struct MixedEnv {
     work_dir: PathBuf,
+    media_dir: PathBuf,
     scale_log: PathBuf,
     rss_summary: PathBuf,
     summary_log: PathBuf,
@@ -5886,6 +5906,9 @@ impl MixedEnv {
             .unwrap_or(default_work_dir);
         let ports = harness_port_defaults();
         Self {
+            media_dir: std::env::var_os("RESTREAM_MEDIA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| work_dir.join("media")),
             scale_log: std::env::var_os("SCALE_LOG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| work_dir.join("scale.csv")),
@@ -6089,6 +6112,7 @@ async fn run_mixed_input_case_with_env(
                 "summary": env.summary_log,
                 "restreamLog": env.restream_log,
                 "mediamtxLog": env.mediamtx_log,
+                "mediaDir": env.media_dir,
             }
         })
     })
@@ -6112,7 +6136,8 @@ fn ensure_mixed_artifacts(env: &MixedEnv) -> Result<(), String> {
 }
 
 async fn start_mixed_restream(env: &MixedEnv) -> Result<Child, String> {
-    start_restream_child(
+    std::fs::create_dir_all(&env.media_dir).map_err(|e| e.to_string())?;
+    start_restream_child_in_media_dir(
         &env.restream_bin,
         &TestPorts {
             http: env.restream_http,
@@ -6121,6 +6146,7 @@ async fn start_mixed_restream(env: &MixedEnv) -> Result<Child, String> {
         },
         &env.restream_db_path,
         &env.restream_log,
+        &env.media_dir,
     )
     .await
 }
@@ -6167,7 +6193,8 @@ async fn run_mixed_anchor_config(
 ) -> Result<Value, String> {
     let cfg = "h264-srt-single";
     let n = env.n_per_group;
-    let total = n * 6;
+    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
     let pipeline = api
@@ -6183,6 +6210,25 @@ async fn run_mixed_anchor_config(
 
     let mut publisher = spawn_mixed_anchor_publisher(env, &stream_key).await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let case = mixed_input_case_for_command("mixed-h264-srt-single")
+        .ok_or("missing h264-srt-single input case")?;
+    let hls_preview = if env.check_selected("hls") {
+        Some(
+            verify_mixed_hls_preview(
+                env,
+                api,
+                cfg,
+                &pipeline_id,
+                mixed_hls_preview_expected_dimensions(case),
+                case,
+                resume,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let recording = verify_mixed_recording(env, api, cfg, &pipeline_id, case, resume).await?;
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
         snapshot_mixed(env, restream_pid, cfg, "baseline (input live, 0 outputs)").await?;
@@ -6674,7 +6720,12 @@ async fn run_mixed_anchor_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
+        "recording": recording,
+        "outputMatrix": mixed_output_matrix_json(output_cases),
     });
+    if let Some(summary) = hls_preview {
+        result["hlsPreview"] = summary;
+    }
     if let Some(probe) = sink_probe_result {
         result["sinkProbe"] = probe.summary;
         result["sinkProbePassed"] = json!(probe.passed);
@@ -6698,7 +6749,9 @@ async fn run_mixed_h265_srt_config(
 ) -> Result<Value, String> {
     let cfg = "h265-srt-single";
     let n = env.n_per_group;
-    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let case = mixed_input_case_for_command("mixed-h265-srt-single")
+        .ok_or("missing h265-srt-single input case")?;
+    let output_cases = mixed_output_cases_for_input(case);
     let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
@@ -6715,9 +6768,8 @@ async fn run_mixed_h265_srt_config(
 
     let mut publisher = spawn_mixed_h265_srt_publisher(env, &stream_key).await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let recording = verify_mixed_recording(env, api, cfg, &pipeline_id, case, resume).await?;
     if env.check_selected("hls") {
-        let case = mixed_input_case_for_command("mixed-h265-srt-single")
-            .ok_or("missing h265-srt-single input case")?;
         verify_mixed_hls_preview(
             env,
             api,
@@ -6867,6 +6919,7 @@ async fn run_mixed_h265_srt_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
+        "recording": recording,
         "outputMatrix": mixed_output_matrix_json(output_cases),
     });
     if let Some(probe) = sink_probe_result {
@@ -6884,7 +6937,9 @@ async fn run_mixed_h264_rtmp_config(
 ) -> Result<Value, String> {
     let cfg = "h264-rtmp-single";
     let n = env.n_per_group;
-    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let case = mixed_input_case_for_command("mixed-h264-rtmp-single")
+        .ok_or("missing h264-rtmp-single input case")?;
+    let output_cases = mixed_output_cases_for_input(case);
     let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
@@ -6901,9 +6956,8 @@ async fn run_mixed_h264_rtmp_config(
 
     let mut publisher = spawn_mixed_h264_rtmp_publisher(env, &stream_key).await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let recording = verify_mixed_recording(env, api, cfg, &pipeline_id, case, resume).await?;
     if env.check_selected("hls") {
-        let case = mixed_input_case_for_command("mixed-h264-rtmp-single")
-            .ok_or("missing h264-rtmp-single input case")?;
         verify_mixed_hls_preview(
             env,
             api,
@@ -7005,6 +7059,7 @@ async fn run_mixed_h264_rtmp_config(
         "perOutputKb": per_output,
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
+        "recording": recording,
         "outputMatrix": mixed_output_matrix_json(output_cases),
     });
     if let Some(probe) = sink_probe_result {
@@ -7023,7 +7078,10 @@ async fn run_mixed_srt_multi_config(
     resume: &mut MixedResume,
 ) -> Result<Value, String> {
     let n = env.n_per_group;
-    let output_cases = MULTI_TRACK_MIXED_OUTPUT_CASES;
+    let mode = format!("mixed-{cfg}");
+    let case =
+        mixed_input_case_for_command(&mode).ok_or_else(|| format!("missing {cfg} input case"))?;
+    let output_cases = mixed_output_cases_for_input(case);
     let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
@@ -7044,9 +7102,6 @@ async fn run_mixed_srt_multi_config(
     // Give the probe time to fire and adaptive ring resize to complete (≤ 5 s).
     tokio::time::sleep(Duration::from_secs(6)).await;
     if env.check_selected("hls") {
-        let mode = format!("mixed-{cfg}");
-        let case = mixed_input_case_for_command(&mode)
-            .ok_or_else(|| format!("missing {cfg} input case"))?;
         verify_mixed_hls_preview(
             env,
             api,
@@ -7058,6 +7113,7 @@ async fn run_mixed_srt_multi_config(
         )
         .await?;
     }
+    let recording = verify_mixed_recording(env, api, cfg, &pipeline_id, case, resume).await?;
 
     // Verify adaptive ring sizing: 2-audio-track SRT stream → 100+ pkt/s →
     // ring must have grown beyond the 1024-slot default and hold ≥ 5 s of depth.
@@ -7228,6 +7284,7 @@ async fn run_mixed_srt_multi_config(
         "extFfmpegCount": ffmpeg.count,
         "extFfmpegRssKb": ffmpeg.rss_kb,
         "audioTracks": 2,
+        "recording": recording,
         "outputMatrix": mixed_output_matrix_json(output_cases),
     });
     if let Some(probe) = sink_probe_result {
@@ -8199,6 +8256,27 @@ async fn verify_mixed_hls_preview(
     let started = Instant::now();
     let (_status, playlist_body) =
         wait_for_hls_playlist_ready(api, pipeline_id, Duration::from_secs(30)).await?;
+    let expected_audio_tracks = mixed_input_expected_audio_tracks(case);
+    let audio_renditions = playlist_body.matches("#EXT-X-MEDIA:TYPE=AUDIO").count();
+    if audio_renditions != expected_audio_tracks {
+        let message = format!(
+            "hls-preview {cfg}: expected {expected_audio_tracks} audio renditions, got {audio_renditions}"
+        );
+        emit_mixed_result(
+            env,
+            cfg,
+            &id,
+            "fail",
+            started.elapsed(),
+            Some(json!({
+                "message": message,
+                "expectedAudioRenditions": expected_audio_tracks,
+                "audioRenditions": audio_renditions,
+                "playlist": playlist_body,
+            })),
+        )?;
+        return Err(message);
+    }
     let preview =
         wait_for_api_hls_preview_state(api, pipeline_id, true, Duration::from_secs(10)).await?;
     let playlist_url = format!(
@@ -8212,6 +8290,8 @@ async fn verify_mixed_hls_preview(
                 "codec": case.codec,
                 "trackLayout": if case.multi_track { "multi" } else { "single" },
                 "playlistReady": playlist_body.contains("#EXTM3U"),
+                "expectedAudioRenditions": expected_audio_tracks,
+                "audioRenditions": audio_renditions,
                 "preview": preview,
                 "expected": expected_dimensions,
                 "got": dimensions,
@@ -8262,6 +8342,101 @@ async fn verify_mixed_hls_preview(
             )?;
             Err(message)
         }
+    }
+}
+
+async fn verify_mixed_recording(
+    env: &MixedEnv,
+    api: &RampApi,
+    cfg: &str,
+    pipeline_id: &str,
+    case: MixedInputCase,
+    resume: &mut MixedResume,
+) -> Result<Value, String> {
+    if !env.check_selected("recording") {
+        return Ok(json!({"skipped": true}));
+    }
+    let id = format!("MS-recording-{cfg}");
+    if !resume.allows(&id) {
+        return Ok(json!({"skipped": true}));
+    }
+
+    let started = Instant::now();
+    let before_files = media_dir_entries(&env.media_dir)?;
+    api.post_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/start"),
+        json!({}),
+    )
+    .await?;
+    wait_for_api_recording_state(api, pipeline_id, true, Duration::from_secs(10)).await?;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    api.post_json(
+        &format!("/api/v1/pipelines/{pipeline_id}/recording/stop"),
+        json!({}),
+    )
+    .await?;
+    wait_for_api_recording_state(api, pipeline_id, false, Duration::from_secs(20)).await?;
+
+    let recording_entry =
+        wait_for_api_media_file(api, &before_files, ".mp4", Duration::from_secs(30)).await?;
+    let recording_name = recording_entry["playName"]
+        .as_str()
+        .or_else(|| recording_entry["name"].as_str())
+        .ok_or("recording entry missing playName/name")?;
+    let recording_path = env.media_dir.join(recording_name);
+    if !recording_path.exists() {
+        return Err(format!(
+            "recording listed by API but missing on disk: {}",
+            recording_path.display()
+        ));
+    }
+
+    let probe = ffprobe(recording_path.to_string_lossy().as_ref()).await?;
+    let streams = normalized_streams(&probe)?;
+    let stream_array = streams
+        .as_array()
+        .ok_or("recording normalized stream list missing array")?;
+    let video_codec = stream_array
+        .iter()
+        .find(|stream| stream["type"] == "video")
+        .and_then(|stream| stream["codec"].as_str())
+        .unwrap_or_default();
+    let audio_tracks = stream_array
+        .iter()
+        .filter(|stream| stream["type"] == "audio")
+        .count();
+    let expected_video_codec = mixed_input_expected_video_codec(case);
+    let expected_audio_tracks = mixed_input_expected_audio_tracks(case);
+    let passed = video_codec == expected_video_codec && audio_tracks == expected_audio_tracks;
+    let summary = json!({
+        "inputCase": case.name,
+        "recordingFile": recording_path,
+        "expectedVideoCodec": expected_video_codec,
+        "videoCodec": video_codec,
+        "expectedAudioTracks": expected_audio_tracks,
+        "audioTracks": audio_tracks,
+        "entry": recording_entry,
+        "normalizedStreams": streams,
+        "probe": probe,
+    });
+    emit_mixed_result(
+        env,
+        cfg,
+        &id,
+        if passed { "pass" } else { "fail" },
+        started.elapsed(),
+        Some(summary.clone()),
+    )?;
+    if passed {
+        log_mixed_ok(
+            env,
+            &format!("recording: {cfg} -> {video_codec}, audio_tracks={audio_tracks}"),
+        )?;
+        Ok(summary)
+    } else {
+        Err(format!(
+            "recording {cfg}: expected {expected_video_codec} with {expected_audio_tracks} audio tracks, got {video_codec} with {audio_tracks}"
+        ))
     }
 }
 
@@ -11154,16 +11329,14 @@ async fn run_mixed_file_config(
 ) -> Result<Value, String> {
     let cfg = case.name;
     let n = env.n_per_group;
-    let output_cases = SINGLE_TRACK_MIXED_OUTPUT_CASES;
+    let output_cases = mixed_output_cases_for_input(case);
     let total = n * output_cases.len();
     let stream_key = format!("sk-{cfg}");
 
     let fixture = mixed_file_fixture(case)?;
 
     let fixture_name = fixture.file_name().unwrap().to_string_lossy().to_string();
-    let media_dir =
-        PathBuf::from(std::env::var("RESTREAM_MEDIA_DIR").unwrap_or_else(|_| "media".into()));
-    let media_dest = media_dir.join(&fixture_name);
+    let media_dest = env.media_dir.join(&fixture_name);
     if !media_dest.exists() {
         std::fs::copy(&fixture, &media_dest).map_err(|e| e.to_string())?;
     }
@@ -11199,6 +11372,7 @@ async fn run_mixed_file_config(
     api.post_json(&format!("/api/v1/ingests/{ingest_id}/start"), json!({}))
         .await?;
     wait_for_api_input_live(api, &pipeline_id, Duration::from_secs(45)).await?;
+    let recording = verify_mixed_recording(env, api, cfg, &pipeline_id, case, resume).await?;
     let rss_baseline = process_rss_kb(restream_pid).await.unwrap_or(0);
     if !env.skip_load {
         snapshot_mixed(
@@ -11211,16 +11385,33 @@ async fn run_mixed_file_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
-    add_mixed_output_cases(
-        env,
-        api,
-        &pipeline_id,
-        restream_pid,
-        cfg,
-        output_cases,
-        &mut output_ids,
-    )
-    .await?;
+    let mut ffmpeg_srt_sinks = Vec::new();
+    let mut next_ffmpeg_srt_sink = 0usize;
+    if case.multi_track {
+        add_mixed_multi_output_cases(
+            env,
+            api,
+            &pipeline_id,
+            restream_pid,
+            cfg,
+            output_cases,
+            &mut ffmpeg_srt_sinks,
+            &mut next_ffmpeg_srt_sink,
+            &mut output_ids,
+        )
+        .await?;
+    } else {
+        add_mixed_output_cases(
+            env,
+            api,
+            &pipeline_id,
+            restream_pid,
+            cfg,
+            output_cases,
+            &mut output_ids,
+        )
+        .await?;
+    }
 
     let duration_secs: u64 = 10;
     if env.check_selected("hls") {
@@ -11235,7 +11426,10 @@ async fn run_mixed_file_config(
         )
         .await?;
     }
-    verify_mixed_output_cases(env, cfg, output_cases, resume).await?;
+    if !ffmpeg_srt_sinks.is_empty() {
+        finish_ffmpeg_srt_sinks(&mut ffmpeg_srt_sinks).await?;
+    }
+    verify_mixed_output_cases_inner(env, cfg, output_cases, resume, case.multi_track, true).await?;
 
     println!("[{cfg}] sustaining {total} outputs for {duration_secs}s");
     tokio::time::sleep(Duration::from_secs(duration_secs)).await;
@@ -11277,6 +11471,7 @@ async fn run_mixed_file_config(
         "trackLayout": if case.multi_track { "multi" } else { "single" },
         "outputCount": total,
         "outputMatrix": mixed_output_matrix_json(output_cases),
+        "recording": recording,
         "rssBaselineKb": rss_baseline,
         "rssPeakKb": rss_peak,
         "rssGrowthKb": growth_kb,
@@ -15383,6 +15578,48 @@ stream|index=1|codec_type=audio\n";
                     "{} should assert source-size H.264 preview",
                     case.name
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_input_recording_expectations_follow_source_tracks() {
+        for case in MIXED_INPUT_CASES {
+            assert_eq!(
+                mixed_input_expected_audio_tracks(*case),
+                if case.multi_track { 2 } else { 1 },
+                "{} should record one assertion row with the source audio-track count",
+                case.name
+            );
+            assert_eq!(
+                mixed_input_expected_video_codec(*case),
+                if case.codec == "h265" { "hevc" } else { "h264" },
+                "{} should record the source video codec",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_input_rows_select_their_output_matrix() {
+        for case in MIXED_INPUT_CASES {
+            let cases = mixed_output_cases_for_input(*case);
+            if case.multi_track {
+                assert_eq!(
+                    cases.len(),
+                    MULTI_TRACK_MIXED_OUTPUT_CASES.len(),
+                    "{} should exercise the multi-audio output matrix",
+                    case.name
+                );
+                assert!(cases.iter().any(|case| case.expected_audio_tracks == 2));
+            } else {
+                assert_eq!(
+                    cases.len(),
+                    SINGLE_TRACK_MIXED_OUTPUT_CASES.len(),
+                    "{} should exercise the single-track output matrix",
+                    case.name
+                );
+                assert!(cases.iter().all(|case| case.expected_audio_tracks == 1));
             }
         }
     }

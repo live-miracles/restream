@@ -231,12 +231,34 @@ pub fn video_for_rtmp(payload: &[u8], is_keyframe: bool) -> Option<Vec<u8>> {
 /// The caller must consume `out` before the next call that clears it.
 #[inline]
 pub fn video_for_rtmp_into(payload: &[u8], is_keyframe: bool, out: &mut Vec<u8>) -> bool {
+    video_for_rtmp_with_composition_into(payload, is_keyframe, 0, out)
+}
+
+/// Like [`video_for_rtmp_into`] but preserves the FLV composition offset
+/// (`PTS-DTS`) for streams with B-frames.
+#[inline]
+pub fn video_for_rtmp_with_composition_into(
+    payload: &[u8],
+    is_keyframe: bool,
+    composition_time_ms: i32,
+    out: &mut Vec<u8>,
+) -> bool {
     let tag = if is_keyframe { 0x17u8 } else { 0x27u8 };
     out.clear();
     out.extend_from_slice(&[tag, 1, 0, 0, 0]);
+    write_signed_be24(composition_time_ms, &mut out[2..5]);
     let start = out.len();
     annexb_to_avcc_into(payload, out);
     out.len() > start
+}
+
+fn write_signed_be24(value: i32, out: &mut [u8]) {
+    debug_assert!(out.len() >= 3);
+    let clamped = value.clamp(-8_388_608, 8_388_607);
+    let encoded = (clamped as u32) & 0x00FF_FFFF;
+    out[0] = (encoded >> 16) as u8;
+    out[1] = (encoded >> 8) as u8;
+    out[2] = encoded as u8;
 }
 
 /// Prepare a Raw audio payload for RTMP publishing.
@@ -801,6 +823,30 @@ mod tests {
         // AVCC data starts at offset 5
         let nalu_len = u32::from_be_bytes([result[5], result[6], result[7], result[8]]) as usize;
         assert_eq!(nalu_len, 4);
+    }
+
+    #[test]
+    fn video_for_rtmp_preserves_positive_composition_time() {
+        let annexb = [0, 0, 0, 1, 0x65, 0x88, 0x80, 0x40];
+        let mut out = Vec::new();
+
+        assert!(video_for_rtmp_with_composition_into(
+            &annexb, true, 40, &mut out
+        ));
+
+        assert_eq!(&out[..5], &[0x17, 0x01, 0x00, 0x00, 0x28]);
+    }
+
+    #[test]
+    fn video_for_rtmp_preserves_negative_composition_time() {
+        let annexb = [0, 0, 0, 1, 0x41, 0x88, 0x80, 0x40];
+        let mut out = Vec::new();
+
+        assert!(video_for_rtmp_with_composition_into(
+            &annexb, false, -40, &mut out
+        ));
+
+        assert_eq!(&out[..5], &[0x27, 0x01, 0xff, 0xff, 0xd8]);
     }
 
     #[test]

@@ -436,7 +436,7 @@ Common runner flags:
 | `--preflight` | Check binary, dependencies, namespace support, and host-mode port conflicts without starting the test. |
 | `--fast` | Set `N_PER_GROUP=1`, `N_OUTPUTS=1`, `SNAP_EVERY=999`, and skip snapshot sleeps for quick agent loops. |
 | `--json <path>` | Write JSONL assertion records alongside the human-readable log. Failed ffprobe assertions include stderr and log tails. |
-| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `lifecycle`, `tc-spawns`, `load`. |
+| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `recording`, `lifecycle`, `tc-spawns`, `load`. |
 | `--skip-load` | Skip resource snapshot sleeps and load assertion records while preserving correctness setup. |
 | `--resume-from <id>` | Skip named assertion records until the requested assertion ID is reached. |
 | `RSS_BASELINE=<path>` | Compare mixed-input RSS summaries against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
@@ -569,6 +569,39 @@ Each row can be run directly as `target/bench/test_harness mixed-<row>`, for
 example `target/bench/test_harness mixed-h265-srt-multi`. The aggregate
 `mixed-input-matrix` runs every row sequentially under its own work directory so
 artifacts and HLS segments from one case cannot contaminate another.
+
+The row structure is deliberately two-layered:
+
+| Scope | Coverage |
+|---|---|
+| Input-scoped | One HLS preview assertion per input row; one recording assertion per input row. |
+| Output-scoped | Every legal RTMP/SRT egress row for the input track layout. |
+
+Single-track inputs run this egress table:
+
+| Protocol | Encodings | Expected audio tracks |
+|---|---|---:|
+| RTMP | `source`, `720p`, `1080p` | 1 |
+| SRT | `source`, `720p`, `1080p` | 1 |
+
+Multi-track inputs, including file multi fixtures, run the expanded table:
+
+| Protocol | Encodings | Expected audio tracks |
+|---|---|---:|
+| RTMP | `source+atrack:0`, `source+atrack:1`, `720p+atrack:0`, `720p+atrack:1`, `1080p+atrack:0`, `1080p+atrack:1` | 1 |
+| SRT | `source`, `720p`, `1080p` | 2 |
+| SRT | `source+atrack:0`, `source+atrack:1`, `720p+atrack:0`, `720p+atrack:1`, `1080p+atrack:0`, `1080p+atrack:1` | 1 |
+
+HLS preview currently asserts the browser-compatible preview contract:
+H.264 input remains source-size H.264 MPEG-TS HLS, while H.265 input is
+converted to 720p H.264 before the MPEG-TS HLS preview path. The HLS assertion
+also checks that the master playlist exposes the source audio-track count as
+audio renditions so the browser can select all available tracks.
+
+Recording is intentionally input-scoped rather than multiplied by every egress:
+it starts/stops once after the input is live, then validates the operator-visible
+MP4 has the source video codec (`h264` or `hevc`) and the expected source
+audio-track count.
 
 **H.264 SRT single (`h264-srt-single`)** runs three merged correctness checks in
 addition to the resource measurements:
@@ -1193,6 +1226,11 @@ around the checked-in H.265 + two-audio fixture.
   reserves the full ADTS frame span before accepting the next DTS. Unit coverage
   includes deterministic multi-frame AAC and a property test for ADTS frame
   counting.
+- RTMP egress wrapped Raw Annex B H.264 as FLV/AVCC with composition time `0`.
+  B-frame fixtures therefore lost their `PTS-DTS` offset on RTMP output and the
+  mixed-file multi live row exposed downstream duplicate/non-monotonic DTS
+  warnings. The Raw H.264 RTMP wrapper now preserves signed 24-bit FLV
+  composition time, with unit coverage for positive and negative offsets.
 
 ### Validator Lessons
 

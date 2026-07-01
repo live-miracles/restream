@@ -209,11 +209,11 @@ Enhanced RTMP/HEVC packetization is not implemented.
 
 | Ingest | RTMP egress | SRT egress | HLS preview | Recording |
 |---|---|---|---|---|
-| RTMP H.264 | Basic interop; B-frame timestamp gate | Implemented; full matrix gate | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
+| RTMP H.264 | Basic interop; B-frame timestamp gate | Implemented; full matrix gate | MPEG-TS HLS preview with audio renditions | Input-scoped mixed gate validates final MP4 |
 | RTMP H.265 | Not supported without Enhanced RTMP | Not assumed | Not assumed | Not assumed |
-| SRT H.264 | Packetization implemented; live matrix gate | Locally validated | Store/routes exist; live TsMuxer | Mux path exists; contract broken |
-| SRT H.265 | RTMP: `hevc_to_h264` conversion working; SRT: passthrough working | Passthrough implemented; E2E gate | HEVC preview converts to H.264 720p before MPEG-TS HLS | Mux path exists; contract broken |
-| File | RTMP-shaped via child FFmpeg | Implemented for compatible FLV codecs | Live TsMuxer | Contract broken |
+| SRT H.264 | Packetization implemented; live matrix gate | Locally validated | MPEG-TS HLS preview with audio renditions | Input-scoped mixed gate validates final MP4 |
+| SRT H.265 | RTMP: `hevc_to_h264` conversion working; SRT: passthrough working | Passthrough implemented; E2E gate | HEVC preview converts to H.264 720p before MPEG-TS HLS | Input-scoped mixed gate validates final MP4 |
+| File | RTMP-shaped via child FFmpeg | Implemented for compatible FLV codecs | Live TsMuxer; HEVC uses preview transcode | Input-scoped mixed gate validates final MP4 |
 
 HLS preview currently prioritizes browser compatibility over HEVC preservation.
 If ingest video is HEVC/H.265, the API starts a preview-only
@@ -250,9 +250,13 @@ limited to `mixed-h264-rtmp-single`, because standard RTMP ingest carries H.264
 with one audio track in the current product contract. SRT and file ingest cover
 both H.264/H.265 and single/multi-track fixtures.
 
-Each live row fans out to N RTMP-src + N RTMP-720p + N SRT-src + N SRT-720p
-outputs unless the row's fixture-specific assertions add extra selected-track
-outputs. The traces below show the exact mux/demux, conversion, and transcoding
+Each single-track row fans out to RTMP and SRT `source`, `720p`, and `1080p`
+outputs. Each multi-track row uses the expanded selected-track table: RTMP
+always receives an explicit one-audio subset, while SRT receives both all-track
+outputs and selected one-audio subsets for `source`, `720p`, and `1080p`.
+HLS preview and recording are input-scoped assertions that run once per row
+rather than multiplying across every egress. The traces below show the exact
+mux/demux, conversion, and transcoding
 at every hop for each path.
 
 ### h264-rtmp-single — H.264 RTMP ingest

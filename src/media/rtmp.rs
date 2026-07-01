@@ -83,6 +83,12 @@ impl RtmpTimestampGuard {
     }
 }
 
+fn refreshed_video_sequence_header_timestamp(packet_ts: RtmpTimestamp) -> RtmpTimestamp {
+    // Startup sequence headers are sent before media at timestamp 0. Refreshes
+    // happen in-band on keyframes and must not rewind the RTMP timestamp.
+    RtmpTimestamp::new(packet_ts.value)
+}
+
 fn parse_flv_video_meta(data: &[u8]) -> Option<VideoMeta> {
     if data.len() < 2 {
         return None;
@@ -1941,7 +1947,7 @@ pub async fn start_rtmp_egress(
                                                 p,
                                             )) = session.publish_video_data(
                                                 seq_hdr,
-                                                RtmpTimestamp::new(0),
+                                                refreshed_video_sequence_header_timestamp(ts),
                                                 true,
                                             ) && socket.write_all(&p.bytes).await.is_err()
                                             {
@@ -1954,9 +1960,15 @@ pub async fn start_rtmp_egress(
                                             last_sent_sps = new_sps;
                                         }
                                     }
-                                    if !codec::video_for_rtmp_into(
+                                    let composition_time_ms =
+                                        (packet.pts - packet.dts).clamp(
+                                            -8_388_608,
+                                            8_388_607,
+                                        ) as i32;
+                                    if !codec::video_for_rtmp_with_composition_into(
                                         &packet.payload,
                                         packet.is_keyframe,
+                                        composition_time_ms,
                                         &mut video_buf,
                                     ) {
                                         continue;
@@ -2720,6 +2732,13 @@ mod tests {
         assert_eq!(guard.enforce_ms(MediaType::Audio, 100), 100);
         assert_eq!(guard.enforce_ms(MediaType::Video, 100), 101);
         assert_eq!(guard.enforce_ms(MediaType::Audio, 100), 101);
+    }
+
+    #[test]
+    fn refreshed_video_sequence_header_uses_current_media_timestamp() {
+        let timestamp = refreshed_video_sequence_header_timestamp(RtmpTimestamp::new(42));
+
+        assert_eq!(timestamp.value, 42);
     }
 
     #[test]
