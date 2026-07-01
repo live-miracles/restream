@@ -979,6 +979,23 @@ fn strip_query(value: &str) -> &str {
     value.split_once('?').map(|(path, _)| path).unwrap_or(value)
 }
 
+fn normalize_srt_stream_key(value: &str) -> String {
+    let without_query = strip_query(value).trim();
+    let decoded = percent_decode(without_query);
+    strip_query(&decoded)
+        .rsplit('/')
+        .next()
+        .unwrap_or(decoded.as_str())
+        .trim()
+        .to_string()
+}
+
+fn try_acquire_srt_sender_permit(
+    semaphore: Arc<tokio::sync::Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::TryAcquireError> {
+    semaphore.try_acquire_owned()
+}
+
 /// Decode percent-encoded characters in a URL query parameter value.
 /// Handles `%XX` sequences where XX is a two-digit hex byte value.
 /// Non-UTF8 sequences are passed through as-is.
@@ -1029,11 +1046,7 @@ fn parse_srt_stream_id(streamid: &str) -> ParsedStreamId {
                 }
             }
         }
-        let stream_key = strip_query(resource)
-            .rsplit('/')
-            .next()
-            .unwrap_or(resource)
-            .to_string();
+        let stream_key = normalize_srt_stream_key(resource);
         return ParsedStreamId { mode, stream_key };
     }
 
@@ -1048,11 +1061,7 @@ fn parse_srt_stream_id(streamid: &str) -> ParsedStreamId {
         (SrtConnectionMode::Publish, raw)
     };
 
-    let stream_key = strip_query(rest)
-        .rsplit('/')
-        .next()
-        .unwrap_or(rest)
-        .to_string();
+    let stream_key = normalize_srt_stream_key(rest);
     ParsedStreamId { mode, stream_key }
 }
 
@@ -1061,6 +1070,29 @@ const SRT_REJX_BAD_MODE: c_int = 1405;
 const SRT_REJX_ISE: c_int = 1500;
 
 unsafe extern "C" fn srt_listener_policy_callback(
+    opaq: *mut c_void,
+    ns: SRTSOCKET,
+    hsversion: c_int,
+    peeraddr: *const libc::sockaddr,
+    streamid: *const c_char,
+) -> c_int {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        srt_listener_policy_callback_inner(opaq, ns, hsversion, peeraddr, streamid)
+    }));
+
+    match result {
+        Ok(code) => code,
+        Err(_) => {
+            error!("[srt] listener policy callback panicked; rejecting connection");
+            unsafe {
+                srt_setrejectreason(ns, SRT_REJX_ISE);
+            }
+            -1
+        }
+    }
+}
+
+unsafe fn srt_listener_policy_callback_inner(
     opaq: *mut c_void,
     ns: SRTSOCKET,
     _hsversion: c_int,
@@ -1981,26 +2013,21 @@ impl SrtServer {
         // try_acquire_owned returns Err if the semaphore is exhausted; in that
         // case we reject the play connection gracefully rather than spawning a
         // thread that would push memory/VAS over the limit.
-        let permit = match self
-            .engine
-            .runtime
-            .sender_semaphore
-            .clone()
-            .try_acquire_owned()
-        {
-            Ok(p) => p,
-            Err(_) => {
-                warn!(
-                    "sender thread limit reached — rejecting play for {}",
-                    pipeline_id
-                );
-                // SAFETY: Valid socket, clean up on capacity rejection.
-                unsafe {
-                    srt_close(client_sock);
+        let permit =
+            match try_acquire_srt_sender_permit(self.engine.runtime.sender_semaphore.clone()) {
+                Ok(p) => p,
+                Err(_) => {
+                    warn!(
+                        "sender thread limit reached — rejecting play for {}",
+                        pipeline_id
+                    );
+                    // SAFETY: Valid socket, clean up on capacity rejection.
+                    unsafe {
+                        srt_close(client_sock);
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         let out_queue_send = out_queue.clone();
         let pid_log = pipeline_id.to_string();
         let out_queue_c = out_queue.clone();
@@ -2127,6 +2154,40 @@ mod tests {
             let parsed = parse_srt_stream_id(input);
             assert_eq!(parsed.mode, mode, "input={}", input);
             assert_eq!(parsed.stream_key, key, "input={}", input);
+        }
+    }
+
+    #[test]
+    fn srt_stream_ids_normalize_equivalent_publish_keys_before_registration() {
+        let cases = [
+            "publish:live/key01",
+            "publish:live%2Fkey01",
+            "publisher:live%2fkey01?latency=240000",
+            "#!::r=live/key01,m=publish,latency=240000",
+            "#!::r=live%2Fkey01,m=publish,latency=240000",
+        ];
+
+        for input in cases {
+            let parsed = parse_srt_stream_id(input);
+            assert_eq!(parsed.mode, SrtConnectionMode::Publish, "input={input}");
+            assert_eq!(parsed.stream_key, "key01", "input={input}");
+        }
+    }
+
+    #[test]
+    fn srt_stream_ids_normalize_equivalent_read_keys_before_auth() {
+        let cases = [
+            "read:live/key02",
+            "play:live%2Fkey02",
+            "subscriber:live%2fkey02?latency=240000",
+            "#!::r=live/key02,m=request",
+            "#!::r=live%2Fkey02,m=request",
+        ];
+
+        for input in cases {
+            let parsed = parse_srt_stream_id(input);
+            assert_eq!(parsed.mode, SrtConnectionMode::Read, "input={input}");
+            assert_eq!(parsed.stream_key, "key02", "input={input}");
         }
     }
 
@@ -2398,17 +2459,11 @@ mod tests {
         use std::sync::Arc;
         // Create a tiny semaphore (capacity 2) to simulate the cap.
         let sem = Arc::new(tokio::sync::Semaphore::new(2));
-        let _p1 = sem
-            .clone()
-            .try_acquire_owned()
-            .expect("first permit available");
-        let _p2 = sem
-            .clone()
-            .try_acquire_owned()
-            .expect("second permit available");
+        let _p1 = try_acquire_srt_sender_permit(sem.clone()).expect("first permit available");
+        let _p2 = try_acquire_srt_sender_permit(sem.clone()).expect("second permit available");
         // Third acquire must fail when semaphore is exhausted.
         assert!(
-            sem.clone().try_acquire_owned().is_err(),
+            try_acquire_srt_sender_permit(sem.clone()).is_err(),
             "semaphore must reject when exhausted"
         );
     }
@@ -2418,16 +2473,16 @@ mod tests {
         use std::sync::Arc;
         let sem = Arc::new(tokio::sync::Semaphore::new(1));
         {
-            let _p = sem.clone().try_acquire_owned().expect("permit available");
+            let _p = try_acquire_srt_sender_permit(sem.clone()).expect("permit available");
             // permit is held — semaphore exhausted.
             assert!(
-                sem.clone().try_acquire_owned().is_err(),
+                try_acquire_srt_sender_permit(sem.clone()).is_err(),
                 "should be exhausted"
             );
         }
         // After the permit is dropped, the slot must be returned.
         assert!(
-            sem.clone().try_acquire_owned().is_ok(),
+            try_acquire_srt_sender_permit(sem.clone()).is_ok(),
             "semaphore should release permit on drop"
         );
     }
@@ -3979,7 +4034,7 @@ pub async fn start_srt_egress(
     // Sender thread: reads MPEG-TS from out_queue, sends via SRT.
     // Wrapped in catch_unwind so a panic cannot crash the process (AGENTS.md).
     // Acquire a semaphore permit to cap concurrent SRT sender threads at 512.
-    let permit = match engine.sender_semaphore_handle().try_acquire_owned() {
+    let permit = match try_acquire_srt_sender_permit(engine.sender_semaphore_handle()) {
         Ok(p) => p,
         Err(_) => {
             error!(
