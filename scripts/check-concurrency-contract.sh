@@ -14,6 +14,7 @@ scripts/resource-limit cargo test health_endpoint_exposes_probe_and_egress_fault
 scripts/resource-limit cargo test output_status_and_health_preserve_recent_egress_failure_after_unregister --test api -- --nocapture
 scripts/resource-limit cargo test active_output_status_ignores_stale_retry_state_after_restart --test api -- --nocapture
 scripts/resource-limit cargo test active_output_status_matches_health_runtime_fields --test output_status_contract -- --nocapture
+scripts/resource-limit cargo test stalled_output_status_matches_health_runtime_fields --test output_status_contract -- --nocapture
 scripts/resource-limit cargo test health_endpoint_clears_recent_disconnect_details_after_reconnect --test api -- --nocapture
 scripts/resource-limit cargo test health_endpoint_surfaces_repeated_transient_disconnects_as_flapping --test api -- --nocapture
 scripts/resource-limit cargo test recovered_output_surfaces_flapping_after_repeated_sink_failures --test api -- --nocapture
@@ -46,6 +47,10 @@ RESTREAM_BIN=target/debug/restream \
 RESTREAM_BIN=target/debug/restream \
   WORK_DIR=test/artifacts/concurrency-fault-egress-retry \
   target/debug/test_harness fault-egress-retry
+
+RESTREAM_BIN=target/debug/restream \
+  WORK_DIR=test/artifacts/concurrency-fault-output-stall \
+  target/debug/test_harness fault-output-stall
 
 RESTREAM_BIN=target/debug/restream \
   WORK_DIR=test/artifacts/concurrency-recovery \

@@ -14,6 +14,8 @@ use std::sync::atomic::Ordering;
 use tokio::sync::{RwLock as TokioRwLock, broadcast};
 use tower::ServiceExt;
 
+const OUTPUT_STALE_MS: u64 = 10_000;
+
 async fn test_app_with_engine() -> (axum::Router, SqlitePool, Arc<MediaEngine>) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     db::setup_database_schema(&pool).await.unwrap();
@@ -194,4 +196,101 @@ async fn active_output_status_matches_health_runtime_fields() {
     assert_eq!(output["startedAt"], status["startedAt"]);
     assert_eq!(output["lastProgressAt"], status["lastProgressAt"]);
     assert_eq!(output["bitrateKbps"], status["bitrateKbps"]);
+}
+
+#[tokio::test]
+async fn stalled_output_status_matches_health_runtime_fields() {
+    let (app, _, engine) = test_app_with_engine().await;
+    let cookie = login(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            "/api/v1/pipelines",
+            &cookie,
+            Some(r#"{"name":"P","streamKey":"key01_6c71124cde80358ca7c13087"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let pipe = body_json(resp).await;
+    let pid = pipe["pipeline"]["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "POST",
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            &cookie,
+            Some(r#"{"name":"O","url":"rtmp://dest/live/k","encoding":"source"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let out = body_json(resp).await;
+    let oid = out["output"]["id"].as_str().unwrap().to_string();
+
+    engine
+        .try_register_ingest(&pid, "key01_6c71124cde80358ca7c13087", "rtmp")
+        .await
+        .expect("ingest registration should succeed");
+    engine
+        .register_egress(&oid, &pid, "rtmp://dest/live/k")
+        .await;
+    engine
+        .update_egress_target_addr(&oid, "203.0.113.10:1935".to_string())
+        .await;
+    engine.update_egress_phase(&oid, "sending").await;
+    {
+        let mut egresses = engine.egresses.active.write().await;
+        let active = egresses.get_mut(&oid).expect("active egress");
+        active.start_instant = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(OUTPUT_STALE_MS + 1))
+            .unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status = body_json(resp).await;
+    assert_eq!(status["status"], "stalled");
+    assert_eq!(status["rawStatus"], "running");
+    assert_eq!(status["phase"], "sending");
+    assert_eq!(status["targetAddr"], "203.0.113.10:1935");
+    assert_eq!(status["bytesOut"], 0);
+    assert_eq!(status["totalSize"], 0);
+    assert!(status["startedAt"].is_string());
+    assert!(status["lastProgressAt"].is_null());
+    assert!(status["bitrateKbps"].is_null());
+    assert!(status["lastError"].is_null());
+    assert!(status["failurePhase"].is_null());
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req("GET", "/api/v1/engine/health", &cookie, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = body_json(resp).await;
+    let output = &health["pipelines"][&pid]["outputs"][&oid];
+    assert_eq!(output["status"], "stalled");
+    assert_eq!(output["rawStatus"], "running");
+    assert_eq!(output["phase"], "sending");
+    assert_eq!(output["targetAddr"], "203.0.113.10:1935");
+    assert_eq!(output["bytesOut"], 0);
+    assert_eq!(output["totalSize"], 0);
+    assert_eq!(output["startedAt"], status["startedAt"]);
+    assert!(output["lastProgressAt"].is_null());
+    assert!(output["bitrateKbps"].is_null());
+    assert!(output["lastError"].is_null());
+    assert!(output["failurePhase"].is_null());
 }

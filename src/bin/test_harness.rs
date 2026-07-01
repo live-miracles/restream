@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -101,6 +102,7 @@ fn command_requires_port_namespace(command: &str) -> bool {
             | "correctness-hevc-rtmp"
             | "correctness-hevc-srt"
             | "fault-egress-retry"
+            | "fault-output-stall"
             | "fault-resilience"
             | "file-live-edge"
             | "recovery"
@@ -313,6 +315,7 @@ async fn run() -> Result<(), String> {
         "correctness-hevc-rtmp" => hevc_rtmp_egress_correctness().await,
         "correctness-hevc-srt" => hevc_srt_passthrough_correctness().await,
         "fault-egress-retry" => fault_egress_retry().await,
+        "fault-output-stall" => fault_output_stall().await,
         "fault-resilience" => fault_resilience().await,
         "file-live-edge" => file_live_edge().await,
         "recovery" => recovery().await,
@@ -327,7 +330,7 @@ async fn run() -> Result<(), String> {
               bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
               mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
               egress, correctness-hevc-rtmp, correctness-hevc-srt, \
-              fault-egress-retry, fault-resilience, file-live-edge, recovery, mixed-file-h264, resource-sweep, bitrate-sweep, \
+              fault-egress-retry, fault-output-stall, fault-resilience, file-live-edge, recovery, mixed-file-h264, resource-sweep, bitrate-sweep, \
               branch-matrix, or srt-crypto-matrix"
         )),
     };
@@ -929,6 +932,32 @@ struct GeneralizedSinkServer {
     reader_handles: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
+struct StalledRtmpSinkServer {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+    publish_accepted: Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn set_socket_recv_buffer(socket: &TcpStream, size: libc::c_int) -> Result<(), String> {
+    // SAFETY: `socket.as_raw_fd()` is a live socket descriptor for the duration
+    // of this call, and `size` points to initialized stack memory of the
+    // expected type for `SO_RCVBUF`.
+    let rc = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &size as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
 async fn start_generalized_sink_server(
     sink_port: u16,
     metrics: Arc<GeneralizedSinkMetrics>,
@@ -964,6 +993,143 @@ async fn start_generalized_sink_server(
         task,
         reader_handles,
     })
+}
+
+async fn handle_stalled_rtmp_sink_client(
+    mut socket: TcpStream,
+    publish_accepted: Arc<std::sync::atomic::AtomicBool>,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let _ = set_socket_recv_buffer(&socket, 4 * 1024);
+    let mut handshake = Handshake::new(PeerType::Server);
+    let mut buffer = vec![0u8; 8_192];
+    let remaining = loop {
+        let n = socket.read(&mut buffer).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("socket closed during handshake".to_string());
+        }
+        match handshake
+            .process_bytes(&buffer[..n])
+            .map_err(|e| format!("handshake: {e:?}"))?
+        {
+            HandshakeProcessResult::InProgress { response_bytes } => {
+                socket
+                    .write_all(&response_bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            HandshakeProcessResult::Completed {
+                response_bytes,
+                remaining_bytes,
+            } => {
+                socket
+                    .write_all(&response_bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                break remaining_bytes;
+            }
+        }
+    };
+
+    let (mut session, initial) =
+        ServerSession::new(ServerSessionConfig::new()).map_err(|e| format!("{e:?}"))?;
+    let mut pending = initial;
+    if !remaining.is_empty() {
+        pending.extend(
+            session
+                .handle_input(&remaining)
+                .map_err(|e| format!("{e:?}"))?,
+        );
+    }
+
+    loop {
+        while let Some(result) = pending.pop() {
+            match result {
+                ServerSessionResult::OutboundResponse(packet) => {
+                    socket
+                        .write_all(&packet.bytes)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                ServerSessionResult::RaisedEvent(event) => match event {
+                    ServerSessionEvent::ConnectionRequested { request_id, .. } => {
+                        let mut accepted = session
+                            .accept_request(request_id)
+                            .map_err(|e| format!("{e:?}"))?;
+                        pending.append(&mut accepted);
+                    }
+                    ServerSessionEvent::PublishStreamRequested { request_id, .. } => {
+                        let mut accepted = session
+                            .accept_request(request_id)
+                            .map_err(|e| format!("{e:?}"))?;
+                        publish_accepted.store(true, Ordering::Relaxed);
+                        pending.append(&mut accepted);
+                        while let Some(response) = pending.pop() {
+                            if let ServerSessionResult::OutboundResponse(packet) = response {
+                                socket
+                                    .write_all(&packet.bytes)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                            }
+                        }
+                        loop {
+                            tokio::select! {
+                                _ = cancel.cancelled() => return Ok(()),
+                                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        let n = socket.read(&mut buffer).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(());
+        }
+        pending = session
+            .handle_input(&buffer[..n])
+            .map_err(|e| format!("{e:?}"))?;
+    }
+}
+
+async fn start_stalled_rtmp_sink_server(sink_port: u16) -> Result<StalledRtmpSinkServer, String> {
+    let listener = TcpListener::bind(format!("127.0.0.1:{sink_port}"))
+        .await
+        .map_err(|e| format!("stall sink bind {sink_port}: {e}"))?;
+    let cancel = CancellationToken::new();
+    let cancel_inner = cancel.clone();
+    let publish_accepted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let publish_accepted_inner = publish_accepted.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    if let Ok((socket, _)) = result {
+                        let accepted = publish_accepted_inner.clone();
+                        let cancel_client = cancel_inner.clone();
+                        tokio::spawn(async move {
+                            let _ = handle_stalled_rtmp_sink_client(socket, accepted, cancel_client).await;
+                        });
+                    }
+                }
+                _ = cancel_inner.cancelled() => break,
+            }
+        }
+    });
+
+    Ok(StalledRtmpSinkServer {
+        cancel,
+        task,
+        publish_accepted,
+    })
+}
+
+fn stop_stalled_rtmp_sink_server(server: StalledRtmpSinkServer) {
+    server.cancel.cancel();
+    server.task.abort();
 }
 
 fn stop_generalized_sink_server(server: GeneralizedSinkServer) {
@@ -4924,6 +5090,67 @@ async fn wait_for_output_status_matches_health(
         if Instant::now() >= deadline {
             return Err(format!(
                 "{pipeline_id}/{output_id}: output status did not converge to a healthy runtime snapshot within {}s; last_status={} last_health={}",
+                timeout.as_secs(),
+                last_status,
+                last_health
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_output_stalled_status(
+    api: &RampApi,
+    pipeline_id: &str,
+    output_id: &str,
+    timeout: Duration,
+) -> Result<(Value, Value), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_status = Value::Null;
+    let mut last_health = Value::Null;
+
+    loop {
+        if let Ok(status) = api
+            .get_json(&format!(
+                "/api/v1/pipelines/{pipeline_id}/outputs/{output_id}/status"
+            ))
+            .await
+        {
+            last_status = status.clone();
+            if let Ok(health) = api.get_json("/api/v1/engine/health").await
+                && let Some(output) = health["pipelines"][pipeline_id]["outputs"]
+                    .as_object()
+                    .and_then(|outputs| outputs.get(output_id).cloned())
+            {
+                last_health = output.clone();
+                let stalled_visible = status["status"].as_str() == Some("stalled")
+                    && output["status"].as_str() == Some("stalled")
+                    && status["rawStatus"].as_str() == Some("running")
+                    && output["rawStatus"].as_str() == Some("running")
+                    && !status["retrying"].as_bool().unwrap_or(false)
+                    && !output["retrying"].as_bool().unwrap_or(false)
+                    && status["lastError"].is_null()
+                    && output["lastError"].is_null()
+                    && status["failurePhase"].is_null()
+                    && output["failurePhase"].is_null()
+                    && status["startedAt"].is_string()
+                    && output["startedAt"] == status["startedAt"]
+                    && output["targetAddr"] == status["targetAddr"]
+                    && output["totalSize"] == status["totalSize"];
+                let stale_age_visible = match status["lastProgressAgeMs"].as_u64() {
+                    Some(age_ms) => age_ms >= 10_000,
+                    None => status["lastProgressAt"].is_null(),
+                };
+                if stalled_visible && stale_age_visible {
+                    return Ok((status, output));
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{pipeline_id}/{output_id}: output status did not surface stalled state within {}s; last_status={} last_health={}",
                 timeout.as_secs(),
                 last_status,
                 last_health
@@ -10358,6 +10585,106 @@ async fn fault_srt_egress_sink_disappear(
     }))
 }
 
+async fn fault_rtmp_egress_sink_stalls(
+    api: &RampApi,
+    ports: &TestPorts,
+    fixture_h264: &Path,
+    sink_port: u16,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "fault-egress-rtmp-stall", "streamKey": "fault-egress-rtmp-stall"}),
+        )
+        .await?;
+    let pid = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            json!({
+                "name": "rtmp-stall-sink",
+                "url": format!("rtmp://127.0.0.1:{sink_port}/live/fault-egress-rtmp-stall-sink"),
+                "encoding": "source"
+            }),
+        )
+        .await?;
+    let oid = output["output"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let stall_server = start_stalled_rtmp_sink_server(sink_port).await?;
+    let mut pub_child = spawn_publisher(
+        fixture_h264,
+        &format!(
+            "rtmp://127.0.0.1:{}/live/fault-egress-rtmp-stall",
+            ports.rtmp
+        ),
+        "flv",
+        false,
+    )
+    .await?;
+    wait_for_api_input_live(api, &pid, timeout).await?;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+        json!({}),
+    )
+    .await?;
+
+    let accept_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < accept_deadline && !stall_server.publish_accepted.load(Ordering::Relaxed)
+    {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let accepted = stall_server.publish_accepted.load(Ordering::Relaxed);
+    let stalled_result =
+        wait_for_output_stalled_status(api, &pid, &oid, Duration::from_secs(20)).await;
+    let (status_snapshot, health_snapshot) = stalled_result
+        .as_ref()
+        .map(|(status, health)| (status.clone(), health.clone()))
+        .unwrap_or((Value::Null, Value::Null));
+    let passed = accepted && stalled_result.is_ok();
+
+    println!(
+        "[fault] RTMP egress sink stalls: {} (publishAccepted={} status={} phase={} targetAddr={} totalSize={} lastProgressAgeMs={})",
+        if passed { "PASS" } else { "FAIL" },
+        accepted,
+        status_snapshot["status"].as_str().unwrap_or("unknown"),
+        status_snapshot["phase"].as_str().unwrap_or("unknown"),
+        status_snapshot["targetAddr"].as_str().unwrap_or(""),
+        status_snapshot["totalSize"].as_u64().unwrap_or(0),
+        status_snapshot["lastProgressAgeMs"]
+            .as_u64()
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+    );
+
+    let _ = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs/{oid}/stop"),
+            json!({}),
+        )
+        .await;
+    stop_child(&mut pub_child).await;
+    stop_stalled_rtmp_sink_server(stall_server);
+
+    Ok(json!({
+        "test": "rtmp-egress-sink-stalls",
+        "passed": passed,
+        "publishAccepted": accepted,
+        "status": status_snapshot,
+        "healthOutput": health_snapshot,
+        "error": stalled_result.err(),
+    }))
+}
+
 async fn create_pipeline_with_stream_key(
     api: &RampApi,
     name: &str,
@@ -10464,6 +10791,48 @@ async fn fault_egress_retry() -> Result<Value, String> {
         return Err("fault-egress-retry: not all tests passed".to_string());
     }
     Ok(result)
+}
+
+async fn fault_output_stall() -> Result<Value, String> {
+    let work_dir = artifact_path("fault-output-stall");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+
+    let restream_bin = default_restream_bin();
+    let db_path = work_dir.join("data.sqlite");
+    let log_path = work_dir.join("restream.log");
+    let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
+    let ports = TestPorts::from_env();
+    let timeout = Duration::from_secs(15);
+
+    let mut child = start_restream_child(&restream_bin, &ports, &db_path, &log_path).await?;
+    let mut api = RampApi::new(ports.http);
+    api.login().await?;
+
+    let fixture_h264 = checked_h264_fixture()?;
+    let result =
+        fault_rtmp_egress_sink_stalls(&api, &ports, &fixture_h264, sink_port, timeout).await?;
+
+    stop_child(&mut child).await;
+
+    let passed = result["passed"].as_bool().unwrap_or(false);
+    let payload = json!({
+        "mode": "fault-output-stall",
+        "passed": passed,
+        "tests": [result],
+    });
+
+    let result_path = work_dir.join("fault-output-stall.json");
+    std::fs::write(
+        &result_path,
+        serde_json::to_string_pretty(&payload).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!("artifact={}", result_path.display());
+
+    if !passed {
+        return Err("fault-output-stall: not all tests passed".to_string());
+    }
+    Ok(payload)
 }
 
 async fn fault_rtmp_egress_retry_budget_exhausts_to_failed(
@@ -12781,10 +13150,15 @@ async fn fault_resilience() -> Result<Value, String> {
         fault_rtmp_egress_sink_disappear(&api, &ports, &fixture_h264, sink_port, timeout).await?,
     );
 
-    // ── 7. SRT egress sink disappears ───────────────────────────────────
+    // ── 7. RTMP egress sink stops draining and surfaces stalled ─────────
+    results.push(
+        fault_rtmp_egress_sink_stalls(&api, &ports, &fixture_h264, sink_port, timeout).await?,
+    );
+
+    // ── 8. SRT egress sink disappears ───────────────────────────────────
     results.push(fault_srt_egress_sink_disappear(&api, &ports, &fixture_h264, timeout).await?);
 
-    // ── 8. HLS preview tears down after ingest disappears ───────────────
+    // ── 9. HLS preview tears down after ingest disappears ───────────────
     {
         let pipeline = api
             .post_json(
@@ -13492,6 +13866,7 @@ mod tests {
     fn only_non_measurement_modes_parallelize_in_suite() {
         assert!(suite_mode_is_parallelizable("correctness-hevc-srt", false));
         assert!(suite_mode_is_parallelizable("fault-egress-retry", false));
+        assert!(suite_mode_is_parallelizable("fault-output-stall", false));
         assert!(suite_mode_is_parallelizable("fault-resilience", false));
         assert!(suite_mode_is_parallelizable("recovery", false));
         assert!(!suite_mode_is_parallelizable("bitrate-sweep", false));

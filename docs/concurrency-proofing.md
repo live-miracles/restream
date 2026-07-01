@@ -37,9 +37,12 @@ Use the narrowest proof that can actually catch the bug:
    - Use when the behavior crosses real sockets, child processes, FFmpeg, or
      OS-thread boundaries.
    - Current live contract slices: `fault-resilience`, `fault-egress-retry`,
-     and `recovery`.
+     `fault-output-stall`, and `recovery`.
      `fault-egress-retry` proves dead sinks surface `retrying` first and then
      settle to `failed` once the configured retry budget is exhausted.
+     `fault-output-stall` proves a connected RTMP sink that stops draining media
+     surfaces `stalled` in both output status and health instead of looking
+     healthy or failing immediately.
      `recovery` also covers hung HLS PUT destinations timing out, surfacing
      retry/error state, recovering after the sink restarts, rapid same-pipeline
      SRT publisher replacement races, and repeated RTMP and SRT downstream sink
@@ -89,10 +92,12 @@ bash ./scripts/check-concurrency-contract.sh
 
 The fast gate runs the loom targets, focused API tests, and harness unit tests.
 The full gate also builds the binaries and runs the live `fault-resilience`,
-`fault-egress-retry`, and `recovery` harness modes. `fault-egress-retry`
-owns the retry-budget exhaustion contract for dead sinks. `recovery` is the
-focused reconnect/grace/retry contract so we can target that behavior directly
-without depending on the broader teardown bucket.
+`fault-egress-retry`, `fault-output-stall`, and `recovery` harness modes.
+`fault-egress-retry` owns the retry-budget exhaustion contract for dead sinks.
+`fault-output-stall` owns the stalled-output contract for connected-but-not-
+draining RTMP sinks. `recovery` is the focused reconnect/grace/retry contract
+so we can target that behavior directly without depending on the broader
+teardown bucket.
 
 Both gates also carry explicit property/stress coverage for lifecycle
 permutations and thread-hop wakeups, rather than relying on the general
@@ -131,6 +136,7 @@ surface already covers it.
   - `output_status_and_health_preserve_recent_egress_failure_after_unregister`
 - `tests/output_status_contract.rs`
   - `active_output_status_matches_health_runtime_fields`
+  - `stalled_output_status_matches_health_runtime_fields`
 - `tests/ring_migration.rs`
   - `prop_no_loss_no_gap_no_duplication`
 - `src/media/engine.rs`
@@ -152,6 +158,7 @@ surface already covers it.
   - `epoll_waiter_coordination`
 - `src/bin/test_harness.rs`
   - `fault-egress-retry`
+  - `fault-output-stall`
   - `fault-resilience`
   - `recovery`
 

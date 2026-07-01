@@ -21,6 +21,9 @@ scripts/resource-limit cargo test \
   active_output_status_matches_health_runtime_fields \
   --test output_status_contract -- --nocapture
 scripts/resource-limit cargo test \
+  stalled_output_status_matches_health_runtime_fields \
+  --test output_status_contract -- --nocapture
+scripts/resource-limit cargo test \
   health_endpoint_clears_recent_disconnect_details_after_reconnect \
   --test api -- --nocapture
 scripts/resource-limit cargo test \
