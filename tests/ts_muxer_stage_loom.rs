@@ -9,13 +9,10 @@ mod loom_tests {
     use loom::thread;
 
     #[derive(Debug)]
-    struct FakeReader;
-
-    #[derive(Debug)]
     struct FakeStage {
         id: usize,
         cancelled: AtomicBool,
-        readers: Mutex<Vec<loom::sync::Weak<FakeReader>>>,
+        reader_count: AtomicUsize,
     }
 
     impl FakeStage {
@@ -23,7 +20,7 @@ mod loom_tests {
             Arc::new(Self {
                 id,
                 cancelled: AtomicBool::new(false),
-                readers: Mutex::new(Vec::new()),
+                reader_count: AtomicUsize::new(0),
             })
         }
 
@@ -31,20 +28,16 @@ mod loom_tests {
             Arc::new(Self {
                 id,
                 cancelled: AtomicBool::new(true),
-                readers: Mutex::new(Vec::new()),
+                reader_count: AtomicUsize::new(0),
             })
         }
 
-        fn register_reader(self: &Arc<Self>) -> Arc<FakeReader> {
-            let reader = Arc::new(FakeReader);
-            self.readers.lock().unwrap().push(Arc::downgrade(&reader));
-            reader
+        fn register_reader(&self) {
+            self.reader_count.fetch_add(1, Ordering::AcqRel);
         }
 
         fn has_readers(&self) -> bool {
-            let mut readers = self.readers.lock().unwrap();
-            readers.retain(|reader| reader.upgrade().is_some());
-            !readers.is_empty()
+            self.reader_count.load(Ordering::Acquire) > 0
         }
     }
 
@@ -154,7 +147,7 @@ mod loom_tests {
             let reader = thread::spawn(move || reader_stage.register_reader());
 
             sweep.join().unwrap();
-            let active_reader = reader.join().unwrap();
+            reader.join().unwrap();
 
             match registry.slot.lock().unwrap().as_ref() {
                 Some(current) => {
@@ -167,8 +160,6 @@ mod loom_tests {
                     assert!(stage.has_readers());
                 }
             }
-
-            drop(active_reader);
         });
     }
 }
