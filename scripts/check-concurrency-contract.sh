@@ -8,11 +8,57 @@ source "$ROOT_DIR/scripts/concurrency-proof-common.sh"
 LOG_DIR="$ROOT_DIR/test/artifacts/concurrency-contract-logs"
 mkdir -p "$LOG_DIR"
 
+if [[ -z "${RESTREAM_BUILD_LOCK_FILE:-}" ]]; then
+  export RESTREAM_BUILD_LOCK_FILE="/tmp/restream-build.lock"
+fi
+
+check_process_lifecycle_guards() {
+  local harness="src/bin/test_harness.rs"
+
+  awk '
+    /kill_on_drop\(true\)/ { armed=1 }
+    /\.spawn\(\)/ {
+      if (!armed) {
+        printf "process lifecycle guard failed: spawn without preceding kill_on_drop(true) near %s:%d\n", FILENAME, NR > "/dev/stderr"
+        failed=1
+      }
+      armed=0
+    }
+    END { exit failed ? 1 : 0 }
+  ' "$harness"
+  grep -q 'async fn kill_and_wait_child' "$harness" || {
+    echo "process lifecycle guard failed: missing kill_and_wait_child helper in $harness" >&2
+    return 1
+  }
+  grep -q 'RESTREAM_BUILD_LOCK_FILE' scripts/resource-limit || {
+    echo "process lifecycle guard failed: scripts/resource-limit must honor RESTREAM_BUILD_LOCK_FILE" >&2
+    return 1
+  }
+}
+
 cleanup_runtime() {
   pkill -x restream >/dev/null 2>&1 || true
   pkill -x mediamtx >/dev/null 2>&1 || true
   pkill -x ffmpeg >/dev/null 2>&1 || true
+  pkill -x ffprobe >/dev/null 2>&1 || true
   pkill -x test_harness >/dev/null 2>&1 || true
+}
+
+assert_no_runtime_processes() {
+  local label="$1"
+  local survivors
+
+  for _ in {1..10}; do
+    survivors=$(pgrep -a 'restream|mediamtx|ffmpeg|ffprobe|test_harness' || true)
+    [[ -z "$survivors" ]] && return 0
+    sleep 0.5
+  done
+
+  if [[ -n "$survivors" ]]; then
+    echo "runtime cleanup guard failed after $label:" >&2
+    echo "$survivors" >&2
+    return 1
+  fi
 }
 
 run_logged() {
@@ -36,14 +82,18 @@ run_harness_mode() {
     WORK_DIR="$work_dir" \
     target/debug/test_harness "$mode" >"$log_file" 2>&1; then
     cat "$log_file"
+    cleanup_runtime
+    assert_no_runtime_processes "$mode failure cleanup"
     return 1
   fi
   cleanup_runtime
+  assert_no_runtime_processes "$mode"
 }
 
 trap cleanup_runtime EXIT
 
 run_logged history-grouping bash scripts/check-history-grouping.sh
+run_logged process-lifecycle-guards check_process_lifecycle_guards
 
 run_common_concurrency_checks run_logged
 run_logged build-harness-bins scripts/resource-limit cargo build --bin restream --bin test_harness

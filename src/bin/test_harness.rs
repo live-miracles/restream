@@ -17,7 +17,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -15967,9 +15967,41 @@ async fn fault_resilience() -> Result<Value, String> {
     Ok(result)
 }
 
+const CHILD_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn kill_and_wait_child(child: &mut Child, label: &str) -> Result<ExitStatus, String> {
+    let pid = child
+        .id()
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| format!("{label} pid {pid}: failed to check child status before kill: {e}"))?
+    {
+        return Ok(status);
+    }
+
+    if let Err(error) = child.start_kill() {
+        if let Some(status) = child.try_wait().map_err(|e| {
+            format!("{label} pid {pid}: failed to check child status after kill error: {e}")
+        })? {
+            return Ok(status);
+        }
+        return Err(format!("{label} pid {pid}: failed to send kill: {error}"));
+    }
+
+    tokio::time::timeout(CHILD_TERMINATION_TIMEOUT, child.wait())
+        .await
+        .map_err(|_| {
+            format!("{label} pid {pid}: timed out waiting for child exit after kill signal")
+        })?
+        .map_err(|e| format!("{label} pid {pid}: failed to wait after kill: {e}"))
+}
+
 async fn stop_child(child: &mut Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    if let Err(error) = kill_and_wait_child(child, "harness child").await {
+        eprintln!("test harness cleanup warning: {error}");
+    }
 }
 
 fn suite_mode_is_parallelizable(mode: &str, preflight_only: bool) -> bool {
@@ -16727,6 +16759,40 @@ stream|index=1|codec_type=audio\n";
    0: 0100007F:078F 0100007F:9C40 01 00000000:00000000 00:00000000 00000000   100        0 1 1 0000000000000000 100 0 0 10 0\n";
 
         assert!(!proc_net_has_listening_port(table, 1935));
+    }
+
+    #[test]
+    fn kill_and_wait_child_terminates_spawned_process() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime");
+
+        runtime.block_on(async {
+            let mut child = Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn long-running child process");
+
+            let started = Instant::now();
+            let status = kill_and_wait_child(&mut child, "unit-test child")
+                .await
+                .expect("kill_and_wait_child should terminate child");
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "kill_and_wait_child should terminate quickly, elapsed {elapsed:?}"
+            );
+            assert!(
+                !status.success(),
+                "killed process should not report a success exit status"
+            );
+        });
     }
 
     #[test]
