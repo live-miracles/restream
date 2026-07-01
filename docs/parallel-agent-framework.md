@@ -90,6 +90,11 @@ Use:
 - `.agent-state/` for local notes such as port reservations or claimed files
 
 The key rule is simple: no two agents share a `WORK_DIR` or `WORK_ROOT`.
+When the worktree is no longer needed, the owning agent should remove it with:
+
+```sh
+scripts/agent-worktree.sh --cleanup <id>
+```
 
 ## Framework Rules
 
@@ -526,6 +531,7 @@ Status: implemented.
 Responsibilities:
 
 - create `worktrees/<id>`
+- remove `worktrees/<id>` when the task is complete
 - create branch `codex/<id>`
 - initialize `.agent-state/`
 - seed the new worktree from a warm source tree by copying a pruned high-value

@@ -51,6 +51,7 @@ cargo fmt --all
 # Parallel agent worktree setup
 scripts/agent-worktree.sh <id>
 source worktrees/<id>/.agent-state/setup.env
+scripts/agent-worktree.sh --cleanup <id>   # when the worktree is no longer needed
 
 # Frontend
 npx tsc -p tsconfig.json
@@ -93,6 +94,9 @@ pkill -x restream; pkill -x mediamtx; pkill -x ffmpeg
 
 - Use one worktree per agent/task. Prefer `scripts/agent-worktree.sh <id>` so
   cache and artifact layout stay consistent.
+- When the task is complete and the worktree is no longer needed, run
+  `scripts/agent-worktree.sh --cleanup <id>`. Use `--force-cleanup` only for a
+  dirty or locked disposable worktree you explicitly want to discard.
 - Treat `target/`, `.cargo/`, and `node_modules/` as copied seed caches owned
   by the destination worktree after setup. The default target warmup is a
   pruned debug subset, not a full `target/` clone. Do not point multiple

@@ -12,6 +12,8 @@ BRANCH_NAME=""
 BASE_REF="HEAD"
 SOURCE_TREE="$SCRIPT_ROOT"
 DRY_RUN=0
+DO_CLEANUP=0
+FORCE_CLEANUP=0
 SEED_TARGET=1
 SEED_CARGO=1
 SEED_NODE=1
@@ -48,7 +50,8 @@ usage() {
     cat <<'EOF'
 Usage: scripts/agent-worktree.sh [options] <id>
 
-Create or refresh an agent worktree with warm caches and shared static outputs.
+Create, refresh, or clean up an agent worktree with warm caches and shared
+static outputs.
 
 Defaults:
   - new worktree path: <repo-common-root>/worktrees/<id>
@@ -60,6 +63,8 @@ Defaults:
   - share .build/static and public/bin from the source tree when present
 
 Options:
+  --cleanup                remove the worktree for <id> instead of creating/updating it
+  --force-cleanup          force cleanup even if the worktree is dirty or locked
   --path <path>            override the destination worktree path
   --branch <name>          override the branch name (default: codex/<id>)
   --base <rev>             base revision for a new branch (default: HEAD)
@@ -74,6 +79,7 @@ Options:
   -h, --help               show this help
 
 Notes:
+  - Cleanup removes the worktree checkout. It does not delete the git branch.
   - Static sharing is meant for tasks that do not modify the native/static
     build layer. Disable it with --no-share-static when working on that layer.
   - The default target warmup copies only high-value debug artifacts:
@@ -135,6 +141,27 @@ resolve_common_repo_root() {
         common_dir="$(cd "$source_root/$common_dir" && pwd -P)"
     fi
     dirname "$common_dir"
+}
+
+cleanup_worktree() {
+    local source_tree="$1"
+    local worktree_path="$2"
+    local force_cleanup="$3"
+    local args=(worktree remove)
+
+    if [[ ! -d "$worktree_path" && ! -L "$worktree_path" ]]; then
+        die "cleanup target does not exist: $worktree_path"
+    fi
+
+    if ((force_cleanup)); then
+        args+=(-f)
+    fi
+    args+=("$worktree_path")
+
+    info "cleanup worktree: $worktree_path"
+    run_cmd git -C "$source_tree" "${args[@]}"
+    info "cleanup stale worktree metadata"
+    run_cmd git -C "$source_tree" worktree prune
 }
 
 sync_tree() {
@@ -438,6 +465,7 @@ RESTREAM_BUILD_LOCK_FILE="$DEFAULT_LOCK_FILE"
 AGENT_SHARED_STATIC_ROOT="$shared_static_root"
 AGENT_TARGET_CACHE_MODE="$target_cache_mode"
 AGENT_TARGET_CACHE_WITH_INCREMENTAL="$target_incremental"
+AGENT_WORKTREE_CLEANUP_COMMAND="scripts/agent-worktree.sh --cleanup $worktree_id"
 EOF
 
     cat >"$agent_state_dir/README.txt" <<EOF
@@ -451,11 +479,22 @@ Useful defaults:
 Live harness examples:
   WORK_DIR="$work_root/mixed-anchor" target/debug/test_harness mixed-anchor
   WORK_ROOT="$work_root/suite" cargo run --bin test_harness -- suite --work-root "$work_root/suite"
+
+Cleanup when finished:
+  scripts/agent-worktree.sh --cleanup "$worktree_id"
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --cleanup)
+            DO_CLEANUP=1
+            shift
+            ;;
+        --force-cleanup)
+            FORCE_CLEANUP=1
+            shift
+            ;;
         --path)
             [[ $# -ge 2 ]] || die "--path requires a value"
             WORKTREE_PATH="$2"
@@ -555,6 +594,16 @@ info "worktree id: $WORKTREE_ID"
 info "destination: $WORKTREE_PATH"
 info "branch: $BRANCH_NAME"
 
+if ((DO_CLEANUP)); then
+    cleanup_worktree "$SOURCE_TREE" "$WORKTREE_PATH" "$FORCE_CLEANUP"
+    cat <<EOF
+agent-worktree: cleanup complete
+  worktree: $WORKTREE_PATH
+  branch kept: $BRANCH_NAME
+EOF
+    exit 0
+fi
+
 WORKTREE_EXISTS=0
 if [[ -e "$WORKTREE_PATH" ]]; then
     if git -C "$WORKTREE_PATH" rev-parse --show-toplevel >/dev/null 2>&1; then
@@ -622,4 +671,5 @@ agent-worktree: ready
   source: $SOURCE_TREE
   work root: $WORK_ROOT_DEFAULT
   lock env: RESTREAM_BUILD_LOCK_FILE=$DEFAULT_LOCK_FILE
+  cleanup: scripts/agent-worktree.sh --cleanup $WORKTREE_ID
 EOF
