@@ -127,7 +127,7 @@ For the broader testing story, use [Testing](testing.md). The short version:
 
 ```sh
 scripts/resource-limit cargo test
-scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/bench/test_harness mixed-h264-srt-single
 ```
 
 Prefer scoped tests first, then broaden when the change crosses module or

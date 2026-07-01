@@ -161,8 +161,8 @@ opaque blocker.
 | 1. Changed behavior | Fastest proof for the exact code path touched by a change. | `cargo test --lib <filter>`, `cargo test --test api <filter>` |
 | 2. Contract slice | Neighboring API, graph, stage, protocol, or lifecycle contracts that consume the changed behavior. | Filtered package/integration tests by module, endpoint, protocol, or stage kind |
 | 3. Hot-path cost | Criterion group that measures the touched hot path only. | `cargo bench --bench <bench> -- <criterion-filter>` |
-| 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `target/debug/test_harness mixed-anchor` |
-| 5. Scale/degradation slice | A bounded load, ramp, restart, queue-pressure, or bonding slice for resource shape. | `N_OUTPUTS=<small>` ramp, `N_PER_GROUP=<small>` mixed-scale, `bonding` |
+| 4. Live protocol slice | One live protocol/topology check with minimal fanout and targeted assertions. | `target/bench/test_harness mixed-h264-srt-single` |
+| 5. Scale/degradation slice | A bounded load, ramp, restart, queue-pressure, or bonding slice for resource shape. | `N_OUTPUTS=<small>` ramp, `N_PER_GROUP=<small>` mixed-input-matrix, `bonding` |
 | 6. Full confidence gate | Release or milestone pass assembled from the relevant stages above. | Full `cargo test`, selected full benches, full integration modes |
 
 When a suite grows too large, split it along composable axes instead of adding
@@ -269,12 +269,12 @@ live integration tests (`src/bin/test_harness.rs`). As of June 27, 2026 all
 
 | Method | Route | Unit | Live | Notes |
 |---|---|:---:|:---:|---|
-| `GET` | `/api/v1/pipelines/:id/probe` | — | ✓ | mixed-scale, correctness-* |
+| `GET` | `/api/v1/pipelines/:id/probe` | — | ✓ | mixed-input, correctness-* |
 | `GET` | `/api/v1/pipelines/:id/graph` | ✓ | ✓ | |
 | `GET` | `/api/v1/pipelines/:id/alerts` | ✓ | — | auth + response shape |
 | `GET` | `/api/v1/pipelines/:id/diagnostics` | ~ | — | SSE; precondition only |
-| `POST` | `/api/v1/pipelines/:id/recording/start` | — | ✓ | mixed-anchor |
-| `POST` | `/api/v1/pipelines/:id/recording/stop` | — | ✓ | mixed-anchor |
+| `POST` | `/api/v1/pipelines/:id/recording/start` | — | ✓ | mixed-h264-srt-single |
+| `POST` | `/api/v1/pipelines/:id/recording/stop` | — | ✓ | mixed-h264-srt-single |
 
 **Encodings**
 
@@ -436,11 +436,11 @@ Common runner flags:
 | `--preflight` | Check binary, dependencies, namespace support, and host-mode port conflicts without starting the test. |
 | `--fast` | Set `N_PER_GROUP=1`, `N_OUTPUTS=1`, `SNAP_EVERY=999`, and skip snapshot sleeps for quick agent loops. |
 | `--json <path>` | Write JSONL assertion records alongside the human-readable log. Failed ffprobe assertions include stderr and log tails. |
-| `--only <checks>` | Run selected `mixed-scale` assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `lifecycle`, `tc-spawns`, `load`. |
+| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `lifecycle`, `tc-spawns`, `load`. |
 | `--skip-load` | Skip resource snapshot sleeps and load assertion records while preserving correctness setup. |
 | `--resume-from <id>` | Skip named assertion records until the requested assertion ID is reached. |
-| `--baseline <path>` | Compare `mixed-scale` RSS summary against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
-| `--save-baseline <path>` | Save the current `mixed-scale` RSS summary as a baseline CSV. |
+| `RSS_BASELINE=<path>` | Compare mixed-input RSS summaries against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
+| `SAVE_RSS_BASELINE=<path>` | Save the current mixed-input RSS summary as a baseline CSV. |
 
 The runner kills only processes it starts. Set `ALLOW_GLOBAL_PROCESS_CLEANUP=1`
 only when you explicitly want the legacy host-wide `restream`/`mediamtx`
@@ -475,7 +475,7 @@ Typical quick agent loop:
 
 ```sh
 scripts/resource-limit target/debug/test_harness preflight
-scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/bench/test_harness mixed-h264-srt-single
 ```
 
 ### Manual Dashboard Live Env
@@ -539,27 +539,39 @@ default, all eight ramp configs are delegated to
 legacy all-bash ramp path while bisecting harness behavior, or set
 `RAMP_FAMILY_CONFIGS` to hand a subset back to bash for focused comparisons.
 
-### `mixed-scale` — Concurrent group load
+### `mixed-input-matrix` — Mixed input/output correctness
 
 ```sh
-N_PER_GROUP=25 scripts/resource-limit target/debug/test_harness mixed-scale
+./scripts/build-bench-harness.sh
+N_PER_GROUP=2 ONLY_CHECKS=hls scripts/resource-limit target/bench/test_harness mixed-input-matrix
 ```
 
-Exercises five ingest configurations covering every codec/protocol/audio-track
-combination used in production. Each config fans out to `4×N_PER_GROUP` outputs
-added group-by-group (all RTMP-src, then all RTMP-720p, then all SRT-src, then
-all SRT-720p):
+Exercises the table-driven input matrix. Names follow
+`mixed-<codec>-<protocol>-<single|multi>` for live inputs and
+`mixed-file-<codec>-<single|multi>` for file ingest. RTMP ingest intentionally
+has only one row because standard RTMP input is H.264 with a single audio track;
+there is no `h265-rtmp-*` or `*-rtmp-multi` input case unless the product
+contract changes.
 
 | Config | Ingest | Codec | Audio | Role |
 |---|---|---|:---:|---|
-| `h264-rtmp` | RTMP | H.264 | 1 | RTMP/FLV ingest baseline |
-| `h264-srt` | SRT | H.264 | 1 | **anchor**: HLS + smoke + fatal ffprobe + stop lifecycle |
-| `h265-srt` | SRT | H.265 | 1 | TC_SPAWNS=1 assertion |
+| `file-h264-single` | file | H.264 | 1 | file-ingest H.264 baseline |
+| `file-h265-single` | file | H.265 | 1 | file-ingest HEVC baseline |
+| `file-h264-multi` | file | H.264 | 2 | file-ingest multi-audio routing |
+| `file-h265-multi` | file | H.265 | 2 | file-ingest HEVC + multi-audio routing |
+| `h264-rtmp-single` | RTMP | H.264 | 1 | RTMP/FLV ingest baseline |
+| `h264-srt-single` | SRT | H.264 | 1 | HLS + smoke + fatal ffprobe + stop lifecycle |
+| `h265-srt-single` | SRT | H.265 | 1 | HEVC bridge and stage-sharing assertion |
 | `h264-srt-multi` | SRT | H.264 | 2 | multi-audio track routing |
 | `h265-srt-multi` | SRT | H.265 | 2 | HEVC + multi-audio |
 
-**Anchor config (`h264-srt`)** runs three merged correctness checks in addition
-to the resource measurements:
+Each row can be run directly as `target/bench/test_harness mixed-<row>`, for
+example `target/bench/test_harness mixed-h265-srt-multi`. The aggregate
+`mixed-input-matrix` runs every row sequentially under its own work directory so
+artifacts and HLS segments from one case cannot contaminate another.
+
+**H.264 SRT single (`h264-srt-single`)** runs three merged correctness checks in
+addition to the resource measurements:
 
 1. **Smoke** — after source outputs are live, asserts no external transcoder has
    fired (source passthrough must not trigger the 720p encoder).
@@ -569,7 +581,7 @@ to the resource measurements:
 3. **Stop lifecycle** — calls `/stop` on every output and polls `/api/v1/settings` until
    all reach `"stopped"` within 60 s.
 
-**h265-srt** asserts `1 ≤ TC_SPAWNS ≤ ext_ffmpeg# + 1`: the number of shared
+**h265-srt-single** asserts `1 ≤ TC_SPAWNS ≤ ext_ffmpeg# + 1`: the number of shared
 internal h264-tc transcoders must be bounded by the number of distinct consumer
 paths (one for RTMP source outputs, one feeding each external ffmpeg for 720p),
 not proportional to N. With both source and 720p output groups this bound is 2
@@ -581,32 +593,23 @@ Expected resource counts (see
 
 | Config | `ext_ffmpeg#` | `TC_SPAWNS` bound |
 |---|:---:|:---:|
-| `h264-rtmp` | 1 | N/A |
-| `h264-srt` | 1 | N/A (H.264 ingest, no h264-tc needed) |
-| `h265-srt` | 1 | ≤ 2 (1 source path + 1 720p path) |
+| `h264-rtmp-single` | 1 | N/A |
+| `h264-srt-single` | 1 | N/A (H.264 ingest, no h264-tc needed) |
+| `h265-srt-single` | 1 | ≤ 2 (1 source path + 1 720p path) |
 | `h264-srt-multi` | 1 | N/A |
 | `h265-srt-multi` | 1 | N/A |
 
 Env: `N_PER_GROUP` (default 25).
 
-The `mixed-scale` configs are now Rust-owned by default through
-`test_harness` entry points while the shell wrapper keeps the public CLI,
-manifest, CSV, summary, and JSONL assertion layout intact. The multi-audio
-Rust slices preserve the two-audio SRT publisher, RTMP `720p+atrack:0`, and SRT
-`720p+atrack:0,1` route encodings.
+The mixed input configs are Rust-owned through `test_harness` entry points and
+preserve the manifest, CSV, summary, and JSONL assertion layout. The multi-audio
+rows preserve the two-audio SRT/file fixture, RTMP selected-audio egresses, and
+SRT all-tracks plus selected-track egresses.
 
-The wrapper no longer sets `FFMPEG_BIN_PATH` for Rust-owned mixed-scale slices
-by default, so the production `restream` child uses the embedded standalone
-`public/bin/ffmpeg`. Set `FFMPEG_BIN_PATH=/usr/bin/ffmpeg` explicitly only for
-streaming-logic diagnosis against the system binary. When using the embedded
-path, the wrapper fails early if `RESTREAM_BIN` is older than
-`public/bin/ffmpeg`, because the binary embeds those asset bytes at build time.
-The mixed-scale manifest also includes `mixedScaleLogs`, a JSON index of the
-per-slice harness and restream logs.
-
-The five mixed-scale slices are intentionally non-redundant: `h264-rtmp`,
-`h264-srt`, `h265-srt`, `h264-srt-multi`, and `h265-srt-multi`. All selected
-`ffprobe` checks now emit fatal JSONL assertions and honor `--resume-from`.
+Set `FFMPEG_BIN_PATH=/usr/bin/ffmpeg` explicitly only for streaming-logic
+diagnosis against the system binary. Normal runs use the embedded standalone
+`public/bin/ffmpeg` through the production `restream` child. All selected
+`ffprobe` checks emit fatal JSONL assertions and honor `RESUME_FROM`.
 
 ### `resource-sweep` — CPU and memory attribution sweep
 
@@ -765,10 +768,10 @@ For real multi-NIC or dual-WAN validation, remember that upstream SRT also
 recommends `ENABLE_PKTINFO=ON`; otherwise a wildcard listener may reply from
 the wrong source IP and make a healthy bonding implementation look broken.
 
-### `mixed-anchor` — Closed-GOP probe bundle
+### `mixed-h264-srt-single` — Closed-GOP probe bundle
 
 ```sh
-scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/bench/test_harness mixed-h264-srt-single
 ```
 
 Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
@@ -779,9 +782,9 @@ readers do not report positive `burstCount` and `avgBurstSize` telemetry.
 Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
 space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"`).
 
-The public shell mode is now a thin artifact/summary wrapper around
-`cargo run --bin test_harness -- mixed-anchor`; the matrix publishers, burst
-graph assertions, and HLS PUT probe checks are implemented in Rust.
+The former anchor checks now live in the normalized `mixed-h264-srt-single`
+table row; the matrix publishers, burst graph assertions, and HLS PUT probe
+checks are implemented in Rust.
 
 ### HLS PUT probe
 
@@ -795,7 +798,7 @@ dummy sink and requires fresh segment PUTs after recovery for both shapes.
 Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
 `HLS_PUT_RESTART_SECS` (default 12).
 
-The HLS PUT probe now runs as part of `mixed-anchor` and validates dummy PUT
+The HLS PUT probe runs as part of `mixed-h264-srt-single` and validates dummy PUT
 sink delivery, signed-query preservation, ffprobe readability, and restart
 recovery behavior.
 
@@ -994,7 +997,7 @@ Currently checked in:
 
 ```text
 scripts/resource-limit target/debug/test_harness ramp-family
-scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/bench/test_harness mixed-h264-srt-single
 scripts/resource-limit target/debug/test_harness bonding
 scripts/resource-limit target/debug/test_harness bframe-rtmp
 scripts/resource-limit target/debug/test_harness correctness-srt-rtmp
@@ -1018,7 +1021,7 @@ in its own subdirectory, and records one JSONL result per mode in
 
 - `--run-id <id>` to choose the artifact run id
 - `--work-root <path>` to choose the aggregate artifact directory
-- `--only-modes mixed-anchor,bframe-rtmp` to run a subset
+- `--only-modes mixed-h264-srt-single,bframe-rtmp` to run a subset
 - `--preflight-only` to run readiness checks without starting live services
 - `--continue-on-fail` to keep collecting artifacts after the first failure
 
@@ -1037,11 +1040,10 @@ Why the aggregate runner lives in `test_harness` instead of a separate
   aggregate orchestration logic is already implemented in `test_harness`, so
   the extra wrapper only adds another compatibility surface to maintain.
 
-`mixed-anchor`, `bframe-rtmp`, `correctness-srt-rtmp`,
+`mixed-h264-srt-single`, `bframe-rtmp`, `correctness-srt-rtmp`,
 `correctness-hevc-rtmp`, and `correctness-hevc-srt` are behind typed Rust
 harness entry points, and `ramp-family` runs the full eight-config ramp matrix.
-`mixed-anchor` delegates its probe bundle to Rust and leaves the shell layer
-only for per-mode compatibility launching.
+`mixed-h264-srt-single` owns the former anchor probe bundle.
 
 `test_harness` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
@@ -1080,7 +1082,7 @@ These capabilities must be treated as test results, not assumptions:
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Embedded FFmpeg subprocess feature set | `scripts/build-static.sh` runs `restream-ffmpeg-capabilities` to prove the required codecs, `file`/`pipe` protocols, and `mov`/`matroska`/`mpegts` mux/demux surface are present |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and the `mixed-anchor` HLS PUT probe |
+| HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and the `mixed-h264-srt-single` HLS PUT probe |
 | Recording | Readable file with correct streams/timestamps |
 | Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
 | Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |

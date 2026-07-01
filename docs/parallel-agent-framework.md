@@ -279,7 +279,7 @@ docker run --rm \
   -v "$PWD":/workspace \
   -w /workspace \
   restream/dev \
-  bash -lc 'WORK_DIR=test/artifacts/agents/run-1/mixed-anchor target/debug/test_harness mixed-anchor'
+  bash -lc 'WORK_DIR=test/artifacts/agents/run-1/mixed-h264-srt-single target/bench/test_harness mixed-h264-srt-single'
 ```
 
 Why `--network none` works well here:
@@ -307,14 +307,14 @@ When Docker is not available, rely on the current repo behavior:
 Native fallback command shape:
 
 ```sh
-scripts/resource-limit target/debug/test_harness mixed-anchor
+scripts/resource-limit target/bench/test_harness mixed-h264-srt-single
 ```
 
 or:
 
 ```sh
-WORK_DIR=test/artifacts/agents/run-1/mixed-anchor \
-target/debug/test_harness mixed-anchor
+WORK_DIR=test/artifacts/agents/run-1/mixed-h264-srt-single \
+target/bench/test_harness mixed-h264-srt-single
 ```
 
 ## 4. Measurement Isolation: Never Parallelize Bench-Like Runs
@@ -324,11 +324,12 @@ The repo already encodes this rule and the framework should keep it strict.
 These modes stay serial:
 
 - `ramp-family`
-- `mixed-h264-rtmp`
-- `mixed-anchor`
-- `mixed-h265-srt`
+- `mixed-h264-rtmp-single`
+- `mixed-h264-srt-single`
+- `mixed-h265-srt-single`
 - `mixed-h264-srt-multi`
 - `mixed-h265-srt-multi`
+- `mixed-input-matrix`
 - `resource-sweep`
 - `bitrate-sweep`
 - `branch-matrix`
@@ -498,7 +499,7 @@ docker run --rm \
   -v "$PWD":/workspace \
   -w /workspace \
   restream/dev \
-  bash -lc 'WORK_DIR=test/artifacts/agents/run-mixed-anchor target/debug/test_harness mixed-anchor'
+  bash -lc 'WORK_DIR=test/artifacts/agents/run-mixed-h264-srt-single target/bench/test_harness mixed-h264-srt-single'
 ```
 
 ## Correctness live harness with native netns fallback

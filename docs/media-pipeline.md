@@ -235,14 +235,20 @@ borrowed payload slice is returned directly (zero copy).
 
 ## Scale Test Pipeline Paths
 
-`scripts/resource-limit target/debug/test_harness mixed-anchor` exercises the closed-GOP ingest matrix,
-while `mixed-h264-rtmp`, `mixed-h265-srt`, `mixed-h264-srt-multi`, and
-`mixed-h265-srt-multi` cover the remaining ingest configurations.
-fanned out to N RTMP-src + N RTMP-720p + N SRT-src + N SRT-720p outputs.
-The traces below show the exact mux/demux, conversion, and transcoding at
-every hop for each path.
+`scripts/resource-limit target/bench/test_harness mixed-input-matrix` exercises
+the closed-GOP input matrix. Individual rows use
+`mixed-<codec>-<protocol>-<single|multi>` for live inputs and
+`mixed-file-<codec>-<single|multi>` for file ingest. RTMP input is intentionally
+limited to `mixed-h264-rtmp-single`, because standard RTMP ingest carries H.264
+with one audio track in the current product contract. SRT and file ingest cover
+both H.264/H.265 and single/multi-track fixtures.
 
-### h264-rtmp — H.264 RTMP ingest
+Each live row fans out to N RTMP-src + N RTMP-720p + N SRT-src + N SRT-720p
+outputs unless the row's fixture-specific assertions add extra selected-track
+outputs. The traces below show the exact mux/demux, conversion, and transcoding
+at every hop for each path.
+
+### h264-rtmp-single — H.264 RTMP ingest
 
 ```
 RTMP ingest (TCP)
@@ -267,7 +273,7 @@ source outputs
 
 ---
 
-### h264-srt — H.264 SRT ingest
+### h264-srt-single — H.264 SRT ingest
 
 ```
 SRT ingest (UDP)
@@ -289,14 +295,14 @@ source outputs
 
 **Stages spawned:** 1 ext FFmpeg subprocess (`video:720p`).
 
-Key difference from h264-rtmp: `source_ring` holds `Raw` packets.
+Key difference from h264-rtmp-single: `source_ring` holds `Raw` packets.
 RTMP-src must reconstruct AVCC/FLV headers (`build_avcc_seq_hdr + video_for_rtmp`)
 rather than byte-cloning. SRT-src is a plain `TsMuxer` pass-through for both
 ingest types.
 
 ---
 
-### h265-srt — H.265 SRT ingest
+### h265-srt-single — H.265 SRT ingest
 
 Standard RTMP cannot carry H.265. The reconciler inserts a `hevc_to_h264`
 stage **after** any video-preset transcoding, keyed by the upstream stage so
@@ -352,7 +358,7 @@ SRT ingest
   → source_ring [Raw, H.264 + AAC track0 + AAC track1]
 
 source outputs
-  RTMP-src / SRT-src: identical to h264-srt source paths above.
+  RTMP-src / SRT-src: identical to h264-srt-single source paths above.
 
 RTMP-720p  encoding = "720p+atrack:0"
   source_ring → video:720p ext FFmpeg (shared) → output_ring [H.264 + track0 + track1]
@@ -383,7 +389,7 @@ SRT ingest
   → TsDemuxer (H.265 video + 2 AAC audio track PIDs)
   → source_ring [Raw, H.265 + AAC track0 + AAC track1]
 
-RTMP-src / SRT-src: identical to h265-srt source paths above.
+RTMP-src / SRT-src: identical to h265-srt-single source paths above.
 
 720p preset  (shared ext FFmpeg subprocess)
   source_ring

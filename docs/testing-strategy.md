@@ -196,7 +196,7 @@ Phases 0–5 are complete.
    `network`, `in-process`. No whitebox tier exists; the engine is only tested via unit
    tests and through the binary.
 3. **`api-smoke`** — done, in the default suite.
-4. **Expand `mixed-*` assertions** — done. `mixed-anchor` now includes:
+4. **Expand `mixed-*` assertions** — done. `mixed-h264-srt-single` now includes:
    - `sink-probe` (DTS monotonicity, video/audio/keyframe counts via harness RTMP sink)
    - `hls-put-probe` (HLS PUT upload: playlist, content types, segment decode via harness
      HTTP PUT sink)
@@ -205,6 +205,6 @@ Phases 0–5 are complete.
    - `fault-resilience`: publisher disconnect detection (RTMP kill → input off, SRT kill →
      input off, file-ingest stop → input off) and egress sink disappearance (RTMP sink
      gone → output error/reconnect, SRT sink gone → output error/reconnect).
-   - `mixed-file-h264`: file-ingest as input source with RTMP+SRT egress mixed-scale load.
+   - `mixed-file-h264-single` and `mixed-file-h264-multi`: file-ingest as input source with RTMP+SRT egress mixed-input load.
    - `wait_for_api_input_off()` helper verifies `/api/v1/engine/health` transitions to `"off"` within
      a timeout after publisher disconnects.
