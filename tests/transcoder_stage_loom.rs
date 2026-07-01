@@ -69,6 +69,14 @@ mod loom_tests {
             *guard = None;
         }
 
+        fn cleanup_pipeline(&self) {
+            let mut guard = self.slot.lock().unwrap();
+            if let Some(stage) = guard.as_ref() {
+                stage.cancelled.store(true, Ordering::Release);
+            }
+            *guard = None;
+        }
+
         fn current_id(&self) -> Option<usize> {
             self.slot.lock().unwrap().as_ref().map(|stage| stage.id)
         }
@@ -110,6 +118,35 @@ mod loom_tests {
             assert_ne!(stage1.id, cancelled.id);
             assert!(!stage1.cancelled.load(Ordering::Acquire));
             assert_eq!(registry.current_id(), Some(stage1.id));
+        });
+    }
+
+    #[test]
+    fn loom_cleanup_and_replacement_are_atomic() {
+        loom::model(|| {
+            let initial = FakeStage::new(1);
+            let registry = FakeRegistry::new(Some(initial.clone()));
+            let cleanup_registry = registry.clone();
+            let creator_registry = registry.clone();
+
+            let cleanup = thread::spawn(move || cleanup_registry.cleanup_pipeline());
+            let creator = thread::spawn(move || creator_registry.get_or_create());
+
+            cleanup.join().unwrap();
+            let created = creator.join().unwrap();
+
+            assert!(initial.cancelled.load(Ordering::Acquire));
+
+            match registry.slot.lock().unwrap().as_ref() {
+                Some(current) => {
+                    assert!(Arc::ptr_eq(current, &created));
+                    assert_ne!(current.id, initial.id);
+                    assert!(!current.cancelled.load(Ordering::Acquire));
+                }
+                None => {
+                    assert!(created.cancelled.load(Ordering::Acquire));
+                }
+            }
         });
     }
 }
