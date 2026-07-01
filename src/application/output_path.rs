@@ -125,6 +125,21 @@ mod tests {
     }
 
     #[test]
+    fn source_atrack_creates_audio_stage_without_video_stage() {
+        let path = OutputPath::resolve("pipe", "source+atrack:0", "rtmp://example/live");
+
+        assert!(path.video_stage().is_none());
+        assert_eq!(
+            path.audio_stage().unwrap().kind,
+            StageKind::audio_route("atrack:0", StageKind::source())
+        );
+        assert_eq!(
+            path.terminal_stage_kind(None),
+            StageKind::audio_route("atrack:0", StageKind::source())
+        );
+    }
+
+    #[test]
     fn needed_stage_keys_include_video_audio_and_optional_codec_edge() {
         let path = OutputPath::resolve("pipe", "720p+remap:0:1", "rtmp://example/live");
         let stages = path.needed_stage_keys(Some("hevc"));

@@ -239,8 +239,13 @@ impl EncodingStagePlan {
     pub fn from_encoding(pipeline_id: impl Into<PipelineId>, encoding: &str) -> Self {
         let pipeline = pipeline_id.into();
         let mut parts = encoding.splitn(2, '+');
-        let video_preset = parts.next().unwrap_or("source");
-        let audio_operation = parts.next().filter(|value| !value.is_empty());
+        let first_part = parts.next().unwrap_or("source");
+        let second_part = parts.next().filter(|value| !value.is_empty());
+        let (video_preset, audio_operation) = if looks_like_audio_operation(first_part) {
+            ("source", Some(first_part))
+        } else {
+            (first_part, second_part)
+        };
 
         let source = StageKind::source();
         let needs_video =
@@ -285,6 +290,10 @@ impl EncodingStagePlan {
     }
 }
 
+fn looks_like_audio_operation(value: &str) -> bool {
+    value.starts_with("atrack:") || value.starts_with("remap:") || value.starts_with("downmix:")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +331,21 @@ mod tests {
         assert_eq!(
             *plan.terminal_kind(),
             StageKind::audio_route("remap:0:1", StageKind::source())
+        );
+    }
+
+    #[test]
+    fn encoding_plan_treats_plain_atrack_as_source_audio_route() {
+        let plan = EncodingStagePlan::from_encoding("pipe", "atrack:0");
+
+        assert!(plan.video_stage().is_none());
+        assert_eq!(
+            plan.audio_stage().unwrap().kind,
+            StageKind::audio_route("atrack:0", StageKind::source())
+        );
+        assert_eq!(
+            *plan.terminal_kind(),
+            StageKind::audio_route("atrack:0", StageKind::source())
         );
     }
 
