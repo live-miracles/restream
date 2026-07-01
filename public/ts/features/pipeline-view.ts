@@ -55,6 +55,29 @@ const sourceFileMetadataCache = new Map<string, MediaFile | null>();
 const sourceFileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
 let sourceFileMetadataLoadPromise: Promise<void> | null = null;
 let sourceFileAnalysisLoadPromise: Promise<void> | null = null;
+const pendingFileIngestIntents = new Map<string, "starting" | "stopping">();
+
+function fileIngestIntentKey(pipeId: string): string {
+  return pipeId;
+}
+
+function getPendingFileIngestIntent(
+  pipeId: string,
+): "starting" | "stopping" | null {
+  return pendingFileIngestIntents.get(fileIngestIntentKey(pipeId)) || null;
+}
+
+function setPendingFileIngestIntent(
+  pipeId: string,
+  intent: "starting" | "stopping" | null,
+): void {
+  const key = fileIngestIntentKey(pipeId);
+  if (intent === null) {
+    pendingFileIngestIntents.delete(key);
+  } else {
+    pendingFileIngestIntents.set(key, intent);
+  }
+}
 
 function getFileSourceName(pipe: PipelineView): string | null {
   if (pipe.fileIngest?.filename) return pipe.fileIngest.filename;
@@ -500,36 +523,62 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     const fileIngest = pipe.fileIngest || null;
     const configured = Boolean(isFileSource && fileIngest?.configured);
     if (!configured || !fileIngest?.id) {
+      setPendingFileIngestIntent(pipe.id, null);
       hideFileIngestControl(fileIngestBtn);
     } else {
       const running = Boolean(fileIngest.running);
+      const pendingIntent = getPendingFileIngestIntent(pipe.id);
+      const pending = pendingIntent !== null;
       fileIngestBtn.classList.remove("hidden");
-      fileIngestBtn.textContent = running ? "Stop File" : "Start File";
-      fileIngestBtn.classList.toggle("btn-error", running);
-      fileIngestBtn.classList.toggle("btn-accent", !running);
-      fileIngestBtn.classList.toggle("btn-outline", !running);
-      fileIngestBtn.disabled = false;
-      fileIngestBtn.classList.remove("btn-disabled");
+      fileIngestBtn.textContent = pending
+        ? pendingIntent === "starting"
+          ? "Starting File..."
+          : "Stopping File..."
+        : running
+          ? "Stop File"
+          : "Start File";
+      fileIngestBtn.classList.toggle(
+        "btn-error",
+        pendingIntent === "stopping" || (!pending && running),
+      );
+      fileIngestBtn.classList.toggle(
+        "btn-accent",
+        pendingIntent === "starting" || (!pending && !running),
+      );
+      fileIngestBtn.classList.toggle(
+        "btn-outline",
+        pendingIntent !== "starting" && !running,
+      );
+      fileIngestBtn.disabled = pending;
+      fileIngestBtn.classList.toggle("btn-disabled", pending);
       fileIngestBtn.title = fileIngest.filename
         ? `${running ? "Stop" : "Start"} file ingest for ${fileIngest.filename}`
         : "";
       fileIngestBtn.onclick = async () => {
+        if (pending) return;
+        setPendingFileIngestIntent(pipe.id, running ? "stopping" : "starting");
+        renderPipelineInfoColumn(pipe.id);
         const res = running
           ? await stopIngest(fileIngest.id as string)
           : await startIngest(fileIngest.id as string);
-        if (res !== null) {
-          updateDashboardPipelineFileIngestState(pipe.id, {
-            configured: true,
-            id: res.id,
-            filename: res.filename,
-            streamKey: res.streamKey,
-            loop: res.loop,
-            startTime: res.startTime,
-            liveOptimized: res.liveOptimized,
-            targetGopSeconds: res.targetGopSeconds,
-            running: res.running,
-          });
-          await awaitDashboardRuntimeMutationConvergence();
+        try {
+          if (res !== null) {
+            updateDashboardPipelineFileIngestState(pipe.id, {
+              configured: true,
+              id: res.id,
+              filename: res.filename,
+              streamKey: res.streamKey,
+              loop: res.loop,
+              startTime: res.startTime,
+              liveOptimized: res.liveOptimized,
+              targetGopSeconds: res.targetGopSeconds,
+              running: res.running,
+            });
+            await awaitDashboardRuntimeMutationConvergence();
+          }
+        } finally {
+          setPendingFileIngestIntent(pipe.id, null);
+          renderPipelineInfoColumn(pipe.id);
         }
       };
     }

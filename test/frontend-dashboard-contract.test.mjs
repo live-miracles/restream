@@ -1369,6 +1369,10 @@ test("recording patches local state immediately, while file-ingest falls back to
   appendRoot(document, "div", "input-stats");
 
   const requests = [];
+  let resolveStartIngestRequest;
+  const startIngestResponseReady = new Promise((resolve) => {
+    resolveStartIngestRequest = resolve;
+  });
   globalThis.fetch = async (url, options = {}) => {
     const href = String(url);
     const method = String(options.method || "GET").toUpperCase();
@@ -1453,6 +1457,7 @@ test("recording patches local state immediately, while file-ingest falls back to
     }
 
     if (href === startIngestUrl) {
+      await startIngestResponseReady;
       return new Response(
         JSON.stringify({
           id: "ingest-1",
@@ -1498,7 +1503,17 @@ test("recording patches local state immediately, while file-ingest falls back to
   pipelineView.renderPipelineInfoColumn("pipe-1");
   requests.length = 0;
 
-  await document.getElementById("file-ingest-pipe-btn").onclick();
+  const fileIngestButton = document.getElementById("file-ingest-pipe-btn");
+  const startIngestPromise = fileIngestButton.onclick();
+  await flushAsyncWork();
+
+  assert.equal(fileIngestButton.textContent, "Starting File...");
+  assert.equal(fileIngestButton.disabled, true);
+  assert.equal(fileIngestButton.classList.contains("btn-disabled"), true);
+  assert.deepEqual(requests, [["POST", startIngestUrl]]);
+
+  resolveStartIngestRequest();
+  await startIngestPromise;
   await flushAsyncWork();
 
   assert.deepEqual(requests, [

@@ -138,7 +138,10 @@ the requested runtime state, so unrelated lifecycle wakeups do not clear
 operator feedback early.
 File-ingest start/stop now follow the same pattern when a lifecycle stream is
 already open, while cold/no-stream file-ingest controls still fall back
-directly to a runtime refresh. Recording start/stop is different: the mutation
+directly to a runtime refresh. The file-ingest button now also shows its own
+`Starting...` / `Stopping...` in-flight state immediately so operators do not
+have to infer whether the backend accepted the click. Recording start/stop is
+different: the mutation
 response already contains the operator-facing `enabled` / `active` state, so
 the dashboard patches local recording state immediately instead of forcing a
 follow-up runtime fetch. Status mode now reuses its own restream log SSE
