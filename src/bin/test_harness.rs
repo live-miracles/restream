@@ -26,29 +26,205 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
-const SUITE_DEFAULT_MODES: &[&str] = &[
-    "api-smoke",
-    "ramp-family",
-    "mixed-h264-rtmp",
-    "mixed-anchor",
-    "mixed-h265-srt",
-    "mixed-h264-srt-multi",
-    "mixed-h265-srt-multi",
-    "bframe-rtmp",
-    "correctness-srt-rtmp",
-    "correctness-srt-rtmp-atrack",
-    "correctness-srt-policy",
-    "correctness-hevc-rtmp",
-    "correctness-hevc-rtmp-atrack",
-    "correctness-hevc-srt",
-    "fault-resilience",
-    "file-live-edge",
-    "mixed-file-h264",
-    "resource-sweep",
-    "bitrate-sweep",
-    "branch-matrix",
-    "srt-crypto-matrix",
+struct HarnessModeSpec {
+    name: &'static str,
+    suite_default: bool,
+    requires_port_namespace: bool,
+    requires_bench_profile: bool,
+}
+
+const HARNESS_MODE_SPECS: &[HarnessModeSpec] = &[
+    HarnessModeSpec {
+        name: "api-smoke",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-rtmp",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-srt",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-srt-rtmp",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-srt-rtmp-atrack",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-srt-policy",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "bframe-rtmp",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "ramp-family",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "mixed-h264-rtmp",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "mixed-anchor",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "mixed-h265-srt",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "mixed-h264-srt-multi",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "mixed-h265-srt-multi",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "egress",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-hevc-rtmp",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-hevc-rtmp-atrack",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "correctness-hevc-srt",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "fault-egress-retry",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "fault-output-stall",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "fault-resilience",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "file-live-edge",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "recovery",
+        suite_default: false,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "mixed-file-h264",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
+        name: "resource-sweep",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "bitrate-sweep",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "branch-matrix",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
+    HarnessModeSpec {
+        name: "srt-crypto-matrix",
+        suite_default: true,
+        requires_port_namespace: true,
+        requires_bench_profile: true,
+    },
 ];
+
+fn mode_spec(name: &str) -> Option<&'static HarnessModeSpec> {
+    HARNESS_MODE_SPECS.iter().find(|spec| spec.name == name)
+}
+
+fn suite_default_modes() -> Vec<String> {
+    HARNESS_MODE_SPECS
+        .iter()
+        .filter(|spec| spec.suite_default)
+        .map(|spec| spec.name.to_string())
+        .collect()
+}
+
+fn supported_mode_names() -> Vec<&'static str> {
+    HARNESS_MODE_SPECS.iter().map(|spec| spec.name).collect()
+}
+
+fn unknown_command_error(other: &str) -> String {
+    let mut supported = vec!["suite", "preflight"];
+    supported.extend(supported_mode_names());
+    format!("unknown command {other:?}; use {}", supported.join(", "))
+}
 
 const SINK_PORT: u16 = 12935;
 const FILE_LIVE_EDGE_MAX_DURATION_DRIFT_SECS: f64 = 0.75;
@@ -82,37 +258,9 @@ fn default_work_db_path(work_dir: &Path, file_name: &str) -> PathBuf {
 }
 
 fn command_requires_port_namespace(command: &str) -> bool {
-    matches!(
-        command,
-        "api-smoke"
-            | "correctness"
-            | "correctness-rtmp"
-            | "correctness-srt"
-            | "correctness-srt-rtmp"
-            | "correctness-srt-rtmp-atrack"
-            | "correctness-srt-policy"
-            | "bframe-rtmp"
-            | "ramp-family"
-            | "mixed-h264-rtmp"
-            | "mixed-anchor"
-            | "mixed-h265-srt"
-            | "mixed-h264-srt-multi"
-            | "mixed-h265-srt-multi"
-            | "egress"
-            | "correctness-hevc-rtmp"
-            | "correctness-hevc-rtmp-atrack"
-            | "correctness-hevc-srt"
-            | "fault-egress-retry"
-            | "fault-output-stall"
-            | "fault-resilience"
-            | "file-live-edge"
-            | "recovery"
-            | "mixed-file-h264"
-            | "resource-sweep"
-            | "bitrate-sweep"
-            | "branch-matrix"
-            | "srt-crypto-matrix"
-    )
+    mode_spec(command)
+        .map(|spec| spec.requires_port_namespace)
+        .unwrap_or(false)
 }
 
 fn command_uses_host_net(raw: &[String]) -> bool {
@@ -177,23 +325,13 @@ fn maybe_reexec_in_port_namespace() -> Result<(), String> {
 // the lightweight bench profile, so we fail fast instead of recording skewed
 // numbers from debug or release builds.
 fn measurement_mode_requires_bench_profile(mode: &str) -> bool {
-    matches!(
-        mode,
-        "ramp-family"
-            | "mixed-h264-rtmp"
-            | "mixed-anchor"
-            | "mixed-h265-srt"
-            | "mixed-h264-srt-multi"
-            | "mixed-h265-srt-multi"
-            | "resource-sweep"
-            | "bitrate-sweep"
-            | "branch-matrix"
-            | "srt-crypto-matrix"
-    )
+    mode_spec(mode)
+        .map(|spec| spec.requires_bench_profile)
+        .unwrap_or(false)
 }
 
 fn suite_modes_require_bench_profile(raw: &[String]) -> Result<bool, String> {
-    let mut modes: Vec<String> = SUITE_DEFAULT_MODES.iter().map(|s| s.to_string()).collect();
+    let mut modes = suite_default_modes();
     let mut preflight_only = false;
 
     let mut i = 0;
@@ -326,15 +464,7 @@ async fn run() -> Result<(), String> {
         "bitrate-sweep" => bitrate_sweep().await,
         "branch-matrix" => branch_matrix().await,
         "srt-crypto-matrix" => srt_crypto_matrix().await,
-        other => Err(format!(
-            "unknown command {other:?}; use suite, preflight, api-smoke, correctness, \
-              correctness-rtmp, correctness-srt, correctness-srt-rtmp, correctness-srt-rtmp-atrack, correctness-srt-policy, \
-              bframe-rtmp, ramp-family, mixed-h264-rtmp, mixed-anchor, \
-              mixed-h265-srt, mixed-h264-srt-multi, mixed-h265-srt-multi, \
-              egress, correctness-hevc-rtmp, correctness-hevc-rtmp-atrack, correctness-hevc-srt, \
-              fault-egress-retry, fault-output-stall, fault-resilience, file-live-edge, recovery, mixed-file-h264, resource-sweep, bitrate-sweep, \
-              branch-matrix, or srt-crypto-matrix"
-        )),
+        other => Err(unknown_command_error(other)),
     };
 
     match result {
@@ -13967,7 +14097,7 @@ async fn suite_run_parallel_batch(
 
 async fn suite_run() -> Result<Value, String> {
     let raw: Vec<String> = std::env::args().skip(2).collect();
-    let mut modes: Vec<String> = SUITE_DEFAULT_MODES.iter().map(|s| s.to_string()).collect();
+    let mut modes = suite_default_modes();
     let mut continue_on_fail = false;
     let mut preflight_only = false;
     let mut use_host_net = std::env::var("TEST_HARNESS_USE_HOST_NET")
@@ -14442,5 +14572,36 @@ mod tests {
    0: 0100007F:078F 0100007F:9C40 01 00000000:00000000 00:00000000 00000000   100        0 1 1 0000000000000000 100 0 0 10 0\n";
 
         assert!(!proc_net_has_listening_port(table, 1935));
+    }
+
+    #[test]
+    fn unknown_command_error_lists_every_supported_mode() {
+        let message = unknown_command_error("nope-mode");
+        assert!(message.contains("\"nope-mode\""));
+        assert!(message.contains("suite"));
+        assert!(message.contains("preflight"));
+        for spec in HARNESS_MODE_SPECS {
+            assert!(
+                message.contains(spec.name),
+                "unknown-command help text is missing mode {}",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_mode_spec_has_dispatch_arm() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/test_harness.rs"
+        ));
+        for spec in HARNESS_MODE_SPECS {
+            let arm = format!("\"{}\" =>", spec.name);
+            assert!(
+                source.contains(&arm),
+                "mode {} is missing a run() dispatch arm",
+                spec.name
+            );
+        }
     }
 }

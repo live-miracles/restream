@@ -765,10 +765,10 @@ For real multi-NIC or dual-WAN validation, remember that upstream SRT also
 recommends `ENABLE_PKTINFO=ON`; otherwise a wildcard listener may reply from
 the wrong source IP and make a healthy bonding implementation look broken.
 
-### `burst-verify` — Closed-GOP reader telemetry matrix
+### `mixed-anchor` — Closed-GOP probe bundle
 
 ```sh
-scripts/resource-limit ./test/run-integration.sh burst-verify
+scripts/resource-limit ./test/run-integration.sh mixed-anchor
 ```
 
 Streams a closed-GOP RTMP/SRT matrix across H.264/H.265, 1080p/4K, selected
@@ -780,17 +780,10 @@ Env: `BURST_SETTLE_SECS` (default 8), `BURST_CONFIGS` (optional
 space-separated config allow-list, e.g. `BURST_CONFIGS="srt-h265-1080p-24fps-1a"`).
 
 The public shell mode is now a thin artifact/summary wrapper around
-`cargo run --bin test_harness -- burst-verify`; the config matrix, RTMP/SRT
-publishers, dummy burst readers, graph snapshots, and burst-stat assertions are
-implemented in Rust. RTMP/FLV can publish only one audio stream, so the Rust
-result records both requested and actually published audio-track counts while
-SRT retains dual-audio coverage.
+`cargo run --bin test_harness -- mixed-anchor`; the matrix publishers, burst
+graph assertions, and HLS PUT probe checks are implemented in Rust.
 
-### `hls-put` — HTTP HLS upload dummy sink
-
-```sh
-scripts/resource-limit ./test/run-integration.sh hls-put
-```
+### HLS PUT probe
 
 Publishes one SRT H.264/AAC input, starts both HTTP/YouTube-style `file=` and
 path-style HLS PUT outputs, and verifies that a local dummy sink receives
@@ -802,10 +795,9 @@ dummy sink and requires fresh segment PUTs after recovery for both shapes.
 Env: `HLS_PUT_PORT` (default 8990), `HLS_PUT_SETTLE_SECS` (default 8),
 `HLS_PUT_RESTART_SECS` (default 12).
 
-The public shell mode is now a thin artifact/summary wrapper around
-`cargo run --bin test_harness -- hls-put`; the dummy PUT sink, SRT publisher,
-HLS segmenter/uploader tasks, ffprobe checks, signed-query assertions, and sink
-restart recovery are implemented in Rust.
+The HLS PUT probe now runs as part of `mixed-anchor` and validates dummy PUT
+sink delivery, signed-query preservation, ffprobe readability, and restart
+recovery behavior.
 
 ### `bframe-rtmp` — RTMP B-frame timestamp round-trip
 
@@ -1001,11 +993,9 @@ baseline on stop.
 Currently checked in:
 
 ```text
-scripts/resource-limit ./test/run-integration.sh ramp
-scripts/resource-limit ./test/run-integration.sh mixed-scale
+scripts/resource-limit ./test/run-integration.sh ramp-family
+scripts/resource-limit ./test/run-integration.sh mixed-anchor
 scripts/resource-limit ./test/run-integration.sh bonding
-scripts/resource-limit ./test/run-integration.sh burst-verify
-scripts/resource-limit ./test/run-integration.sh hls-put
 scripts/resource-limit ./test/run-integration.sh bframe-rtmp
 scripts/resource-limit ./test/run-integration.sh correctness-srt-rtmp
 scripts/resource-limit ./test/run-integration.sh correctness-hevc-rtmp
@@ -1028,7 +1018,7 @@ in its own subdirectory, and records one JSONL result per mode in
 
 - `--run-id <id>` to choose the artifact run id
 - `--work-root <path>` to choose the aggregate artifact directory
-- `--only-modes hls-put,bframe-rtmp` to run a subset
+- `--only-modes mixed-anchor,bframe-rtmp` to run a subset
 - `--preflight-only` to run readiness checks without starting live services
 - `--continue-on-fail` to keep collecting artifacts after the first failure
 
@@ -1047,11 +1037,11 @@ Why the aggregate runner lives in `test_harness` instead of a separate
   aggregate orchestration logic is already implemented in `test_harness`, so
   the extra wrapper only adds another compatibility surface to maintain.
 
-`burst-verify`, `hls-put`, `bframe-rtmp`, `correctness-srt-rtmp`,
+`mixed-anchor`, `bframe-rtmp`, `correctness-srt-rtmp`,
 `correctness-hevc-rtmp`, and `correctness-hevc-srt` are behind typed Rust
-harness entry points, and `ramp` now delegates its full eight-config matrix to
-`test_harness ramp-family`. `mixed-scale` now delegates its five config slices
-to Rust and leaves the shell layer only for per-mode compatibility launching.
+harness entry points, and `ramp-family` runs the full eight-config ramp matrix.
+`mixed-anchor` delegates its probe bundle to Rust and leaves the shell layer
+only for per-mode compatibility launching.
 
 `test/run-integration.sh` writes `manifest.json` in the selected `WORK_DIR`
 for each checked-in mode. The manifest starts as `RUNNING` and is finalized to
@@ -1090,7 +1080,7 @@ These capabilities must be treated as test results, not assumptions:
 | Additional/custom video presets | Must be explicitly profiled and matrix-tested before advertising |
 | Embedded FFmpeg subprocess feature set | `scripts/build-static.sh` runs `restream-ffmpeg-capabilities` to prove the required codecs, `file`/`pipe` protocols, and `mov`/`matroska`/`mpegts` mux/demux surface are present |
 | HLS live segments | Native TsMuxer validates in-memory |
-| HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and `test/run-integration.sh hls-put` dummy sink tests |
+| HLS upload egress | YouTube-style `file=` and path-style signed-query HTTP PUT delivery plus destination restart recovery are covered by unit tests and the `mixed-anchor` HLS PUT probe |
 | Recording | Readable file with correct streams/timestamps |
 | Audio remap/downmix | Channel-level filtering is implemented for the default runtime; full audio-content matrix remains required |
 | Custom encoding | Runtime output selection must stay rejected until custom args are applied by a transcoder backend |
