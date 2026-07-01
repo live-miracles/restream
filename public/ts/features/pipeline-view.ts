@@ -58,6 +58,7 @@ let sourceFileMetadataLoadPromise: Promise<void> | null = null;
 const sourceFileAnalysisLoadPromises = new Map<string, Promise<void>>();
 const pendingRecordingIntents = new Map<string, "starting" | "stopping">();
 const pendingFileIngestIntents = new Map<string, "starting" | "stopping">();
+let lastRenderedPipelineInfoId: string | null = null;
 
 function recordingIntentKey(pipeId: string): string {
   return pipeId;
@@ -183,7 +184,7 @@ function rerenderSelectedPipelineIfSourceFileLoaded(
   filename: string | null,
   kind: "metadata" | "analysis",
 ): void {
-  const selectedPipe = getUrlParam("p");
+  const selectedPipe = getUrlParam("p") || lastRenderedPipelineInfoId;
   if (!selectedPipe) return;
   const selectedPipeline =
     state.pipelines.find((pipe) => pipe.id === selectedPipe) || null;
@@ -503,6 +504,7 @@ function renderVideoTrackDetails(
 }
 
 export function renderPipelineInfoColumn(selectedPipe: string | null): void {
+  lastRenderedPipelineInfoId = selectedPipe;
   if (!selectedPipe) {
     document.getElementById("pipe-info-col")?.classList.add("hidden");
     return;
