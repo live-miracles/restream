@@ -19,6 +19,7 @@ use tracing::{error, info};
 
 use crate::domain::stage::StageKey;
 use crate::media::avio::MemoryQueue;
+use crate::media::engine::{AudioMeta, VideoMeta};
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::ring_buffer::{MediaPacket, MediaType, PayloadFormat, Reader, RingBuffer};
 
@@ -37,6 +38,59 @@ impl AsRef<[u8]> for OwnedFfmpegPacket {
     }
 }
 
+async fn wait_for_h264_stage_metadata(
+    engine: &Arc<crate::media::engine::MediaEngine>,
+    pipeline_id: &str,
+    input_buffer: &Arc<RingBuffer>,
+    cancel_token: &CancellationToken,
+) -> Option<(VideoMeta, std::sync::Arc<Vec<AudioMeta>>)> {
+    loop {
+        if cancel_token.is_cancelled() {
+            return None;
+        }
+
+        let result = {
+            let ingests = engine.ingests.active.read().await;
+            ingests.get(pipeline_id).and_then(|ingest| {
+                let mut video = ingest.video.clone()?;
+                let input_codec = input_buffer.codec_hint_str();
+                if !input_codec.is_empty() {
+                    video.codec = input_codec.to_string();
+                }
+                if video.codec != "hevc" && video.codec != "h265" {
+                    return None;
+                }
+
+                let tracks = if let Some(ring_tracks) = input_buffer.audio_tracks()
+                    && !ring_tracks.is_empty()
+                {
+                    std::sync::Arc::new(ring_tracks.to_vec())
+                } else {
+                    let lock = ingest
+                        .audio_tracks
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if lock.is_empty()
+                        && let Some(audio) = ingest.audio.clone()
+                    {
+                        std::sync::Arc::new(vec![audio])
+                    } else {
+                        std::sync::Arc::clone(&lock)
+                    }
+                };
+
+                Some((video, tracks))
+            })
+        };
+
+        if let Some(meta) = result {
+            return Some(meta);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 /// Tokio task entry point for the shared H.265→H.264 transcoder.
 ///
 /// 1. Waits for ingest metadata (video + audio tracks).
@@ -50,40 +104,17 @@ pub async fn start_h264_transcoder(
     cancel_token: CancellationToken,
     stage_key: StageKey,
 ) {
-    // Wait for ingest metadata before starting
-    let (video_meta, audio_tracks) = loop {
-        if cancel_token.is_cancelled() {
-            engine
-                .runtime
-                .event_log
-                .emit(crate::events::EventKind::StageStopped {
-                    pipeline_id: pipeline_id.clone(),
-                    encoding: stage_key.kind.to_string(),
-                });
-            return;
-        }
-        let result = {
-            let ingests = engine.ingests.active.read().await;
-            ingests.get(&pipeline_id).and_then(|i| {
-                let video = i.video.clone()?;
-                if video.codec != "hevc" && video.codec != "h265" {
-                    return None;
-                }
-                let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
-                let tracks = if lock.is_empty()
-                    && let Some(audio) = i.audio.clone()
-                {
-                    std::sync::Arc::new(vec![audio])
-                } else {
-                    std::sync::Arc::clone(&lock)
-                };
-                Some((video, tracks))
-            })
-        };
-        if let Some(meta) = result {
-            break meta;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let Some((video_meta, audio_tracks)) =
+        wait_for_h264_stage_metadata(&engine, &pipeline_id, &input_buffer, &cancel_token).await
+    else {
+        engine
+            .runtime
+            .event_log
+            .emit(crate::events::EventKind::StageStopped {
+                pipeline_id: pipeline_id.clone(),
+                encoding: stage_key.kind.to_string(),
+            });
+        return;
     };
 
     let stage_metrics = engine.get_or_create_stage_metrics(stage_key.clone()).await;
@@ -103,8 +134,10 @@ pub async fn start_h264_transcoder(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_ffmpeg_h264_stage(iq_clone, out_clone, cancel_clone, &pid)
         }));
-        if result.is_err() {
-            error!("FFmpeg stage panicked for pipeline {pid}");
+        match result {
+            Ok(Err(err)) => error!(pipeline_id = %pid, err, "FFmpeg H.264 stage failed"),
+            Err(_) => error!("FFmpeg stage panicked for pipeline {pid}"),
+            _ => {}
         }
         cancel_on_exit.cancel();
     });
@@ -176,34 +209,22 @@ fn run_ffmpeg_h264_stage(
     out_ring: Arc<RingBuffer>,
     cancel: CancellationToken,
     _pipeline_id: &str,
-) {
+) -> Result<(), &'static str> {
     use crate::media::avio::CustomInput;
     use ffmpeg_next::format::Pixel;
 
-    let mut custom = match CustomInput::new(&*in_queue) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("CustomInput: {e}");
-            return;
-        }
-    };
-    let ictx = match custom.input.as_mut() {
-        Some(i) => i,
-        None => return,
-    };
+    let mut custom = CustomInput::new(&*in_queue)?;
+    let ictx = custom
+        .input
+        .as_mut()
+        .ok_or("failed to get CustomInput context")?;
 
     // Identify streams
-    let video_idx = match ictx
+    let video_idx = ictx
         .streams()
         .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video)
         .map(|s| s.index())
-    {
-        Some(i) => i,
-        None => {
-            error!("no video stream");
-            return;
-        }
-    };
+        .ok_or("no video stream")?;
 
     // Build stream metadata: (media_type, track_index) for each stream
     let mut stream_meta: Vec<Option<(MediaType, u32)>> = Vec::new();
@@ -223,32 +244,19 @@ fn run_ffmpeg_h264_stage(
         }
     }
 
-    let dec_params = match ictx.stream(video_idx) {
-        Some(s) => s.parameters(),
-        None => return,
-    };
-    let dec_ctx = match ffmpeg_next::codec::Context::from_parameters(dec_params) {
-        Ok(c) => c,
-        Err(e) => {
-            error!("decoder context: {e}");
-            return;
-        }
-    };
-    let mut decoder = match dec_ctx.decoder().video() {
-        Ok(d) => d,
-        Err(e) => {
-            error!("decoder open: {e}");
-            return;
-        }
-    };
+    let dec_params = ictx
+        .stream(video_idx)
+        .ok_or("no video stream")?
+        .parameters();
+    let dec_ctx = ffmpeg_next::codec::Context::from_parameters(dec_params)
+        .map_err(|_| "decoder context error")?;
+    let mut decoder = dec_ctx
+        .decoder()
+        .video()
+        .map_err(|_| "decoder open error")?;
 
-    let enc_codec = match ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264) {
-        Some(c) => c,
-        None => {
-            error!("no H.264 encoder");
-            return;
-        }
-    };
+    let enc_codec = ffmpeg_next::codec::encoder::find(ffmpeg_next::codec::Id::H264)
+        .ok_or("no H.264 encoder")?;
 
     // Build x264 encoder options: CRF mode for quality-based encoding
     // instead of fixed bitrate. CRF 23 is x264's default.
@@ -340,7 +348,7 @@ fn run_ffmpeg_h264_stage(
                     height
                 };
 
-                let sw = match ffmpeg_next::software::scaling::Context::get(
+                let sw = ffmpeg_next::software::scaling::Context::get(
                     in_fmt,
                     width,
                     height,
@@ -348,13 +356,8 @@ fn run_ffmpeg_h264_stage(
                     out_w,
                     out_h,
                     ffmpeg_next::software::scaling::Flags::BILINEAR,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("scaler: {e}");
-                        return;
-                    }
-                };
+                )
+                .map_err(|_| "failed to create scaler")?;
 
                 let fr = stream.avg_frame_rate();
                 let (fn_, fd) = if fr.numerator() > 0 && fr.denominator() > 0 {
@@ -380,18 +383,14 @@ fn run_ffmpeg_h264_stage(
                         enc_codec.as_ptr() as *mut ffmpeg_next::ffi::AVCodec
                     );
                     if ptr.is_null() {
-                        error!("failed to allocate encoder context");
-                        return;
+                        return Err("failed to allocate encoder context");
                     }
                     ffmpeg_next::codec::Context::wrap(ptr, None)
                 };
-                let mut enc_video = match enc_ctx.encoder().video() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!("encoder ctx: {e}");
-                        return;
-                    }
-                };
+                let mut enc_video = enc_ctx
+                    .encoder()
+                    .video()
+                    .map_err(|_| "failed to get encoder video interface")?;
 
                 enc_video.set_width(out_w);
                 enc_video.set_height(out_h);
@@ -419,13 +418,9 @@ fn run_ffmpeg_h264_stage(
                     out_w, out_h, profile.preset, profile.tune, profile.crf, profile.bitrate
                 );
 
-                let opened = match enc_video.open_as_with(enc_codec, opts) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!("encoder open: {e}");
-                        return;
-                    }
-                };
+                let opened = enc_video
+                    .open_as_with(enc_codec, opts)
+                    .map_err(|_| "failed to open encoder")?;
 
                 scaler = Some(sw);
                 encoder = Some(opened);
@@ -487,5 +482,282 @@ fn run_ffmpeg_h264_stage(
                 payload: Bytes::from_owner(OwnedFfmpegPacket(enc_pkt.clone())),
             });
         }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::sync::Arc;
+
+    fn extract_2v16a_hevc_ts_sample() -> Vec<u8> {
+        let ffmpeg = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+        let fixture = crate::test_fixtures::checked_in_fixture("media/colorbar-timer-2v16a.mp4")
+            .expect("2v16a fixture should exist");
+        let output = Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                fixture.to_str().expect("utf-8 fixture path"),
+                "-map",
+                "0:v:1",
+                "-map",
+                "0:a",
+                "-c",
+                "copy",
+                "-t",
+                "1",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ])
+            .output()
+            .expect("spawn bundled ffmpeg for 2v16a HEVC sample extraction");
+        assert!(
+            output.status.success(),
+            "ffmpeg 2v16a HEVC sample extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.stdout.is_empty(),
+            "2v16a HEVC TS sample should not be empty"
+        );
+        output.stdout
+    }
+
+    #[test]
+    fn h264_transcoder_emits_packets_from_checked_in_hevc_fixture() {
+        let fixture =
+            crate::test_fixtures::canonical_h265_ts_fixture().unwrap_or_else(|e| panic!("{e}"));
+        let fixture_bytes = std::fs::read(&fixture)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture.display()));
+
+        let input_queue = Arc::new(MemoryQueue::new());
+        input_queue.write_sync(&fixture_bytes);
+        input_queue.close();
+
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let cancel = CancellationToken::new();
+
+        run_ffmpeg_h264_stage(input_queue, output_ring.clone(), cancel, "test-hevc-h264")
+            .unwrap_or_else(|e| panic!("HEVC->H.264 stage failed on checked-in fixture: {e}"));
+
+        let mut reader = Reader::new("test_h264_tc_output".to_string(), output_ring);
+        let mut packets = Vec::new();
+        while let Ok(Some(packet)) = reader.pull() {
+            packets.push(packet);
+        }
+
+        assert!(
+            !packets.is_empty(),
+            "HEVC->H.264 stage should emit packets for the checked-in HEVC fixture"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "HEVC->H.264 stage should emit at least one video packet"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Audio),
+            "HEVC->H.264 stage should preserve audio packets"
+        );
+        assert!(
+            packets
+                .iter()
+                .filter(|packet| packet.media_type == MediaType::Video)
+                .all(|packet| {
+                    packet.track_index == 0
+                        && packet.format == PayloadFormat::Raw
+                        && !packet.payload.is_empty()
+                }),
+            "transcoded video packets must remain non-empty raw track-0 packets"
+        );
+    }
+
+    #[test]
+    fn h264_transcoder_emits_packets_from_2v16a_hevc_stream() {
+        let fixture_bytes = extract_2v16a_hevc_ts_sample();
+
+        let input_queue = Arc::new(MemoryQueue::new());
+        input_queue.write_sync(&fixture_bytes);
+        input_queue.close();
+
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let cancel = CancellationToken::new();
+
+        run_ffmpeg_h264_stage(
+            input_queue,
+            output_ring.clone(),
+            cancel,
+            "test-2v16a-hevc-h264",
+        )
+        .unwrap_or_else(|e| panic!("HEVC->H.264 stage failed on 2v16a sample: {e}"));
+
+        let mut reader = Reader::new("test_2v16a_h264_tc_output".to_string(), output_ring);
+        let mut packets = Vec::new();
+        while let Ok(Some(packet)) = reader.pull() {
+            packets.push(packet);
+        }
+
+        assert!(
+            !packets.is_empty(),
+            "HEVC->H.264 stage should emit packets for the 2v16a HEVC sample"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "2v16a HEVC sample should produce transcoded video packets"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Audio),
+            "2v16a HEVC sample should preserve audio packets"
+        );
+    }
+
+    #[tokio::test]
+    async fn h264_stage_metadata_prefers_upstream_ring_tracks_and_codec_hint() {
+        let engine = Arc::new(crate::media::engine::MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-h264-stage-meta", "stream-key", "srt")
+            .await
+            .unwrap();
+
+        let ingest_audio = vec![
+            AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 0,
+                pid: Some(0x101),
+                language: None,
+                title: None,
+                profile: None,
+            },
+            AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 1,
+                pid: Some(0x102),
+                language: None,
+                title: None,
+                profile: None,
+            },
+        ];
+        engine
+            .update_ingest_meta(
+                "pipe-h264-stage-meta",
+                Some(VideoMeta {
+                    codec: "hevc".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    fps: 30.0,
+                    bw: None,
+                    pid: None,
+                    language: None,
+                    title: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                ingest_audio.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-h264-stage-meta", ingest_audio)
+            .await;
+
+        let upstream_ring = Arc::new(RingBuffer::new(32));
+        upstream_ring.set_codec_hint("hevc");
+        upstream_ring.set_audio_tracks(vec![AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: Some(0x102),
+            language: None,
+            title: None,
+            profile: None,
+        }]);
+
+        let cancel = CancellationToken::new();
+        let (video, audio_tracks) =
+            wait_for_h264_stage_metadata(&engine, "pipe-h264-stage-meta", &upstream_ring, &cancel)
+                .await
+                .expect("stage metadata");
+
+        assert_eq!(video.codec, "hevc");
+        assert_eq!(audio_tracks.len(), 1);
+        assert_eq!(audio_tracks[0].track_index, 0);
+        assert_eq!(audio_tracks[0].pid, Some(0x102));
+    }
+
+    #[test]
+    #[ignore = "legacy in-process worker drains only on EOF; live codec-edge stages use external ffmpeg"]
+    fn h264_transcoder_emits_live_video_before_input_eof() {
+        let fixture_bytes = extract_2v16a_hevc_ts_sample();
+
+        let input_queue = Arc::new(MemoryQueue::new());
+        input_queue.write_sync(&fixture_bytes);
+
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let mut reader = Reader::new_live(
+            "test_live_2v16a_h264_tc_output".to_string(),
+            output_ring.clone(),
+        );
+        let cancel = CancellationToken::new();
+        let input_queue_for_thread = input_queue.clone();
+        let output_ring_for_thread = output_ring.clone();
+        let cancel_for_thread = cancel.clone();
+
+        let handle = std::thread::spawn(move || {
+            run_ffmpeg_h264_stage(
+                input_queue_for_thread,
+                output_ring_for_thread,
+                cancel_for_thread,
+                "test-live-2v16a-hevc-h264",
+            )
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(750));
+
+        let mut packets = Vec::new();
+        while let Ok(Some(packet)) = reader.pull() {
+            packets.push(packet);
+        }
+
+        cancel.cancel();
+        input_queue.close();
+        handle
+            .join()
+            .expect("live HEVC->H.264 stage thread should join")
+            .unwrap_or_else(|e| panic!("live HEVC->H.264 stage failed on 2v16a sample: {e}"));
+
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "live HEVC->H.264 stage should emit video before EOF"
+        );
+        assert!(
+            packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video && packet.is_keyframe),
+            "live HEVC->H.264 stage should emit a keyframe before EOF for HLS preview"
+        );
     }
 }

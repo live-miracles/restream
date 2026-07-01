@@ -1443,6 +1443,7 @@ async fn pipelines_delete_handler(
     // HLS segmenter+store.  Without these calls the engine maps would retain
     // Arc<RingBuffer> references after the pipeline record is gone from the DB.
     state.engine.cleanup_pipeline_stages(&id).await;
+    state.engine.shutdown_hls_preview_segmenter(&id).await;
     state.engine.shutdown_hls_segmenter(&id).await;
 
     match db::delete_pipeline(&state.db, &id).await {
@@ -6201,7 +6202,87 @@ async fn recording_stop_handler(
     Json(serde_json::json!({ "enabled": false, "active": false })).into_response()
 }
 
-async fn get_or_start_hls_store(
+fn is_hevc_hls_preview_codec(codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265")
+}
+
+async fn select_hls_preview_ring(
+    state: &Arc<AppState>,
+    pipeline_id: &str,
+    cancel_token: &CancellationToken,
+) -> (
+    Arc<crate::media::ring_buffer::RingBuffer>,
+    Option<Arc<crate::media::ring_buffer::RingBuffer>>,
+    Option<crate::media::engine::VideoMeta>,
+) {
+    let source_ring = state.engine.get_or_create_pipeline(pipeline_id).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+
+    loop {
+        let ingest_codec = state.engine.ingest_video_codec(pipeline_id).await;
+        let codec_hint = source_ring.codec_hint_str();
+        let resolved_codec = ingest_codec
+            .as_deref()
+            .or((!codec_hint.is_empty()).then_some(codec_hint));
+
+        match resolved_codec {
+            Some(codec) if is_hevc_hls_preview_codec(codec) => {
+                let source_video = {
+                    let ingests = state.engine.ingests.active.read().await;
+                    ingests
+                        .get(pipeline_id)
+                        .and_then(|ingest| ingest.video.clone())
+                };
+                let profile = crate::media::profiles::get("720p").await;
+                let mut preview_video = source_video.unwrap_or_default();
+                preview_video.codec = "h264".to_string();
+                if profile.width > 0 {
+                    preview_video.width = profile.width;
+                }
+                if profile.height > 0 {
+                    preview_video.height = profile.height;
+                }
+                preview_video.profile = None;
+                preview_video.level = None;
+                preview_video.pixel_format = Some("yuv420p".to_string());
+                let preview_ring = Arc::new(crate::media::ring_buffer::RingBuffer::new(16_384));
+                preview_ring.set_codec_hint("h264");
+                preview_ring.set_audio_tracks(Vec::new());
+                let stage_key = crate::domain::stage::StageKey::new(
+                    pipeline_id,
+                    crate::domain::stage::StageKind::codec_edge(
+                        "hevc_preview_h264",
+                        crate::domain::stage::StageKind::source(),
+                    ),
+                );
+                let engine = state.engine.clone();
+                let pid = pipeline_id.to_string();
+                let preview_ring_clone = preview_ring.clone();
+                let source_ring_clone = source_ring.clone();
+                let cancel = cancel_token.clone();
+                tokio::spawn(async move {
+                    crate::media::external_transcoder::start_external_transcoder_video_only_stage(
+                        pid,
+                        "720p".to_string(),
+                        source_ring_clone,
+                        preview_ring_clone,
+                        engine,
+                        cancel,
+                        None,
+                        stage_key,
+                    )
+                    .await;
+                });
+                return (preview_ring, Some(source_ring), Some(preview_video));
+            }
+            Some(_) => return (source_ring, None, None),
+            None if tokio::time::Instant::now() >= deadline => return (source_ring, None, None),
+            None => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+}
+
+async fn get_or_start_hls_preview_store(
     state: &Arc<AppState>,
     pipeline_id: &str,
 ) -> Result<Arc<HlsStore>, Response> {
@@ -6213,37 +6294,40 @@ async fn get_or_start_hls_store(
         .await
         .contains_key(pipeline_id);
     if has_ingest {
-        let (store, already_running) = state.engine.ensure_hls_segmenter(pipeline_id).await;
+        let (store, already_running) = state.engine.ensure_hls_preview_segmenter(pipeline_id).await;
         if !already_running {
             let engine_c = state.engine.clone();
             let pid = pipeline_id.to_string();
-            let ring_buf = state.engine.get_or_create_pipeline(pipeline_id).await;
             let cancel_token = state
                 .engine
-                .get_hls_cancel_token(pipeline_id)
+                .get_hls_preview_cancel_token(pipeline_id)
                 .await
                 .unwrap();
+            let (ring_buf, audio_ring_buf, preview_video_meta) =
+                select_hls_preview_ring(state, pipeline_id, &cancel_token).await;
             let store_c = store.clone();
             tokio::spawn(async move {
                 crate::media::hls::start_hls_segmenter(
                     pid.clone(),
                     store_c,
                     ring_buf,
+                    audio_ring_buf,
                     engine_c.clone(),
                     cancel_token,
+                    preview_video_meta,
                 )
                 .await;
-                engine_c.shutdown_hls_segmenter(&pid).await;
+                engine_c.shutdown_hls_preview_segmenter(&pid).await;
             });
         }
-        state.engine.touch_hls(pipeline_id).await;
+        state.engine.touch_hls_preview(pipeline_id).await;
         return Ok(store);
     }
 
-    let Some(store) = state.engine.get_hls_store(pipeline_id).await else {
+    let Some(store) = state.engine.get_hls_preview_store(pipeline_id).await else {
         return Err((StatusCode::NOT_FOUND, "No HLS stream").into_response());
     };
-    state.engine.touch_hls(pipeline_id).await;
+    state.engine.touch_hls_preview(pipeline_id).await;
     Ok(store)
 }
 
@@ -6412,10 +6496,31 @@ fn build_h264_codec_string(video: &crate::media::engine::VideoMeta) -> Option<St
         Some("High 10") => 110u8,
         Some("High 4:2:2") => 122u8,
         Some("High 4:4:4 Predictive") => 244u8,
-        _ => return Some("avc1".to_string()),
+        _ => 100u8,
     };
-    let level = parse_h264_level_idc(video.level.as_deref()).unwrap_or(31);
+    let level = parse_h264_level_idc(video.level.as_deref())
+        .unwrap_or_else(|| estimate_h264_level_idc(video));
     Some(format!("avc1.{profile_idc:02x}00{level:02x}"))
+}
+
+fn estimate_h264_level_idc(video: &crate::media::engine::VideoMeta) -> u8 {
+    let width = video.width.max(1);
+    let height = video.height.max(1);
+    let fps = if video.fps.is_finite() && video.fps > 0.0 {
+        video.fps
+    } else {
+        30.0
+    };
+    let macroblocks_per_frame = width.div_ceil(16).saturating_mul(height.div_ceil(16));
+    let macroblocks_per_second = macroblocks_per_frame as f64 * fps;
+
+    if width > 1280 || height > 720 || macroblocks_per_second > 216_000.0 {
+        40
+    } else if macroblocks_per_second > 108_000.0 {
+        32
+    } else {
+        31
+    }
 }
 
 fn parse_h264_level_idc(level: Option<&str>) -> Option<u8> {
@@ -6515,7 +6620,7 @@ async fn hls_playlist_handler(
         return response;
     }
 
-    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+    let store = match get_or_start_hls_preview_store(&state, &pipeline_id).await {
         Ok(store) => store,
         Err(response) => return response,
     };
@@ -6539,7 +6644,7 @@ async fn hls_master_handler(
     if let Some(response) = require_hls_access(&state, &headers, &uri).await {
         return response;
     }
-    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+    let store = match get_or_start_hls_preview_store(&state, &pipeline_id).await {
         Ok(store) => store,
         Err(response) => return response,
     };
@@ -6565,7 +6670,7 @@ async fn hls_video_playlist_handler(
     if let Some(response) = require_hls_access(&state, &headers, &uri).await {
         return response;
     }
-    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+    let store = match get_or_start_hls_preview_store(&state, &pipeline_id).await {
         Ok(store) => store,
         Err(response) => return response,
     };
@@ -6589,7 +6694,7 @@ async fn hls_audio_playlist_handler(
     if let Some(response) = require_hls_access(&state, &headers, &uri).await {
         return response;
     }
-    let store = match get_or_start_hls_store(&state, &pipeline_id).await {
+    let store = match get_or_start_hls_preview_store(&state, &pipeline_id).await {
         Ok(store) => store,
         Err(response) => return response,
     };
@@ -6621,8 +6726,8 @@ async fn hls_segment_handler(
         return response;
     }
 
-    state.engine.touch_hls(&pipeline_id).await;
-    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+    state.engine.touch_hls_preview(&pipeline_id).await;
+    let Some(store) = state.engine.get_hls_preview_store(&pipeline_id).await else {
         return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
     };
     let index = segment
@@ -6649,8 +6754,8 @@ async fn hls_video_segment_handler(
     if let Some(response) = require_hls_access(&state, &headers, &uri).await {
         return response;
     }
-    state.engine.touch_hls(&pipeline_id).await;
-    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+    state.engine.touch_hls_preview(&pipeline_id).await;
+    let Some(store) = state.engine.get_hls_preview_store(&pipeline_id).await else {
         return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
     };
     let Some(index) = parse_hls_segment_name(&segment) else {
@@ -6673,8 +6778,8 @@ async fn hls_audio_segment_handler(
     if let Some(response) = require_hls_access(&state, &headers, &uri).await {
         return response;
     }
-    state.engine.touch_hls(&pipeline_id).await;
-    let Some(store) = state.engine.get_hls_store(&pipeline_id).await else {
+    state.engine.touch_hls_preview(&pipeline_id).await;
+    let Some(store) = state.engine.get_hls_preview_store(&pipeline_id).await else {
         return (StatusCode::NOT_FOUND, "No HLS stream").into_response();
     };
     let Some(index) = parse_hls_segment_name(&segment) else {
@@ -6857,6 +6962,38 @@ mod tests {
         let codecs = build_hls_codec_list(Some(&video), &audio_tracks);
 
         assert_eq!(codecs.as_deref(), Some("avc1.64001f,mp4a.40.2"));
+    }
+
+    #[test]
+    fn hls_codec_list_falls_back_to_browser_safe_h264_codec_when_profile_missing() {
+        let video = crate::media::engine::VideoMeta {
+            codec: "h264".to_string(),
+            width: 1280,
+            height: 720,
+            fps: 60.0,
+            bw: Some(3_500_000.0),
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+            level: None,
+            pixel_format: Some("yuv420p".to_string()),
+        };
+        let audio_tracks = vec![crate::media::engine::AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: None,
+            language: None,
+            title: None,
+            profile: Some("LC".to_string()),
+        }];
+
+        let codecs = build_hls_codec_list(Some(&video), &audio_tracks);
+
+        assert_eq!(codecs.as_deref(), Some("avc1.640020,mp4a.40.2"));
     }
 
     #[test]

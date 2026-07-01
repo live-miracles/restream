@@ -116,4 +116,16 @@ mod tests {
             StageBackend::InternalFfmpeg
         );
     }
+
+    #[test]
+    fn selects_internal_ffmpeg_for_codec_edges_when_enabled() {
+        let policy = BackendPolicy {
+            use_internal_transcoder: true,
+        };
+
+        assert_eq!(
+            policy.select_backend(&StageKind::codec_edge("hevc_to_h264", StageKind::source())),
+            StageBackend::InternalFfmpeg
+        );
+    }
 }

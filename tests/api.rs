@@ -1347,7 +1347,7 @@ async fn hls_routes_require_authentication() {
 async fn hls_playlist_routes_return_not_found_for_empty_store() {
     let (app, _, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
-    engine.get_or_create_hls_store("test_pipe").await;
+    engine.get_or_create_hls_preview_store("test_pipe").await;
 
     for uri in ["/hls/test_pipe", "/hls/test_pipe/index.m3u8"] {
         let resp = app
@@ -1368,7 +1368,7 @@ async fn hls_playlist_routes_return_not_found_for_empty_store() {
 async fn hls_segment_bad_name_returns_400() {
     let (app, _, engine) = test_app_with_engine().await;
     let cookie = login(&app).await;
-    engine.get_or_create_hls_store("test_pipe").await;
+    engine.get_or_create_hls_preview_store("test_pipe").await;
 
     for uri in ["/hls/test_pipe/notasegment"] {
         let resp = app
@@ -1455,6 +1455,43 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
         .find(|line| !line.starts_with('#') && !line.is_empty())
         .expect("segment path in playlist");
 
+    let mut master_playlist_body = None;
+    for _ in 0..40 {
+        let resp = app
+            .clone()
+            .oneshot(auth_req(
+                "GET",
+                &format!("/hls/{pipeline_id}/master.m3u8"),
+                &cookie,
+                None,
+            ))
+            .await
+            .unwrap();
+
+        if resp.status() == StatusCode::OK {
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8(bytes.to_vec()).expect("master playlist utf8");
+            if body.matches("#EXT-X-MEDIA:TYPE=AUDIO").count() >= 16
+                && body.contains("video/index.m3u8")
+                && body.contains("audio/15/index.m3u8")
+            {
+                master_playlist_body = Some(body);
+                break;
+            }
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let master_playlist =
+        master_playlist_body.expect("master playlist with video and 16 alternate audio tracks");
+    assert_eq!(
+        master_playlist.matches("#EXT-X-MEDIA:TYPE=AUDIO").count(),
+        16
+    );
+    assert!(master_playlist.contains("video/index.m3u8"));
+    assert!(master_playlist.contains("audio/15/index.m3u8"));
+
     let resp = app
         .clone()
         .oneshot(auth_req(
@@ -1470,6 +1507,47 @@ async fn internal_file_ingest_preview_hls_serves_playlist_and_segment() {
     assert!(
         !segment_body.is_empty(),
         "segment payload should not be empty"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/hls/{pipeline_id}/video/index.m3u8"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/hls/{pipeline_id}/audio/15/index.m3u8"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(auth_req(
+            "GET",
+            &format!("/hls/{pipeline_id}/audio/15/{segment}"),
+            &cookie,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let audio_segment_body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        !audio_segment_body.is_empty(),
+        "audio segment payload should not be empty"
     );
 
     registration.cancel_token.cancel();
@@ -2305,9 +2383,8 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
     engine
         .record_egress_error(&oid, "send", "connection reset by peer")
         .await;
-    let (store, _) = engine.ensure_hls_segmenter(&pid).await;
-    engine.add_hls_persistent_consumer(&pid).await;
-    engine.touch_hls(&pid).await;
+    let (store, _) = engine.ensure_hls_preview_segmenter(&pid).await;
+    engine.touch_hls_preview(&pid).await;
     store.push_segment(2.0, bytes::Bytes::from_static(b"segment"));
 
     let resp = app
@@ -2334,7 +2411,7 @@ async fn health_endpoint_exposes_probe_and_egress_fault_fields() {
 
     let hls_preview = &ready["pipelines"][&pid]["hlsPreview"];
     assert_eq!(hls_preview["active"], true);
-    assert_eq!(hls_preview["persistentConsumers"], 1);
+    assert_eq!(hls_preview["persistentConsumers"], 0);
     assert!(hls_preview["lastAccessAgeMs"].as_u64().is_some());
     assert_eq!(hls_preview["segments"], 1);
     assert!(hls_preview["playlistBytes"].as_u64().unwrap_or(0) > 0);

@@ -253,8 +253,10 @@ pub async fn start_hls_segmenter(
     pipeline_id: String,
     store: Arc<HlsStore>,
     ring_buffer: Arc<RingBuffer>,
+    audio_ring_buffer: Option<Arc<RingBuffer>>,
     engine: Arc<MediaEngine>,
     cancel_token: CancellationToken,
+    video_meta_override: Option<VideoMeta>,
 ) {
     let hls_stage_key = crate::domain::stage::StageKey::new(
         pipeline_id.as_str(),
@@ -270,8 +272,12 @@ pub async fn start_hls_segmenter(
             pipeline_id: pipeline_id.clone(),
             encoding: "hls".to_string(),
         });
-    let mut reader = Reader::new_live(format!("hls:{}", pipeline_id), ring_buffer.clone());
+    let mut reader = Reader::new(format!("hls:{}", pipeline_id), ring_buffer.clone());
+    let mut audio_reader = audio_ring_buffer
+        .clone()
+        .map(|ring| Reader::new(format!("hls-audio:{}", pipeline_id), ring));
     let mut packets = Vec::with_capacity(32);
+    let mut audio_packets = Vec::with_capacity(32);
     let mut feeder: Option<TsPacketFeeder> = None;
     // Pre-populate SPS/PPS cache from the engine's stored FLV sequence header.
     // This handles the case where the HLS task starts after the seq header has
@@ -282,6 +288,7 @@ pub async fn start_hls_segmenter(
     let mut segment_start = Instant::now();
     let mut got_first_keyframe = false;
     let mut ts_packet_buf = Vec::<u8>::with_capacity(65536);
+    let preview_video_meta = video_meta_override.clone();
 
     loop {
         tokio::select! {
@@ -294,7 +301,16 @@ pub async fn start_hls_segmenter(
                         Ok(_) => {}
                     }
 
-                    for packet in &packets {
+                    if let Some(audio_reader) = audio_reader.as_mut() {
+                        audio_packets.clear();
+                        let _ = audio_reader.pull_burst(&mut audio_packets, 32);
+                    }
+
+                    for packet in packets.iter().chain(
+                        audio_packets
+                            .iter()
+                            .filter(|packet| packet.media_type == MediaType::Audio),
+                    ) {
                         if packet.media_type == MediaType::Video && packet.is_keyframe {
                             if got_first_keyframe {
                                 let elapsed = segment_start.elapsed().as_secs_f64();
@@ -327,18 +343,39 @@ pub async fn start_hls_segmenter(
                                     });
                                     return;
                                 }
-                                if let Some(tracks) = ring_buffer.audio_tracks() {
-                                    let ingests = engine.ingests.active.read().await;
-                                    if let Some(i) = ingests.get(&pipeline_id)
-                                        && let Some(video) = i.video.clone()
-                                    {
-                                        break (Some(video), std::sync::Arc::new(tracks.to_vec()));
+                                if let Some(tracks) = ring_buffer
+                                    .audio_tracks()
+                                    .filter(|tracks| !tracks.is_empty())
+                                {
+                                    let video = if let Some(video) = preview_video_meta.clone() {
+                                        Some(video)
+                                    } else {
+                                        let ingests = engine.ingests.active.read().await;
+                                        ingests.get(&pipeline_id).and_then(|i| i.video.clone())
+                                    };
+                                    if video.is_some() {
+                                        break (video, std::sync::Arc::new(tracks.to_vec()));
+                                    }
+                                }
+                                if let Some(audio_ring_buffer) = audio_ring_buffer.as_ref()
+                                    && let Some(tracks) = audio_ring_buffer
+                                        .audio_tracks()
+                                        .filter(|tracks| !tracks.is_empty())
+                                {
+                                    let video = if let Some(video) = preview_video_meta.clone() {
+                                        Some(video)
+                                    } else {
+                                        let ingests = engine.ingests.active.read().await;
+                                        ingests.get(&pipeline_id).and_then(|i| i.video.clone())
+                                    };
+                                    if video.is_some() {
+                                        break (video, std::sync::Arc::new(tracks.to_vec()));
                                     }
                                 }
                                 let result = {
                                     let ingests = engine.ingests.active.read().await;
                                     ingests.get(&pipeline_id).and_then(|i| {
-                                        let video = i.video.clone();
+                                        let video = preview_video_meta.clone().or(i.video.clone());
                                         video.as_ref()?;
                                         let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
                                         let tracks = if lock.is_empty()
@@ -406,6 +443,7 @@ pub async fn start_hls_segmenter(
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
+    use tokio_util::sync::CancellationToken;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -771,5 +809,77 @@ mod tests {
                 .get_variant_segment(99, HlsSegmentVariant::Audio(0))
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn preview_ring_uses_alternate_audio_tracks_when_primary_audio_is_empty() {
+        let store = Arc::new(test_store());
+        let engine = Arc::new(MediaEngine::new());
+        let source_ring = Arc::new(RingBuffer::new(2048));
+        let preview_ring = Arc::new(RingBuffer::new(2048));
+        let cancel = CancellationToken::new();
+
+        let (video, audio_tracks, packets) =
+            crate::test_fixtures::primary_av_packets_for_codec("h264").expect("fixture packets");
+        let video_packets = packets
+            .iter()
+            .filter(|packet| packet.media_type == MediaType::Video)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        source_ring.set_codec_hint("h264");
+        source_ring.set_audio_tracks(audio_tracks.clone());
+        preview_ring.set_codec_hint("h264");
+        preview_ring.set_audio_tracks(Vec::new());
+
+        let task = tokio::spawn(start_hls_segmenter(
+            "preview-audio-fallback".to_string(),
+            store.clone(),
+            preview_ring.clone(),
+            Some(source_ring.clone()),
+            engine,
+            cancel.clone(),
+            Some(video.clone()),
+        ));
+
+        let reader_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let preview_ready = preview_ring
+                .reader_snapshots()
+                .iter()
+                .any(|snapshot| snapshot.name == "hls:preview-audio-fallback");
+            let audio_ready = source_ring
+                .reader_snapshots()
+                .iter()
+                .any(|snapshot| snapshot.name == "hls-audio:preview-audio-fallback");
+            if preview_ready && audio_ready {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < reader_deadline,
+                "hls preview readers did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        source_ring.push_batch(packets);
+        preview_ring.push_batch(video_packets);
+
+        let metadata_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let (_, store_audio_tracks) = store.stream_metadata();
+            if !store_audio_tracks.is_empty() {
+                assert_eq!(store_audio_tracks.len(), audio_tracks.len());
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < metadata_deadline,
+                "hls preview store never adopted alternate audio-ring metadata"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        cancel.cancel();
+        task.await.expect("segmenter task should stop cleanly");
     }
 }

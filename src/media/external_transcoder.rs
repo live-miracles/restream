@@ -46,7 +46,8 @@ use crate::domain::stage::StageKey;
 use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
 use crate::media::mpegts::TsDemuxer;
 use crate::media::pipe_metrics::PipeMetrics;
-use crate::media::ring_buffer::{Reader, RingBuffer};
+use crate::media::ring_buffer::{MediaType, Reader, RingBuffer};
+use crate::media::{engine::AudioMeta, engine::VideoMeta};
 
 /// Stdin writes or stdout reads exceeding this threshold are counted as stalls/idles.
 /// 1 ms filters normal async scheduling jitter while catching real back-pressure.
@@ -65,7 +66,11 @@ use crate::media::timing;
 /// anything else → `libx264`.  Pass the ingest codec so that H.265 sources
 /// transcode to H.265 output (preserving codec across the preset stage)
 /// and H.264 sources transcode to H.264 output.
-pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
+fn build_stage_ffmpeg_args_inner(
+    preset: &str,
+    input_codec: &str,
+    include_audio: bool,
+) -> Vec<String> {
     // Strip the internal stage-key prefix ("video:720p" → "720p").
     // Audio stages receive the selected upstream video ring, so they copy video
     // while applying any channel-level audio filter.
@@ -100,13 +105,19 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
         "-nostats".to_string(),
         "-loglevel".to_string(),
         "warning".to_string(),
+        "-fflags".to_string(),
+        "nobuffer".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
         "-f".to_string(),
         "mpegts".to_string(),
         "-i".to_string(),
         "pipe:0".to_string(),
     ];
 
-    if let Some(filter) = audio_filter_complex(&audio_routing) {
+    if !include_audio {
+        args.extend(["-map".to_string(), "0:v:0".to_string()]);
+    } else if let Some(filter) = audio_filter_complex(&audio_routing) {
         args.extend(["-filter_complex".to_string(), filter]);
         args.extend(["-map".to_string(), "0:v:0?".to_string()]);
         args.extend(["-map".to_string(), "[aout]".to_string()]);
@@ -171,7 +182,11 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
     // ── audio ────────────────────────────────────────────────────────────
     // atrack selection stays in the zero-copy audio router. Channel-level
     // remap/downmix stages arrive here and must decode/filter/re-encode audio.
-    if audio_routing.is_some() {
+    if !include_audio {
+        // Video-only stages intentionally omit audio from the live pipe so FFmpeg
+        // does not stall probing a high-track-count TS input when preview only
+        // needs browser-safe video.
+    } else if audio_routing.is_some() {
         args.extend([
             "-c:a".to_string(),
             "aac".to_string(),
@@ -184,10 +199,34 @@ pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
         args.extend(["-c:a".to_string(), "copy".to_string()]);
     }
 
-    // ── output: MPEG-TS to stdout ─────────────────────────────────────────
-    args.extend(["-f".to_string(), "mpegts".to_string(), "pipe:1".to_string()]);
+    // ── output: low-latency MPEG-TS to stdout ─────────────────────────────
+    args.extend([
+        "-mpegts_flags".to_string(),
+        "resend_headers+pat_pmt_at_frames".to_string(),
+        "-pes_payload_size".to_string(),
+        "0".to_string(),
+        "-omit_video_pes_length".to_string(),
+        "0".to_string(),
+        "-flush_packets".to_string(),
+        "1".to_string(),
+        "-muxdelay".to_string(),
+        "0".to_string(),
+        "-muxpreload".to_string(),
+        "0".to_string(),
+        "-f".to_string(),
+        "mpegts".to_string(),
+        "pipe:1".to_string(),
+    ]);
 
     args
+}
+
+pub fn build_stage_ffmpeg_args(preset: &str, input_codec: &str) -> Vec<String> {
+    build_stage_ffmpeg_args_inner(preset, input_codec, true)
+}
+
+pub fn build_stage_ffmpeg_video_only_args(preset: &str, input_codec: &str) -> Vec<String> {
+    build_stage_ffmpeg_args_inner(preset, input_codec, false)
 }
 
 fn stage_audio_routing(preset: &str) -> Option<AudioRouting> {
@@ -217,6 +256,66 @@ fn audio_filter_complex(routing: &Option<AudioRouting>) -> Option<String> {
             Some(format!("[0:a:{track}]aresample=out_chlayout=stereo[aout]"))
         }
         _ => None,
+    }
+}
+
+async fn wait_for_stage_metadata(
+    engine: &Arc<crate::media::engine::MediaEngine>,
+    pipeline_id: &str,
+    source_buffer: &Arc<RingBuffer>,
+    include_audio: bool,
+    input_codec_override: Option<&str>,
+    cancel: &CancellationToken,
+) -> Option<(VideoMeta, std::sync::Arc<Vec<AudioMeta>>)> {
+    loop {
+        if cancel.is_cancelled() {
+            return None;
+        }
+
+        let ingest_result = {
+            let ingests = engine.ingests.active.read().await;
+            ingests.get(pipeline_id).and_then(|ingest| {
+                let mut video = ingest.video.clone()?;
+                if let Some(codec) = input_codec_override {
+                    video.codec = codec.to_string();
+                } else {
+                    let hint = source_buffer.codec_hint_str();
+                    if !hint.is_empty() {
+                        video.codec = hint.to_string();
+                    }
+                }
+
+                let audio_tracks = if include_audio {
+                    source_buffer
+                        .audio_tracks()
+                        .filter(|tracks| !tracks.is_empty())
+                        .map(|tracks| std::sync::Arc::new(tracks.to_vec()))
+                        .unwrap_or_else(|| {
+                            let lock = ingest
+                                .audio_tracks
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if lock.is_empty()
+                                && let Some(audio) = ingest.audio.clone()
+                            {
+                                std::sync::Arc::new(vec![audio])
+                            } else {
+                                std::sync::Arc::clone(&lock)
+                            }
+                        })
+                } else {
+                    std::sync::Arc::new(Vec::new())
+                };
+
+                Some((video, audio_tracks))
+            })
+        };
+
+        if let Some(meta) = ingest_result {
+            return Some(meta);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
@@ -256,14 +355,70 @@ pub async fn start_external_transcoder_stage(
     input_codec_override: Option<String>,
     stage_key: StageKey,
 ) {
+    start_external_transcoder_stage_inner(
+        pipeline_id,
+        encoding,
+        input_buffer,
+        output_buffer,
+        engine,
+        cancel,
+        input_codec_override,
+        stage_key,
+        true,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn start_external_transcoder_video_only_stage(
+    pipeline_id: String,
+    encoding: String,
+    input_buffer: Arc<RingBuffer>,
+    output_buffer: Arc<RingBuffer>,
+    engine: Arc<crate::media::engine::MediaEngine>,
+    cancel: CancellationToken,
+    input_codec_override: Option<String>,
+    stage_key: StageKey,
+) {
+    start_external_transcoder_stage_inner(
+        pipeline_id,
+        encoding,
+        input_buffer,
+        output_buffer,
+        engine,
+        cancel,
+        input_codec_override,
+        stage_key,
+        false,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_external_transcoder_stage_inner(
+    pipeline_id: String,
+    encoding: String,
+    input_buffer: Arc<RingBuffer>,
+    output_buffer: Arc<RingBuffer>,
+    engine: Arc<crate::media::engine::MediaEngine>,
+    cancel: CancellationToken,
+    input_codec_override: Option<String>,
+    stage_key: StageKey,
+    include_audio: bool,
+) {
     let input_codec = input_codec_override.as_deref().unwrap_or("h264");
-    let args = build_stage_ffmpeg_args(&encoding, input_codec);
+    let args = if include_audio {
+        build_stage_ffmpeg_args(&encoding, input_codec)
+    } else {
+        build_stage_ffmpeg_video_only_args(&encoding, input_codec)
+    };
     let correlation_id = crate::logging::next_correlation_id("stage");
     info!(
         correlation_id = %correlation_id,
         pipeline_id = %pipeline_id,
         stage_encoding = %encoding,
         stage_backend = "external_ffmpeg",
+        include_audio,
         "[ext-transcoder] stage start  pipeline={} encoding={}",
         pipeline_id,
         encoding
@@ -457,53 +612,29 @@ pub async fn start_external_transcoder_stage(
     }
 
     // ── wait for ingest metadata (video codec, audio tracks) ──────────────
-    let (video_meta, audio_tracks) = loop {
-        if cancel.is_cancelled() {
-            let _ = stdin.shutdown().await;
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            engine.remove_stage_metrics(&stage_key).await;
-            engine.remove_pipe_metrics(&stage_key).await;
-            engine
-                .runtime
-                .event_log
-                .emit(crate::events::EventKind::StageStopped {
-                    pipeline_id: pipeline_id.clone(),
-                    encoding: encoding.clone(),
-                });
-            return;
-        }
-        let result = {
-            let ingests = engine.ingests.active.read().await;
-            ingests.get(&pipeline_id).and_then(|i| {
-                let video = i.video.clone()?;
-                let lock = i.audio_tracks.lock().unwrap_or_else(|e| e.into_inner());
-                let tracks = if lock.is_empty()
-                    && let Some(a) = i.audio.clone()
-                {
-                    std::sync::Arc::new(vec![a])
-                } else {
-                    std::sync::Arc::clone(&lock)
-                };
-                Some((video, tracks))
-            })
-        };
-        if let Some(meta) = result {
-            break meta;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    };
-
-    // Apply codec override: when the input ring comes from a hevc_to_h264 stage
-    // the ingest metadata says "hevc" but packets are actually H.264 Annex B.
-    // The TsMuxer PMT stream_type must match the actual bitstream so FFmpeg picks
-    // the right decoder (0x1B for H.264, 0x24 for H.265).
-    let video_meta = if let Some(ref oc) = input_codec_override {
-        let mut vm = video_meta;
-        vm.codec = oc.clone();
-        vm
-    } else {
-        video_meta
+    let Some((video_meta, audio_tracks)) = wait_for_stage_metadata(
+        &engine,
+        &pipeline_id,
+        &input_buffer,
+        include_audio,
+        input_codec_override.as_deref(),
+        &cancel,
+    )
+    .await
+    else {
+        let _ = stdin.shutdown().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        engine.remove_stage_metrics(&stage_key).await;
+        engine.remove_pipe_metrics(&stage_key).await;
+        engine
+            .runtime
+            .event_log
+            .emit(crate::events::EventKind::StageStopped {
+                pipeline_id: pipeline_id.clone(),
+                encoding: encoding.clone(),
+            });
+        return;
     };
 
     // ── stdout task: demux MPEG-TS → output_ring ───────────────────────────
@@ -517,6 +648,9 @@ pub async fn start_external_transcoder_stage(
         "h264"
     };
     output_buffer.set_codec_hint(output_codec);
+    if !include_audio {
+        output_buffer.set_audio_tracks(Vec::new());
+    }
     {
         let out_ring = output_buffer.clone();
         let cancel_out = cancel.clone();
@@ -583,6 +717,9 @@ pub async fn start_external_transcoder_stage(
                     continue;
                 }
                 for pkt in packets.drain(..) {
+                    if !include_audio && pkt.media_type == MediaType::Audio {
+                        continue;
+                    }
                     let in_bytes = pkt.payload.len() as u64;
                     ts_batch.clear();
                     if feeder.extend_ts_for_packet(&pkt, &mut ts_batch) {
@@ -641,6 +778,64 @@ pub async fn start_external_transcoder_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::stage::{StageKey, StageKind};
+    use crate::media::engine::MediaEngine;
+    use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
+    use crate::media::mpegts::TsDemuxer;
+    use crate::media::ring_buffer::{MediaType, Reader};
+    use tokio_util::sync::CancellationToken;
+
+    fn extract_2v16a_hevc_ts_sample_for_duration(seconds: u32) -> Vec<u8> {
+        let ffmpeg = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+        let fixture = crate::test_fixtures::checked_in_fixture("media/colorbar-timer-2v16a.mp4")
+            .expect("2v16a fixture should exist");
+        let output = std::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                fixture.to_str().expect("utf-8 fixture path"),
+                "-map",
+                "0:v:1",
+                "-map",
+                "0:a",
+                "-c",
+                "copy",
+                "-t",
+                &seconds.to_string(),
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ])
+            .output()
+            .expect("spawn bundled ffmpeg for 2v16a HEVC sample extraction");
+        assert!(
+            output.status.success(),
+            "ffmpeg 2v16a HEVC sample extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.stdout.is_empty(),
+            "2v16a HEVC TS sample should not be empty"
+        );
+        output.stdout
+    }
+
+    fn extract_2v16a_hevc_ts_sample() -> Vec<u8> {
+        extract_2v16a_hevc_ts_sample_for_duration(1)
+    }
+
+    fn write_temp_ts_artifact(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "restream-external-transcoder-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp artifact dir");
+        let path = dir.join("artifact.ts");
+        std::fs::write(&path, bytes).expect("write temp TS artifact");
+        path
+    }
 
     #[test]
     fn stage_args_720p_reads_stdin_writes_stdout() {
@@ -656,6 +851,10 @@ mod tests {
         // transcode, not copy
         let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[cv_pos + 1], "libx264");
+        assert!(args.windows(2).any(|w| w == ["-flush_packets", "1"]));
+        assert!(args.windows(2).any(|w| w == ["-muxdelay", "0"]));
+        assert!(args.windows(2).any(|w| w == ["-muxpreload", "0"]));
+        assert!(args.windows(2).any(|w| w == ["-pes_payload_size", "0"]));
         // writes to stdout
         assert!(args.last() == Some(&"pipe:1".to_string()));
     }
@@ -708,6 +907,14 @@ mod tests {
         // no scale filter
         assert!(!args.iter().any(|a| a == "-vf"));
         assert!(args.last() == Some(&"pipe:1".to_string()));
+    }
+
+    #[test]
+    fn stage_args_h264_transcodes_without_scaling() {
+        let args = build_stage_ffmpeg_args("h264", "h264");
+        let cv_pos = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[cv_pos + 1], "libx264");
+        assert!(!args.iter().any(|a| a == "-vf"));
     }
 
     #[test]
@@ -812,6 +1019,94 @@ mod tests {
         assert!(stage_audio_routing("source").is_none());
     }
 
+    #[tokio::test]
+    async fn stage_metadata_prefers_upstream_ring_tracks_and_codec_hint() {
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-stage-meta", "stream-key", "srt")
+            .await
+            .unwrap();
+
+        let ingest_audio = vec![
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 0,
+                pid: Some(0x101),
+                language: None,
+                title: None,
+                profile: None,
+            },
+            crate::media::engine::AudioMeta {
+                codec: "aac".to_string(),
+                sample_rate: 48000,
+                channels: 2,
+                channel_layout: None,
+                track_index: 1,
+                pid: Some(0x102),
+                language: None,
+                title: None,
+                profile: None,
+            },
+        ];
+        engine
+            .update_ingest_meta(
+                "pipe-stage-meta",
+                Some(crate::media::engine::VideoMeta {
+                    codec: "hevc".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    fps: 30.0,
+                    bw: None,
+                    pid: Some(0x100),
+                    language: None,
+                    title: None,
+                    profile: None,
+                    level: None,
+                    pixel_format: None,
+                }),
+                ingest_audio.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-stage-meta", ingest_audio)
+            .await;
+
+        let upstream_ring = Arc::new(RingBuffer::new(1024));
+        upstream_ring.set_codec_hint("h264");
+        upstream_ring.set_audio_tracks(vec![crate::media::engine::AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            channels: 2,
+            channel_layout: None,
+            track_index: 0,
+            pid: Some(0x101),
+            language: None,
+            title: None,
+            profile: None,
+        }]);
+
+        let cancel = CancellationToken::new();
+        let (video, audio_tracks) = wait_for_stage_metadata(
+            &engine,
+            "pipe-stage-meta",
+            &upstream_ring,
+            true,
+            None,
+            &cancel,
+        )
+        .await
+        .expect("stage metadata");
+
+        assert_eq!(video.codec, "h264");
+        assert_eq!(audio_tracks.len(), 1);
+        assert_eq!(audio_tracks[0].track_index, 0);
+        assert_eq!(audio_tracks[0].pid, Some(0x101));
+    }
+
     #[test]
     fn audio_filter_complex_remap_format() {
         let routing = Some(AudioRouting::Remap {
@@ -894,5 +1189,537 @@ mod tests {
         // 'true' exits 0; kill() on an already-exited process may produce a
         // non-zero status on some platforms — just assert we didn't hang.
         let _ = status;
+    }
+
+    #[tokio::test]
+    #[ignore = "HEVC browser preview no longer transcodes directly from the 4K source ring"]
+    async fn external_720p_stage_emits_live_packets_for_hevc_sample() {
+        let ts_sample = extract_2v16a_hevc_ts_sample();
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in ts_sample.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("probe 2v16a HEVC sample");
+        let video = probe.video.expect("sample should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-preview", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-preview",
+                Some(video),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-preview", audio_tracks.clone())
+            .await;
+
+        let source_ring = Arc::new(RingBuffer::new(16_384));
+        source_ring.set_codec_hint("hevc");
+        source_ring.set_audio_tracks(audio_tracks);
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let mut reader = Reader::new_live("test_ext_720p_output".to_string(), output_ring.clone());
+        let cancel = CancellationToken::new();
+        let stage_key = StageKey::new(
+            "pipe-ext-preview",
+            StageKind::codec_edge("hevc_to_h264", StageKind::source()),
+        );
+
+        tokio::spawn(start_external_transcoder_stage(
+            "pipe-ext-preview".to_string(),
+            "720p".to_string(),
+            source_ring.clone(),
+            output_ring,
+            engine,
+            cancel.clone(),
+            None,
+            stage_key,
+        ));
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if source_ring
+                .reader_snapshots()
+                .iter()
+                .any(|snapshot| snapshot.name.contains("ext-stage:pipe-ext-preview:720p"))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "external 720p stage reader did not attach to the source ring in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        source_ring.push_batch(packets.drain(..));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let mut output_packets = Vec::new();
+        while let Ok(Some(packet)) = reader.pull() {
+            output_packets.push(packet);
+        }
+
+        cancel.cancel();
+
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "external 720p HEVC preview stage should emit live video packets"
+        );
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video && packet.is_keyframe),
+            "external 720p HEVC preview stage should emit a live keyframe"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic: current live HEVC + 16 audio preview stage still stalls without EOF"]
+    async fn chained_hevc_preview_stages_emit_live_h264_packets() {
+        let ts_sample = extract_2v16a_hevc_ts_sample();
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in ts_sample.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("probe 2v16a HEVC sample");
+        let video = probe.video.expect("sample should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-preview-chain", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-preview-chain",
+                Some(video),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-preview-chain", audio_tracks.clone())
+            .await;
+
+        let source_ring = engine
+            .get_or_create_pipeline("pipe-ext-preview-chain")
+            .await;
+        source_ring.set_codec_hint("hevc");
+        source_ring.set_audio_tracks(audio_tracks);
+
+        let hevc_preview_upstream = engine
+            .get_or_create_transcoder(
+                "pipe-ext-preview-chain",
+                StageKind::video_preset("1080p"),
+                source_ring.clone(),
+                Some("hevc"),
+            )
+            .await;
+        let h264_preview_ring = engine
+            .get_or_create_h264_transcoder(
+                "pipe-ext-preview-chain",
+                StageKind::video_preset("1080p"),
+                hevc_preview_upstream.clone(),
+            )
+            .await;
+        let mut hevc_reader = Reader::new_live(
+            "test_ext_preview_chain_mid".to_string(),
+            hevc_preview_upstream.clone(),
+        );
+        let mut reader = Reader::new_live(
+            "test_ext_preview_chain_output".to_string(),
+            h264_preview_ring.clone(),
+        );
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let source_attached = source_ring.reader_snapshots().iter().any(|snapshot| {
+                snapshot
+                    .name
+                    .contains("ext-stage:pipe-ext-preview-chain:video:1080p")
+            });
+            let chained_attached =
+                hevc_preview_upstream
+                    .reader_snapshots()
+                    .iter()
+                    .any(|snapshot| {
+                        snapshot
+                            .name
+                            .contains("ext-stage:pipe-ext-preview-chain:720p")
+                    });
+            if source_attached && chained_attached {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "preview chain readers did not both attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        source_ring.push_batch(packets.drain(..));
+        let output_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+        let mut hevc_packets = Vec::new();
+        let mut output_packets = Vec::new();
+        loop {
+            while let Ok(Some(packet)) = hevc_reader.pull() {
+                hevc_packets.push(packet);
+            }
+            while let Ok(Some(packet)) = reader.pull() {
+                output_packets.push(packet);
+            }
+            if output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= output_deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        assert_eq!(
+            h264_preview_ring.codec_hint_str(),
+            "h264",
+            "preview codec-edge ring should advertise H.264 output"
+        );
+        assert!(
+            hevc_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "preview chain should first emit live HEVC packets from the 1080p stage"
+        );
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "chained HEVC preview stages should emit live video packets"
+        );
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video && packet.is_keyframe),
+            "chained HEVC preview stages should emit a live keyframe"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_720p_stage_emits_live_packets_for_single_audio_hevc_fixture() {
+        let (video, audio_tracks, mut packets) =
+            crate::test_fixtures::primary_av_packets_for_codec("h265")
+                .expect("single-audio HEVC fixture");
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-hevc-single-audio", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-hevc-single-audio",
+                Some(video),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-hevc-single-audio", audio_tracks.clone())
+            .await;
+
+        let source_ring = Arc::new(RingBuffer::new(16_384));
+        source_ring.set_codec_hint("hevc");
+        source_ring.set_audio_tracks(audio_tracks);
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let mut reader = Reader::new_live(
+            "test_ext_720p_single_audio_output".to_string(),
+            output_ring.clone(),
+        );
+        let cancel = CancellationToken::new();
+        let stage_key = StageKey::new(
+            "pipe-ext-hevc-single-audio",
+            StageKind::codec_edge("hevc_to_h264", StageKind::source()),
+        );
+
+        tokio::spawn(start_external_transcoder_stage(
+            "pipe-ext-hevc-single-audio".to_string(),
+            "720p".to_string(),
+            source_ring.clone(),
+            output_ring,
+            engine,
+            cancel.clone(),
+            None,
+            stage_key,
+        ));
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if source_ring.reader_snapshots().iter().any(|snapshot| {
+                snapshot
+                    .name
+                    .contains("ext-stage:pipe-ext-hevc-single-audio:720p")
+            }) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "external 720p single-audio HEVC stage reader did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        source_ring.push_batch(packets.drain(..));
+        let output_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        let mut output_packets = Vec::new();
+        loop {
+            while let Ok(Some(packet)) = reader.pull() {
+                output_packets.push(packet);
+            }
+            if output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= output_deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        cancel.cancel();
+
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "external 720p single-audio HEVC stage should emit live video packets"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic: current live HEVC + 16 audio preview stage still stalls without EOF"]
+    async fn external_720p_stage_emits_live_packets_for_2v16a_hevc_with_longer_input() {
+        let ts_sample = extract_2v16a_hevc_ts_sample_for_duration(5);
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in ts_sample.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer
+            .take_probe()
+            .expect("probe longer 2v16a HEVC sample");
+        let video = probe.video.expect("sample should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-preview-long", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-preview-long",
+                Some(video),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-preview-long", audio_tracks.clone())
+            .await;
+
+        let source_ring = Arc::new(RingBuffer::new(32_768));
+        source_ring.set_codec_hint("hevc");
+        source_ring.set_audio_tracks(audio_tracks);
+        let output_ring = Arc::new(RingBuffer::new(32_768));
+        let mut reader =
+            Reader::new_live("test_ext_720p_long_output".to_string(), output_ring.clone());
+        let cancel = CancellationToken::new();
+        let stage_key = StageKey::new(
+            "pipe-ext-preview-long",
+            StageKind::codec_edge("hevc_to_h264", StageKind::source()),
+        );
+
+        tokio::spawn(start_external_transcoder_stage(
+            "pipe-ext-preview-long".to_string(),
+            "720p".to_string(),
+            source_ring.clone(),
+            output_ring,
+            engine,
+            cancel.clone(),
+            None,
+            stage_key,
+        ));
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if source_ring.reader_snapshots().iter().any(|snapshot| {
+                snapshot
+                    .name
+                    .contains("ext-stage:pipe-ext-preview-long:720p")
+            }) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "external 720p long-input HEVC stage reader did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        source_ring.push_batch(packets.drain(..));
+        let output_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut output_packets = Vec::new();
+        loop {
+            while let Ok(Some(packet)) = reader.pull() {
+                output_packets.push(packet);
+            }
+            if output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= output_deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        cancel.cancel();
+
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "external 720p HEVC preview stage should emit live video packets with longer 2v16a input"
+        );
+    }
+
+    #[test]
+    fn feeder_remuxed_single_audio_hevc_fixture_decodes_as_ts_file() {
+        let (video, audio_tracks, packets) =
+            crate::test_fixtures::primary_av_packets_for_codec("h265")
+                .expect("single-audio HEVC fixture");
+        let mut feeder = TsPacketFeeder::new(
+            Some(&video),
+            std::sync::Arc::new(audio_tracks),
+            PacketFeedConfig::default(),
+        );
+        let mut ts_bytes = Vec::new();
+        let mut packet_buf = Vec::new();
+
+        for packet in &packets {
+            packet_buf.clear();
+            if feeder.extend_ts_for_packet(packet, &mut packet_buf) {
+                ts_bytes.extend_from_slice(&packet_buf);
+            }
+        }
+
+        assert!(
+            !ts_bytes.is_empty(),
+            "remuxed HEVC fixture should produce TS bytes"
+        );
+
+        let ts_path = write_temp_ts_artifact("hevc-feeder-remux", &ts_bytes);
+        let output = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-i",
+                ts_path.to_str().expect("utf-8 ts path"),
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
+            .expect("spawn ffmpeg decode check");
+
+        assert!(
+            output.status.success(),
+            "ffmpeg should decode feeder-remuxed HEVC TS: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn feeder_remuxed_single_audio_hevc_fixture_transcodes_as_file_input() {
+        let (video, audio_tracks, packets) =
+            crate::test_fixtures::primary_av_packets_for_codec("h265")
+                .expect("single-audio HEVC fixture");
+        let mut feeder = TsPacketFeeder::new(
+            Some(&video),
+            std::sync::Arc::new(audio_tracks),
+            PacketFeedConfig::default(),
+        );
+        let mut ts_bytes = Vec::new();
+        let mut packet_buf = Vec::new();
+
+        for packet in &packets {
+            packet_buf.clear();
+            if feeder.extend_ts_for_packet(packet, &mut packet_buf) {
+                ts_bytes.extend_from_slice(&packet_buf);
+            }
+        }
+
+        let input_path = write_temp_ts_artifact("hevc-feeder-transcode-input", &ts_bytes);
+        let output_path = input_path
+            .parent()
+            .expect("temp artifact dir")
+            .join("output.ts");
+        let ffmpeg = crate::ffmpeg_extract::ensure_ffmpeg_extracted();
+        let mut args = build_stage_ffmpeg_args("720p", "h264");
+        let input_pos = args
+            .iter()
+            .position(|arg| arg == "-i")
+            .expect("stage args should contain input flag");
+        args[input_pos + 1] = input_path.to_string_lossy().to_string();
+        let last = args.last_mut().expect("stage args should contain output");
+        *last = output_path.to_string_lossy().to_string();
+
+        let output = std::process::Command::new(ffmpeg)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("spawn bundled ffmpeg transcode");
+
+        assert!(
+            output.status.success(),
+            "ffmpeg should transcode feeder-remuxed HEVC TS file input: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            std::fs::metadata(&output_path)
+                .map(|meta| meta.len() > 0)
+                .unwrap_or(false),
+            "file-based transcode should produce a non-empty TS output"
+        );
     }
 }

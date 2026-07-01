@@ -29,6 +29,15 @@ pub use crate::media::stage_metrics::StageMetrics;
 pub(crate) const EGRESS_PROGRESS_STALE_MS: u64 = 10_000;
 pub(crate) const INGEST_FLAP_WINDOW_MS: u64 = 30_000;
 pub(crate) const EGRESS_FLAP_WINDOW_MS: u64 = 30_000;
+const HLS_PREVIEW_KEY_PREFIX: &str = "__preview__:";
+
+fn hls_preview_registry_key(pipeline_id: &str) -> String {
+    format!("{HLS_PREVIEW_KEY_PREFIX}{pipeline_id}")
+}
+
+fn pipeline_id_from_hls_preview_registry_key(key: &str) -> Option<&str> {
+    key.strip_prefix(HLS_PREVIEW_KEY_PREFIX)
+}
 
 /// Tracks HLS consumers for a pipeline. Persistent consumers (egress outputs)
 /// register/unregister explicitly. Transient consumers (browser preview) keep
@@ -511,9 +520,10 @@ impl MediaEngine {
     pub async fn hls_dependency_snapshot(&self, pipeline_id: &str) -> HlsDependencySnapshot {
         let consumers = self.hls.consumers.read().await;
         let stores = self.hls.stores.read().await;
+        let preview_key = hls_preview_registry_key(pipeline_id);
 
-        let consumer = consumers.get(pipeline_id);
-        let store = stores.get(pipeline_id);
+        let consumer = consumers.get(&preview_key);
+        let store = stores.get(&preview_key);
         let snapshot = store.and_then(|store| store.snapshot());
 
         HlsDependencySnapshot {
@@ -1412,17 +1422,34 @@ impl MediaEngine {
         let pid = pipeline_id.to_string();
         let ob = output_buf.clone();
         let self_clone = self.clone();
-        tokio::spawn(async move {
-            crate::media::h264_transcoder::start_h264_transcoder(
-                pid,
-                source_buffer,
-                ob,
-                self_clone,
-                cancel,
-                key,
-            )
-            .await;
-        });
+        let backend = BackendPolicy::from_env().select_backend(&key.kind);
+        if backend == StageBackend::InternalFfmpeg {
+            tokio::spawn(async move {
+                crate::media::h264_transcoder::start_h264_transcoder(
+                    pid,
+                    source_buffer,
+                    ob,
+                    self_clone,
+                    cancel,
+                    key,
+                )
+                .await;
+            });
+        } else {
+            tokio::spawn(async move {
+                crate::media::external_transcoder::start_external_transcoder_stage(
+                    pid,
+                    "h264".to_string(),
+                    source_buffer,
+                    ob,
+                    self_clone,
+                    cancel,
+                    None,
+                    key,
+                )
+                .await;
+            });
+        }
 
         output_buf
     }
@@ -2191,6 +2218,12 @@ impl MediaEngine {
         audio: Option<AudioMeta>,
         remote_addr: Option<String>,
     ) {
+        if let Some(video_meta) = video.as_ref() {
+            let pipelines = self.ingests.pipelines.read().await;
+            if let Some(ring) = pipelines.get(pipeline_id) {
+                ring.set_codec_hint(&video_meta.codec);
+            }
+        }
         let mut ingests = self.ingests.active.write().await;
         if let Some(ingest) = ingests.get_mut(pipeline_id) {
             if video.is_some() {
@@ -2337,10 +2370,35 @@ impl MediaEngine {
         (store, already_running)
     }
 
+    /// Ensure a browser-preview HLS segmenter is running for this pipeline.
+    /// Preview segmenters are isolated from HLS egress so preview-only H.264
+    /// conversion does not change upload/output behavior.
+    pub async fn ensure_hls_preview_segmenter(&self, pipeline_id: &str) -> (Arc<HlsStore>, bool) {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let mut consumers = self.hls.consumers.write().await;
+        let already_running = consumers.contains_key(&preview_key);
+        if !already_running {
+            let token = CancellationToken::new();
+            consumers.insert(preview_key.clone(), HlsConsumers::new(token));
+        }
+        drop(consumers);
+
+        let store = self.get_or_create_hls_preview_store(pipeline_id).await;
+        (store, already_running)
+    }
+
     /// Touch the HLS consumer heartbeat (called on playlist/segment fetch).
     pub async fn touch_hls(&self, pipeline_id: &str) {
         let consumers = self.hls.consumers.read().await;
         if let Some(c) = consumers.get(pipeline_id) {
+            c.touch();
+        }
+    }
+
+    pub async fn touch_hls_preview(&self, pipeline_id: &str) {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let consumers = self.hls.consumers.read().await;
+        if let Some(c) = consumers.get(&preview_key) {
             c.touch();
         }
     }
@@ -2371,16 +2429,44 @@ impl MediaEngine {
         self.hls.stores.write().await.remove(pipeline_id);
     }
 
+    pub async fn shutdown_hls_preview_segmenter(&self, pipeline_id: &str) {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let mut consumers = self.hls.consumers.write().await;
+        if let Some(c) = consumers.remove(&preview_key) {
+            c.cancel_token.cancel();
+        }
+        drop(consumers);
+        self.hls.stores.write().await.remove(&preview_key);
+    }
+
     /// Get the cancel token for a running HLS segmenter (used to spawn the task).
     pub async fn get_hls_cancel_token(&self, pipeline_id: &str) -> Option<CancellationToken> {
         let consumers = self.hls.consumers.read().await;
         consumers.get(pipeline_id).map(|c| c.cancel_token.clone())
     }
 
+    pub async fn get_hls_preview_cancel_token(
+        &self,
+        pipeline_id: &str,
+    ) -> Option<CancellationToken> {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let consumers = self.hls.consumers.read().await;
+        consumers.get(&preview_key).map(|c| c.cancel_token.clone())
+    }
+
     pub async fn get_or_create_hls_store(&self, pipeline_id: &str) -> Arc<HlsStore> {
         let mut stores = self.hls.stores.write().await;
         stores
             .entry(pipeline_id.to_string())
+            .or_insert_with(|| Arc::new(HlsStore::new()))
+            .clone()
+    }
+
+    pub async fn get_or_create_hls_preview_store(&self, pipeline_id: &str) -> Arc<HlsStore> {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let mut stores = self.hls.stores.write().await;
+        stores
+            .entry(preview_key)
             .or_insert_with(|| Arc::new(HlsStore::new()))
             .clone()
     }
@@ -2393,6 +2479,12 @@ impl MediaEngine {
     pub async fn get_hls_store(&self, pipeline_id: &str) -> Option<Arc<HlsStore>> {
         let stores = self.hls.stores.read().await;
         stores.get(pipeline_id).cloned()
+    }
+
+    pub async fn get_hls_preview_store(&self, pipeline_id: &str) -> Option<Arc<HlsStore>> {
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let stores = self.hls.stores.read().await;
+        stores.get(&preview_key).cloned()
     }
 
     pub async fn pipeline_ring_diag_snapshot(
@@ -2409,7 +2501,64 @@ impl MediaEngine {
         })
     }
     pub async fn hls_pipeline_ids(&self) -> Vec<String> {
-        self.hls.consumers.read().await.keys().cloned().collect()
+        self.hls
+            .consumers
+            .read()
+            .await
+            .keys()
+            .filter(|key| pipeline_id_from_hls_preview_registry_key(key).is_none())
+            .cloned()
+            .collect()
+    }
+
+    pub async fn hls_preview_pipeline_ids(&self) -> Vec<String> {
+        self.hls
+            .consumers
+            .read()
+            .await
+            .keys()
+            .filter_map(|key| pipeline_id_from_hls_preview_registry_key(key).map(str::to_string))
+            .collect()
+    }
+
+    pub async fn active_hls_preview_stage_keys(&self) -> std::collections::HashSet<StageKey> {
+        let preview_ids = self.hls_preview_pipeline_ids().await;
+        let consumers = self.hls.consumers.read().await;
+        let ingests = self.ingests.active.read().await;
+        let mut needed = std::collections::HashSet::new();
+
+        for pipeline_id in preview_ids {
+            let preview_key = hls_preview_registry_key(&pipeline_id);
+            let Some(consumer) = consumers.get(&preview_key) else {
+                continue;
+            };
+            if consumer.cancel_token.is_cancelled() {
+                continue;
+            }
+
+            let Some(ingest) = ingests.get(&pipeline_id) else {
+                continue;
+            };
+            let Some(video) = ingest.video.as_ref() else {
+                continue;
+            };
+            if !(video.codec.eq_ignore_ascii_case("hevc")
+                || video.codec.eq_ignore_ascii_case("h265"))
+            {
+                continue;
+            }
+
+            needed.insert(StageKey::new(
+                pipeline_id.as_str(),
+                StageKind::video_preset("1080p"),
+            ));
+            needed.insert(StageKey::new(
+                pipeline_id.as_str(),
+                StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("1080p")),
+            ));
+        }
+
+        needed
     }
 
     pub async fn should_shutdown_hls_segmenter(&self, pipeline_id: &str, timeout_ms: u64) -> bool {
@@ -2421,10 +2570,28 @@ impl MediaEngine {
         }
     }
 
+    pub async fn should_shutdown_hls_preview_segmenter(
+        &self,
+        pipeline_id: &str,
+        timeout_ms: u64,
+    ) -> bool {
+        let has_ingest = self.has_active_ingest(pipeline_id).await;
+        let preview_key = hls_preview_registry_key(pipeline_id);
+        let consumers = self.hls.consumers.read().await;
+        match consumers.get(&preview_key) {
+            Some(consumer) => !has_ingest || consumer.is_idle(timeout_ms),
+            None => false,
+        }
+    }
+
     pub async fn shutdown_all_hls_segmenters(&self) {
         let pipeline_ids = self.hls_pipeline_ids().await;
         for pipeline_id in pipeline_ids {
             self.shutdown_hls_segmenter(&pipeline_id).await;
+        }
+        let preview_ids = self.hls_preview_pipeline_ids().await;
+        for pipeline_id in preview_ids {
+            self.shutdown_hls_preview_segmenter(&pipeline_id).await;
         }
     }
 
@@ -2946,22 +3113,85 @@ mod tests {
     #[tokio::test]
     async fn hls_dependency_snapshot_reflects_store_and_consumer_state() {
         let engine = MediaEngine::new();
-        let (store, already_running) = engine.ensure_hls_segmenter("pipe-hls-snapshot").await;
+        let (store, already_running) = engine
+            .ensure_hls_preview_segmenter("pipe-hls-snapshot")
+            .await;
         assert!(!already_running);
 
-        engine
-            .add_hls_persistent_consumer("pipe-hls-snapshot")
-            .await;
-        engine.touch_hls("pipe-hls-snapshot").await;
+        engine.touch_hls_preview("pipe-hls-snapshot").await;
         store.push_segment(2.0, Bytes::from_static(b"segment"));
 
         let snapshot = engine.hls_dependency_snapshot("pipe-hls-snapshot").await;
         assert!(snapshot.store_exists);
         assert!(snapshot.active);
-        assert_eq!(snapshot.persistent_consumers, 1);
+        assert_eq!(snapshot.persistent_consumers, 0);
         assert!(snapshot.last_access_age_ms.is_some());
         assert_eq!(snapshot.segments, 1);
         assert!(snapshot.playlist_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn active_hls_preview_stage_keys_include_hevc_preview_codec_edge() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-preview-hevc", "stream-key", "srt")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-preview-hevc",
+                Some(VideoMeta {
+                    codec: "hevc".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+        let _ = engine
+            .ensure_hls_preview_segmenter("pipe-preview-hevc")
+            .await;
+
+        let stages = engine.active_hls_preview_stage_keys().await;
+
+        assert!(stages.contains(&StageKey::new(
+            "pipe-preview-hevc",
+            StageKind::video_preset("1080p")
+        )));
+        assert!(stages.contains(&StageKey::new(
+            "pipe-preview-hevc",
+            StageKind::codec_edge("hevc_to_h264", StageKind::video_preset("1080p"))
+        )));
+    }
+
+    #[tokio::test]
+    async fn active_hls_preview_stage_keys_skip_non_hevc_preview() {
+        let engine = MediaEngine::new();
+        engine
+            .try_register_ingest("pipe-preview-h264", "stream-key", "rtmp")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-preview-h264",
+                Some(VideoMeta {
+                    codec: "h264".to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            )
+            .await;
+        let _ = engine
+            .ensure_hls_preview_segmenter("pipe-preview-h264")
+            .await;
+
+        let stages = engine.active_hls_preview_stage_keys().await;
+
+        assert!(
+            stages.is_empty(),
+            "preview keepalive should only add codec-edge stages for HEVC inputs"
+        );
     }
 
     #[tokio::test]
@@ -3344,7 +3574,7 @@ mod tests {
         let engine = MediaEngine::new();
         let pipeline_id = "pipeline-hls";
 
-        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
+        let _ = engine.ensure_hls_preview_segmenter(pipeline_id).await;
         let snapshot =
             test_health_snapshot(&engine, &[pipeline_id.to_string()], &HashMap::new()).await;
 
@@ -3359,8 +3589,11 @@ mod tests {
         let engine = MediaEngine::new();
         let pipeline_id = "pipeline-hls-cancelled";
 
-        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
-        let token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
+        let _ = engine.ensure_hls_preview_segmenter(pipeline_id).await;
+        let token = engine
+            .get_hls_preview_cancel_token(pipeline_id)
+            .await
+            .unwrap();
         token.cancel();
 
         let snapshot =
@@ -3856,8 +4089,11 @@ mod tests {
         let rec_token = engine.register_recording(pipeline_id).await;
         rec_token.cancel();
 
-        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
-        let hls_token = engine.get_hls_cancel_token(pipeline_id).await.unwrap();
+        let _ = engine.ensure_hls_preview_segmenter(pipeline_id).await;
+        let hls_token = engine
+            .get_hls_preview_cancel_token(pipeline_id)
+            .await
+            .unwrap();
         hls_token.cancel();
 
         let graph = crate::api_runtime_views::processing_graph(&engine, pipeline_id, &[]).await;
@@ -4724,12 +4960,12 @@ mod tests {
         let engine = Arc::new(MediaEngine::new());
         let pipeline_id = "pipe-hls-no-ingest";
 
-        let _ = engine.ensure_hls_segmenter(pipeline_id).await;
-        engine.touch_hls(pipeline_id).await;
+        let _ = engine.ensure_hls_preview_segmenter(pipeline_id).await;
+        engine.touch_hls_preview(pipeline_id).await;
 
         assert!(
             engine
-                .should_shutdown_hls_segmenter(pipeline_id, 60_000)
+                .should_shutdown_hls_preview_segmenter(pipeline_id, 60_000)
                 .await,
             "HLS preview should stop promptly when ingest disappears, regardless of idle timeout"
         );
