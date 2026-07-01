@@ -12,57 +12,6 @@ fi
 
 rust_files=()
 frontend_files=()
-stashed=0
-stash_label="pre-commit-$(date +%s)-$$"
-overlap_files=()
-
-mapfile -t unstaged_files < <(git diff --name-only --diff-filter=ACMR)
-
-declare -A unstaged_lookup=()
-for file in "${unstaged_files[@]}"; do
-    unstaged_lookup["$file"]=1
-done
-
-for file in "${staged_files[@]}"; do
-    if [[ -n "${unstaged_lookup[$file]+x}" ]]; then
-        overlap_files+=("$file")
-    fi
-done
-
-stash_unstaged() {
-    if ((${#overlap_files[@]} == 0)); then
-        return 0
-    fi
-
-    local before_ref
-    local after_ref
-    before_ref="$(git rev-parse -q --verify refs/stash || true)"
-
-    if ! git stash push --keep-index -q -m "$stash_label" -- "${overlap_files[@]}"; then
-        echo "pre-commit: failed to stash unstaged changes in staged files; aborting"
-        return 1
-    fi
-
-    after_ref="$(git rev-parse -q --verify refs/stash || true)"
-    if [[ "$before_ref" != "$after_ref" ]]; then
-        stashed=1
-    fi
-}
-
-restore_unstaged() {
-    if ((stashed == 1)); then
-        if ! git stash pop -q; then
-            echo "pre-commit: failed to restore unstaged changes; recover with: git stash list && git stash pop"
-            exit 1
-        fi
-    fi
-}
-
-if ! git diff --quiet; then
-    stash_unstaged
-fi
-
-trap restore_unstaged EXIT
 
 for file in "${staged_files[@]}"; do
     if [[ "$file" == *.rs ]]; then
@@ -78,16 +27,17 @@ for file in "${staged_files[@]}"; do
 done
 
 if ((${#rust_files[@]} > 0)); then
-    echo "pre-commit: formatting staged Rust files"
-    rustfmt --edition 2024 "${rust_files[@]}"
-    git add -- "${rust_files[@]}"
+    echo "pre-commit: checking staged Rust formatting"
+    if ! rustfmt --edition 2024 --check "${rust_files[@]}"; then
+        echo "pre-commit: Rust formatting check failed; run rustfmt --edition 2024 on staged .rs files"
+        exit 1
+    fi
 fi
 
 if ((${#frontend_files[@]} > 0)); then
-    echo "pre-commit: formatting staged frontend files"
-    npx --no-install prettier --write "${frontend_files[@]}"
-    git add -- "${frontend_files[@]}"
+    echo "pre-commit: checking staged frontend formatting"
+    if ! npx --no-install prettier --check "${frontend_files[@]}"; then
+        echo "pre-commit: frontend formatting check failed; run prettier --write on staged frontend files"
+        exit 1
+    fi
 fi
-
-trap - EXIT
-restore_unstaged
