@@ -5254,7 +5254,7 @@ mod tests {
         assert_eq!(status["failurePhase"], "send");
         assert_eq!(status["lastError"], "connection reset by peer");
         assert_eq!(status["bytesOut"], 2048);
-        assert_eq!(status["totalSize"], serde_json::Value::Null);
+        assert_eq!(status["totalSize"], 2048);
         assert!(status["lastErrorAt"].is_string());
         assert!(status["endedAt"].is_string());
         assert!(status["endedAgeMs"].as_u64().is_some());

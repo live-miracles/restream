@@ -618,6 +618,10 @@ async fn start_restream_child_opts(
         stop_child(&mut child).await;
         return Err(format!("restream did not become ready: {err}"));
     }
+    if let Err(err) = wait_for_tcp_listener_ready(ports.rtmp, Duration::from_secs(10)).await {
+        stop_child(&mut child).await;
+        return Err(format!("restream RTMP listener did not become ready: {err}"));
+    }
     Ok(child)
 }
 
@@ -4672,6 +4676,56 @@ async fn wait_for_http_ok(url: &str, timeout: Duration) -> Result<(), String> {
             return Err(format!("timed out waiting for {url}"));
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn proc_net_has_listening_port(contents: &str, port: u16) -> bool {
+    let wanted_port = format!("{port:04X}");
+    contents.lines().skip(1).any(|line| {
+        let mut fields = line.split_whitespace();
+        let _slot = fields.next();
+        let Some(local_addr) = fields.next() else {
+            return false;
+        };
+        let Some(state) = fields.nth(1) else {
+            return false;
+        };
+        let Some((_, local_port)) = local_addr.rsplit_once(':') else {
+            return false;
+        };
+        state == "0A" && local_port.eq_ignore_ascii_case(&wanted_port)
+    })
+}
+
+fn tcp_listener_ready(port: u16) -> Result<bool, String> {
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => {
+                if proc_net_has_listening_port(&contents, port) {
+                    return Ok(true);
+                }
+            }
+            Err(err) => {
+                return Err(format!("failed to read {path}: {err}"));
+            }
+        }
+    }
+    Ok(false)
+}
+
+async fn wait_for_tcp_listener_ready(port: u16, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if tcp_listener_ready(port)? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "port {port} did not enter LISTEN state within {}s",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -13912,5 +13966,22 @@ mod tests {
         assert!(log_has_correlation_id(&snake));
         assert!(log_has_correlation_id(&camel));
         assert!(!log_has_correlation_id(&none));
+    }
+
+    #[test]
+    fn proc_net_has_listening_port_matches_ipv4_listener_entries() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:4C4F 00000000:0000 0A 00000000:00000000 00:00000000 00000000   100        0 1 1 0000000000000000 100 0 0 10 0\n";
+
+        assert!(proc_net_has_listening_port(table, 19535));
+        assert!(!proc_net_has_listening_port(table, 1935));
+    }
+
+    #[test]
+    fn proc_net_has_listening_port_ignores_non_listen_states() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:078F 0100007F:9C40 01 00000000:00000000 00:00000000 00000000   100        0 1 1 0000000000000000 100 0 0 10 0\n";
+
+        assert!(!proc_net_has_listening_port(table, 1935));
     }
 }
