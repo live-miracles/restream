@@ -197,6 +197,12 @@ const HARNESS_MODE_SPECS: &[HarnessModeSpec] = &[
         requires_bench_profile: false,
     },
     HarnessModeSpec {
+        name: "signal-control",
+        suite_default: false,
+        requires_port_namespace: false,
+        requires_bench_profile: false,
+    },
+    HarnessModeSpec {
         name: "recovery",
         suite_default: false,
         requires_port_namespace: true,
@@ -668,6 +674,7 @@ async fn run() -> Result<(), String> {
             "fault-output-stall" => fault_output_stall().await,
             "fault-resilience" => fault_resilience().await,
             "file-live-edge" => file_live_edge().await,
+            "signal-control" => signal_control().await,
             "recovery" => recovery().await,
             "resource-sweep" => resource_sweep().await,
             "bitrate-sweep" => bitrate_sweep().await,
@@ -5965,6 +5972,9 @@ struct MixedEnv {
     ffmpeg_srt_sink: bool,
     ffmpeg_srt_sink_base: u16,
     ffmpeg_srt_sink_seconds: u64,
+    ffmpeg_signal_sink_base: u16,
+    av_signal_seconds: u64,
+    av_soak_seconds: u64,
     n_per_group: usize,
     snapshot_sleep: Duration,
 }
@@ -6037,6 +6047,9 @@ impl MixedEnv {
                 .is_some_and(|value| value.eq_ignore_ascii_case("ffmpeg")),
             ffmpeg_srt_sink_base: env_u16("FFMPEG_SRT_SINK_BASE", 15_000),
             ffmpeg_srt_sink_seconds: env_secs("FFMPEG_SRT_SINK_SECONDS", 8),
+            ffmpeg_signal_sink_base: env_u16("FFMPEG_SIGNAL_SINK_BASE", 16_000),
+            av_signal_seconds: env_secs("AV_SIGNAL_SECONDS", 20),
+            av_soak_seconds: env_secs("AV_SOAK_SECONDS", 120),
             n_per_group: env_usize("N_PER_GROUP", 25),
             snapshot_sleep: Duration::from_secs(env_secs("SNAPSHOT_SLEEP_SECS", 3)),
             work_dir,
@@ -6047,6 +6060,21 @@ impl MixedEnv {
         self.only_checks
             .as_ref()
             .is_none_or(|items| items.iter().any(|item| item == check))
+    }
+
+    fn explicit_check_selected(&self, check: &str) -> bool {
+        self.only_checks
+            .as_ref()
+            .is_some_and(|items| items.iter().any(|item| item == check))
+    }
+
+    fn use_direct_signal_sinks(&self) -> bool {
+        self.only_checks.as_ref().is_some_and(|items| {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| item == "signal" || item == "soak-drift")
+        })
     }
 }
 
@@ -6862,6 +6890,8 @@ async fn run_mixed_h265_srt_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
+    let mut ffmpeg_signal_sinks = Vec::new();
+    let mut next_ffmpeg_signal_sink = 0usize;
     add_mixed_output_cases(
         env,
         api,
@@ -6869,10 +6899,15 @@ async fn run_mixed_h265_srt_config(
         restream_pid,
         cfg,
         output_cases,
+        &mut ffmpeg_signal_sinks,
+        &mut next_ffmpeg_signal_sink,
         &mut output_ids,
     )
     .await?;
     verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
+    if !ffmpeg_signal_sinks.is_empty() {
+        finish_ffmpeg_signal_sinks(env, &mut ffmpeg_signal_sinks, resume).await?;
+    }
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -7003,6 +7038,8 @@ async fn run_mixed_h264_rtmp_config(
     }
 
     let mut output_ids = Vec::with_capacity(total);
+    let mut ffmpeg_signal_sinks = Vec::new();
+    let mut next_ffmpeg_signal_sink = 0usize;
     add_mixed_output_cases(
         env,
         api,
@@ -7010,10 +7047,15 @@ async fn run_mixed_h264_rtmp_config(
         restream_pid,
         cfg,
         output_cases,
+        &mut ffmpeg_signal_sinks,
+        &mut next_ffmpeg_signal_sink,
         &mut output_ids,
     )
     .await?;
     verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
+    if !ffmpeg_signal_sinks.is_empty() {
+        finish_ffmpeg_signal_sinks(env, &mut ffmpeg_signal_sinks, resume).await?;
+    }
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -7220,6 +7262,8 @@ async fn run_mixed_srt_multi_config(
     let mut output_ids = Vec::with_capacity(total);
     let mut ffmpeg_srt_sinks = Vec::new();
     let mut next_ffmpeg_srt_sink = 0usize;
+    let mut ffmpeg_signal_sinks = Vec::new();
+    let mut next_ffmpeg_signal_sink = 0usize;
     add_mixed_multi_output_cases(
         env,
         api,
@@ -7229,10 +7273,15 @@ async fn run_mixed_srt_multi_config(
         output_cases,
         &mut ffmpeg_srt_sinks,
         &mut next_ffmpeg_srt_sink,
+        &mut ffmpeg_signal_sinks,
+        &mut next_ffmpeg_signal_sink,
         &mut output_ids,
     )
     .await?;
     verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
+    if !ffmpeg_signal_sinks.is_empty() {
+        finish_ffmpeg_signal_sinks(env, &mut ffmpeg_signal_sinks, resume).await?;
+    }
 
     let rss_final = process_rss_kb(restream_pid).await.unwrap_or(0);
     let ffmpeg = ffmpeg_pipe1_stats().await;
@@ -7326,7 +7375,7 @@ async fn run_mixed_srt_multi_config(
 
 async fn spawn_mixed_anchor_publisher(env: &MixedEnv, stream_key: &str) -> Result<Child, String> {
     let log_path = env.work_dir.join("mixed-h264-srt-single-publisher.log");
-    let fixture = restream::test_fixtures::bench_transport_fixture("h264", "1.5M", false)?;
+    let fixture = restream::test_fixtures::av_marker_transport_fixture("h264", false)?;
     spawn_publisher_with_selection(
         &fixture,
         &format!(
@@ -7341,7 +7390,7 @@ async fn spawn_mixed_anchor_publisher(env: &MixedEnv, stream_key: &str) -> Resul
 
 async fn spawn_mixed_h265_srt_publisher(env: &MixedEnv, stream_key: &str) -> Result<Child, String> {
     let log_path = env.work_dir.join("mixed-h265-srt-single-publisher.log");
-    let fixture = restream::test_fixtures::bench_transport_fixture("h265", "1.5M", false)?;
+    let fixture = restream::test_fixtures::av_marker_transport_fixture("h265", false)?;
     spawn_publisher_with_selection(
         &fixture,
         &format!(
@@ -7359,7 +7408,7 @@ async fn spawn_mixed_h264_rtmp_publisher(
     stream_key: &str,
 ) -> Result<Child, String> {
     let log_path = env.work_dir.join("mixed-h264-rtmp-single-publisher.log");
-    let fixture = restream::test_fixtures::bench_transport_fixture("h264", "1.5M", false)?;
+    let fixture = restream::test_fixtures::av_marker_transport_fixture("h264", false)?;
     spawn_publisher_with_selection(
         &fixture,
         &format!("rtmp://127.0.0.1:{}/live/{stream_key}", env.restream_rtmp),
@@ -7376,9 +7425,8 @@ async fn spawn_mixed_srt_multi_publisher(
     h265: bool,
 ) -> Result<Child, String> {
     let log_path = env.work_dir.join(format!("{cfg}-publisher.log"));
-    let fixture = restream::test_fixtures::bench_transport_fixture(
+    let fixture = restream::test_fixtures::av_marker_transport_fixture(
         if h265 { "h265" } else { "h264" },
-        "1.5M",
         true,
     )?;
     spawn_publisher_with_selection(
@@ -7632,6 +7680,15 @@ struct FfmpegSrtSink {
     child: Child,
 }
 
+struct FfmpegSignalSink {
+    cfg: String,
+    group: String,
+    index: usize,
+    publish_url: String,
+    capture_path: PathBuf,
+    child: Child,
+}
+
 async fn add_mixed_group<F>(
     api: &RampApi,
     pipeline_id: &str,
@@ -7728,9 +7785,23 @@ async fn add_mixed_output_cases(
     restream_pid: u32,
     cfg: &str,
     cases: &[MixedOutputCase],
+    signal_sinks: &mut Vec<FfmpegSignalSink>,
+    next_signal_sink_offset: &mut usize,
     output_ids: &mut Vec<String>,
 ) -> Result<(), String> {
     for case in cases {
+        let mut direct_urls = Vec::new();
+        if env.use_direct_signal_sinks() {
+            for index in 1..=env.n_per_group {
+                let sink =
+                    spawn_ffmpeg_signal_sink(env, cfg, *case, index, *next_signal_sink_offset)
+                        .await?;
+                *next_signal_sink_offset += 1;
+                direct_urls.push(sink.publish_url.clone());
+                signal_sinks.push(sink);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         add_mixed_group(
             api,
             pipeline_id,
@@ -7740,7 +7811,12 @@ async fn add_mixed_output_cases(
                 count: env.n_per_group,
                 encoding: case.encoding,
             },
-            |index| mixed_output_publish_url(env, cfg, *case, index),
+            |index| {
+                direct_urls
+                    .get(index.saturating_sub(1))
+                    .cloned()
+                    .unwrap_or_else(|| mixed_output_publish_url(env, cfg, *case, index))
+            },
             output_ids,
         )
         .await?;
@@ -7766,9 +7842,23 @@ async fn add_mixed_multi_output_cases(
     cases: &[MixedOutputCase],
     sinks: &mut Vec<FfmpegSrtSink>,
     next_sink_offset: &mut usize,
+    signal_sinks: &mut Vec<FfmpegSignalSink>,
+    next_signal_sink_offset: &mut usize,
     output_ids: &mut Vec<String>,
 ) -> Result<(), String> {
     for case in cases {
+        let mut direct_urls = Vec::new();
+        if env.use_direct_signal_sinks() {
+            for index in 1..=env.n_per_group {
+                let sink =
+                    spawn_ffmpeg_signal_sink(env, cfg, *case, index, *next_signal_sink_offset)
+                        .await?;
+                *next_signal_sink_offset += 1;
+                direct_urls.push(sink.publish_url.clone());
+                signal_sinks.push(sink);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         match case.protocol {
             MixedOutputProtocol::Rtmp => {
                 add_mixed_group(
@@ -7780,7 +7870,12 @@ async fn add_mixed_multi_output_cases(
                         count: env.n_per_group,
                         encoding: case.encoding,
                     },
-                    |index| mixed_output_publish_url(env, cfg, *case, index),
+                    |index| {
+                        direct_urls
+                            .get(index.saturating_sub(1))
+                            .cloned()
+                            .unwrap_or_else(|| mixed_output_publish_url(env, cfg, *case, index))
+                    },
                     output_ids,
                 )
                 .await?;
@@ -7804,6 +7899,11 @@ async fn add_mixed_multi_output_cases(
                     },
                     sinks,
                     next_sink_offset,
+                    if direct_urls.is_empty() {
+                        None
+                    } else {
+                        Some(direct_urls.clone())
+                    },
                     output_ids,
                 )
                 .await?;
@@ -7839,7 +7939,7 @@ async fn verify_mixed_output_cases_inner(
     skip_direct_srt_sinks: bool,
     decode_scan: bool,
 ) -> Result<(), String> {
-    if !env.check_selected("ffprobe") {
+    if !env.check_selected("ffprobe") && !env.check_selected("signal") {
         return Ok(());
     }
     let index = env.n_per_group;
@@ -7852,35 +7952,41 @@ async fn verify_mixed_output_cases_inner(
         }
         let url = mixed_output_read_url(env, cfg, *case, index);
         let label = format!("{} out{index}", case.group);
-        let ffprobe_id = format!("MS-ffprobe-{cfg}-{}", case.group);
-        verify_mixed_stream(
-            env,
-            MixedProbeSpec {
+        if env.check_selected("ffprobe") {
+            let ffprobe_id = format!("MS-ffprobe-{cfg}-{}", case.group);
+            verify_mixed_stream(
+                env,
+                MixedProbeSpec {
+                    cfg,
+                    id: &ffprobe_id,
+                    label: &label,
+                    url: &url,
+                    expected: case.expected_dimensions,
+                    cookie: None,
+                },
+                resume,
+            )
+            .await?;
+            let audio_id = format!("MS-audio-{cfg}-{}", case.group);
+            verify_mixed_audio_route(
+                env,
                 cfg,
-                id: &ffprobe_id,
-                label: &label,
-                url: &url,
-                expected: case.expected_dimensions,
-                cookie: None,
-            },
-            resume,
-        )
-        .await?;
-        let audio_id = format!("MS-audio-{cfg}-{}", case.group);
-        verify_mixed_audio_route(
-            env,
-            cfg,
-            &audio_id,
-            &label,
-            &url,
-            case.expected_dimensions,
-            case.expected_audio_tracks,
-            resume,
-        )
-        .await?;
-        if decode_scan {
-            let decode_id = format!("MS-decode-{cfg}-{}", case.group);
-            verify_mixed_decode_scan(env, cfg, &decode_id, &label, &url, resume).await?;
+                &audio_id,
+                &label,
+                &url,
+                case.expected_dimensions,
+                case.expected_audio_tracks,
+                resume,
+            )
+            .await?;
+            if decode_scan {
+                let decode_id = format!("MS-decode-{cfg}-{}", case.group);
+                verify_mixed_decode_scan(env, cfg, &decode_id, &label, &url, resume).await?;
+            }
+        }
+        if env.check_selected("signal") && !env.use_direct_signal_sinks() {
+            let signal_id = format!("MS-signal-{cfg}-{}", case.group);
+            verify_mixed_signal_quality(env, cfg, &signal_id, &label, &url, resume).await?;
         }
     }
     Ok(())
@@ -7902,6 +8008,7 @@ async fn add_mixed_srt_group<F>(
     validation: MixedSrtGroupValidation<'_>,
     sinks: &mut Vec<FfmpegSrtSink>,
     next_sink_offset: &mut usize,
+    signal_direct_urls: Option<Vec<String>>,
     output_ids: &mut Vec<String>,
 ) -> Result<(), String>
 where
@@ -7934,14 +8041,260 @@ where
         pipeline_id,
         spec,
         |index| {
-            direct_urls
-                .get(index.saturating_sub(1))
-                .cloned()
+            signal_direct_urls
+                .as_ref()
+                .and_then(|urls| urls.get(index.saturating_sub(1)).cloned())
+                .or_else(|| direct_urls.get(index.saturating_sub(1)).cloned())
                 .unwrap_or_else(|| mediamtx_url_for(index))
         },
         output_ids,
     )
     .await
+}
+
+async fn spawn_ffmpeg_signal_sink(
+    env: &MixedEnv,
+    cfg: &str,
+    case: MixedOutputCase,
+    index: usize,
+    offset: usize,
+) -> Result<FfmpegSignalSink, String> {
+    let port = env
+        .ffmpeg_signal_sink_base
+        .checked_add(offset as u16)
+        .ok_or("FFmpeg signal sink port range overflowed")?;
+    let duration = if env.explicit_check_selected("soak-drift") {
+        env.av_soak_seconds
+    } else {
+        env.av_signal_seconds
+    };
+    let stem = safe_artifact_stem(&format!("{cfg}-{}-out{index}", case.group));
+    let capture_path = env.work_dir.join(format!("{stem}.signal.mkv"));
+    let publish_url = match case.protocol {
+        MixedOutputProtocol::Rtmp => format!("rtmp://127.0.0.1:{port}/live/{stem}"),
+        MixedOutputProtocol::Srt => {
+            format!("srt://127.0.0.1:{port}?pkt_size=1316&latency=200000")
+        }
+    };
+    let listen_url = match case.protocol {
+        MixedOutputProtocol::Rtmp => publish_url.clone(),
+        MixedOutputProtocol::Srt => {
+            format!(
+                "srt://127.0.0.1:{port}?mode=listener&transtype=live&timeout=30000000&latency=200000"
+            )
+        }
+    };
+    let mut command = Command::new("ffmpeg");
+    command.args(["-y", "-nostdin", "-hide_banner", "-v", "warning"]);
+    if case.protocol == MixedOutputProtocol::Rtmp {
+        command.args(["-listen", "1"]);
+    }
+    let duration_s = duration.to_string();
+    command
+        .arg("-i")
+        .arg(&listen_url)
+        .args([
+            "-t",
+            &duration_s,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            "-c",
+            "copy",
+            "-f",
+            "matroska",
+        ])
+        .arg(&capture_path);
+    let log_path = env.work_dir.join(format!("{stem}.signal-sink.log"));
+    let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    let err = log.try_clone().map_err(|e| e.to_string())?;
+    let child = command
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(err))
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "failed to start FFmpeg signal sink {}[{index}]: {e}",
+                case.group
+            )
+        })?;
+
+    Ok(FfmpegSignalSink {
+        cfg: cfg.to_string(),
+        group: case.group.to_string(),
+        index,
+        publish_url,
+        capture_path,
+        child,
+    })
+}
+
+async fn finish_ffmpeg_signal_sinks(
+    env: &MixedEnv,
+    sinks: &mut [FfmpegSignalSink],
+    resume: &mut MixedResume,
+) -> Result<(), String> {
+    for sink in sinks {
+        let label = format!("{} out{}", sink.group, sink.index);
+        let id = format!("MS-signal-{}-{}", sink.cfg, sink.group);
+        if !resume.allows(&id) {
+            continue;
+        }
+        let duration = if env.explicit_check_selected("soak-drift") {
+            env.av_soak_seconds
+        } else {
+            env.av_signal_seconds
+        };
+        let started = Instant::now();
+        let wait =
+            tokio::time::timeout(Duration::from_secs(duration + 90), sink.child.wait()).await;
+        let status = match wait {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => return Err(format!("{label}: signal sink wait failed: {error}")),
+            Err(_) => {
+                let _ = sink.child.kill().await;
+                return Err(format!("{label}: signal sink timed out"));
+            }
+        };
+        if !status.success() {
+            return Err(format!("{label}: signal sink exited with {status}"));
+        }
+        let result = validate_signal_capture_artifact(
+            env,
+            &sink.cfg,
+            &id,
+            &label,
+            &sink.publish_url,
+            &sink.capture_path,
+            duration,
+            started,
+        )
+        .await;
+        if let Err(error) = result {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+async fn validate_signal_capture_artifact(
+    env: &MixedEnv,
+    cfg: &str,
+    id: &str,
+    label: &str,
+    url: &str,
+    capture_path: &Path,
+    duration: u64,
+    started: Instant,
+) -> Result<(), String> {
+    let stem = safe_artifact_stem(&format!("{cfg}-{label}"));
+    let blackdetect_log = env.work_dir.join(format!("{stem}.blackdetect.log"));
+    let silencedetect_log = env.work_dir.join(format!("{stem}.silencedetect.log"));
+    let ashowinfo_log = env.work_dir.join(format!("{stem}.ashowinfo.log"));
+    let astats_log = env.work_dir.join(format!("{stem}.astats.log"));
+    let result = async {
+        let black = run_ffmpeg_filter_log(
+            capture_path,
+            duration,
+            &[
+                "-vf",
+                "blackdetect=d=0.05:pix_th=0.10",
+                "-an",
+                "-f",
+                "null",
+                "-",
+            ],
+            &blackdetect_log,
+        )
+        .await?;
+        let silence = run_ffmpeg_filter_log(
+            capture_path,
+            duration,
+            &[
+                "-af",
+                "silencedetect=n=-35dB:d=0.05",
+                "-vn",
+                "-f",
+                "null",
+                "-",
+            ],
+            &silencedetect_log,
+        )
+        .await?;
+        let ashow = run_ffmpeg_filter_log(
+            capture_path,
+            duration,
+            &["-af", "ashowinfo", "-vn", "-f", "null", "-"],
+            &ashowinfo_log,
+        )
+        .await?;
+        let astats = run_ffmpeg_filter_log(
+            capture_path,
+            duration,
+            &["-af", "astats=metadata=1:reset=1", "-vn", "-f", "null", "-"],
+            &astats_log,
+        )
+        .await?;
+        let pcm = decode_pcm_quality(capture_path, duration).await?;
+        validate_signal_quality(&black, &silence, &ashow, &astats, pcm)
+    }
+    .await;
+
+    match result {
+        Ok(report) => {
+            emit_mixed_result(
+                env,
+                cfg,
+                id,
+                "pass",
+                started.elapsed(),
+                Some(signal_report_json(
+                    label,
+                    url,
+                    duration,
+                    capture_path,
+                    &blackdetect_log,
+                    &silencedetect_log,
+                    &ashowinfo_log,
+                    &astats_log,
+                    &report,
+                )),
+            )?;
+            log_mixed_ok(
+                env,
+                &format!(
+                    "{label}: signal ok offset={:.1}ms drift={:.1}ms audio_gap={:.1}ms",
+                    report.max_abs_offset_ms, report.drift_ms, report.max_audio_pts_gap_ms
+                ),
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            emit_mixed_result(
+                env,
+                cfg,
+                id,
+                "fail",
+                started.elapsed(),
+                Some(json!({
+                    "label": label,
+                    "url": url,
+                    "durationSecs": duration,
+                    "error": error,
+                    "capture": capture_path,
+                    "logs": {
+                        "blackdetect": blackdetect_log,
+                        "silencedetect": silencedetect_log,
+                        "ashowinfo": ashowinfo_log,
+                        "astats": astats_log,
+                    },
+                })),
+            )?;
+            Err(format!("{label}: signal validation failed: {error}"))
+        }
+    }
 }
 
 async fn spawn_ffmpeg_srt_sink(
@@ -8471,7 +8824,7 @@ async fn verify_mixed_recording(
 }
 
 async fn warm_mixed_stream(label: &str, url: &str, expected: &str, cookie: Option<&str>) {
-    for _attempt in 1..=15 {
+    for _attempt in 1..=30 {
         match probe_dims_ramp_with_cookie(url, cookie).await {
             Ok(dimensions) if dimensions == expected => {
                 println!("  warmup: {label} -> {dimensions}");
@@ -8663,6 +9016,566 @@ async fn ffmpeg_decode_scan(
         .copied();
     let passed = output.status.success() && matched_pattern.is_none();
     Ok((passed, output.status.code(), matched_pattern, stderr))
+}
+
+#[derive(Debug, Clone)]
+struct MarkerQualityReport {
+    video_markers: Vec<f64>,
+    audio_markers: Vec<f64>,
+    offsets_ms: Vec<f64>,
+    max_abs_offset_ms: f64,
+    drift_ms: f64,
+    max_audio_pts_gap_ms: f64,
+    pcm: PcmQualityReport,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PcmQualityReport {
+    samples: usize,
+    clipping_samples: usize,
+    max_step: i32,
+    rms: f64,
+}
+
+async fn verify_mixed_signal_quality(
+    env: &MixedEnv,
+    cfg: &str,
+    id: &str,
+    label: &str,
+    url: &str,
+    resume: &mut MixedResume,
+) -> Result<(), String> {
+    if !resume.allows(id) {
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    let duration = if env.explicit_check_selected("soak-drift") {
+        env.av_soak_seconds
+    } else {
+        env.av_signal_seconds
+    };
+    let stem = safe_artifact_stem(&format!("{cfg}-{label}"));
+    let capture_path = env.work_dir.join(format!("{stem}.signal.mkv"));
+    let blackdetect_log = env.work_dir.join(format!("{stem}.blackdetect.log"));
+    let silencedetect_log = env.work_dir.join(format!("{stem}.silencedetect.log"));
+    let ashowinfo_log = env.work_dir.join(format!("{stem}.ashowinfo.log"));
+    let astats_log = env.work_dir.join(format!("{stem}.astats.log"));
+
+    let result = async {
+        capture_signal_sample(url, &capture_path, duration).await?;
+        let black = run_ffmpeg_filter_log(
+            &capture_path,
+            duration,
+            &[
+                "-vf",
+                "blackdetect=d=0.05:pix_th=0.10",
+                "-an",
+                "-f",
+                "null",
+                "-",
+            ],
+            &blackdetect_log,
+        )
+        .await?;
+        let silence = run_ffmpeg_filter_log(
+            &capture_path,
+            duration,
+            &[
+                "-af",
+                "silencedetect=n=-35dB:d=0.05",
+                "-vn",
+                "-f",
+                "null",
+                "-",
+            ],
+            &silencedetect_log,
+        )
+        .await?;
+        let ashow = run_ffmpeg_filter_log(
+            &capture_path,
+            duration,
+            &["-af", "ashowinfo", "-vn", "-f", "null", "-"],
+            &ashowinfo_log,
+        )
+        .await?;
+        let astats = run_ffmpeg_filter_log(
+            &capture_path,
+            duration,
+            &["-af", "astats=metadata=1:reset=1", "-vn", "-f", "null", "-"],
+            &astats_log,
+        )
+        .await?;
+        let pcm = decode_pcm_quality(&capture_path, duration).await?;
+        validate_signal_quality(&black, &silence, &ashow, &astats, pcm)
+    }
+    .await;
+
+    match result {
+        Ok(report) => {
+            emit_mixed_result(
+                env,
+                cfg,
+                id,
+                "pass",
+                started.elapsed(),
+                Some(signal_report_json(
+                    label,
+                    url,
+                    duration,
+                    &capture_path,
+                    &blackdetect_log,
+                    &silencedetect_log,
+                    &ashowinfo_log,
+                    &astats_log,
+                    &report,
+                )),
+            )?;
+            log_mixed_ok(
+                env,
+                &format!(
+                    "{label}: signal ok offset={:.1}ms drift={:.1}ms audio_gap={:.1}ms",
+                    report.max_abs_offset_ms, report.drift_ms, report.max_audio_pts_gap_ms
+                ),
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            emit_mixed_result(
+                env,
+                cfg,
+                id,
+                "fail",
+                started.elapsed(),
+                Some(json!({
+                    "label": label,
+                    "url": url,
+                    "durationSecs": duration,
+                    "error": error,
+                    "capture": capture_path,
+                    "logs": {
+                        "blackdetect": blackdetect_log,
+                        "silencedetect": silencedetect_log,
+                        "ashowinfo": ashowinfo_log,
+                        "astats": astats_log,
+                    },
+                })),
+            )?;
+            Err(format!("{label}: signal validation failed: {error}"))
+        }
+    }
+}
+
+fn signal_report_json(
+    label: &str,
+    url: &str,
+    duration: u64,
+    capture_path: &Path,
+    blackdetect_log: &Path,
+    silencedetect_log: &Path,
+    ashowinfo_log: &Path,
+    astats_log: &Path,
+    report: &MarkerQualityReport,
+) -> Value {
+    json!({
+        "label": label,
+        "url": url,
+        "durationSecs": duration,
+        "capture": capture_path,
+        "logs": {
+            "blackdetect": blackdetect_log,
+            "silencedetect": silencedetect_log,
+            "ashowinfo": ashowinfo_log,
+            "astats": astats_log,
+        },
+        "videoMarkers": report.video_markers,
+        "audioMarkers": report.audio_markers,
+        "offsetsMs": report.offsets_ms,
+        "maxAbsOffsetMs": report.max_abs_offset_ms,
+        "driftMs": report.drift_ms,
+        "maxAudioPtsGapMs": report.max_audio_pts_gap_ms,
+        "pcm": {
+            "samples": report.pcm.samples,
+            "clippingSamples": report.pcm.clipping_samples,
+            "maxStep": report.pcm.max_step,
+            "rms": report.pcm.rms,
+        },
+    })
+}
+
+async fn capture_signal_sample(url: &str, output_path: &Path, duration: u64) -> Result<(), String> {
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut last_error = String::new();
+    for _attempt in 1..=15 {
+        match capture_signal_sample_once(url, output_path, duration).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = error;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    Err(last_error)
+}
+
+async fn capture_signal_sample_once(
+    url: &str,
+    output_path: &Path,
+    duration: u64,
+) -> Result<(), String> {
+    let duration_s = duration.to_string();
+    let child = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-i",
+            url,
+            "-t",
+            &duration_s,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            "-c",
+            "copy",
+            "-f",
+            "matroska",
+        ])
+        .arg(output_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(Duration::from_secs(duration + 45), child.wait_with_output())
+        .await
+        .map_err(|_| format!("signal capture timed out: {url}"))?
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "signal capture failed for {url}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+async fn run_ffmpeg_filter_log(
+    input: &Path,
+    duration: u64,
+    filter_args: &[&str],
+    log_path: &Path,
+) -> Result<String, String> {
+    let input_s = input.to_string_lossy().to_string();
+    let duration_s = duration.to_string();
+    let mut command = Command::new("ffmpeg");
+    command.args([
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "info",
+        "-i",
+        &input_s,
+        "-t",
+        &duration_s,
+    ]);
+    command.args(filter_args);
+    let child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(Duration::from_secs(duration + 45), child.wait_with_output())
+        .await
+        .map_err(|_| format!("ffmpeg signal filter timed out: {}", input.display()))?
+        .map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    std::fs::write(log_path, &stderr).map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(stderr)
+    } else {
+        Err(format!(
+            "ffmpeg signal filter failed for {}: {}",
+            input.display(),
+            stderr.lines().take(8).collect::<Vec<_>>().join(" | ")
+        ))
+    }
+}
+
+async fn decode_pcm_quality(input: &Path, duration: u64) -> Result<PcmQualityReport, String> {
+    let input_s = input.to_string_lossy().to_string();
+    let duration_s = duration.to_string();
+    let child = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-i",
+            &input_s,
+            "-t",
+            &duration_s,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-f",
+            "s16le",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(Duration::from_secs(duration + 45), child.wait_with_output())
+        .await
+        .map_err(|_| format!("PCM decode timed out: {}", input.display()))?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "PCM decode failed for {}: {}",
+            input.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(analyze_pcm_s16le(&output.stdout))
+}
+
+fn validate_signal_quality(
+    blackdetect_log: &str,
+    silencedetect_log: &str,
+    ashowinfo_log: &str,
+    astats_log: &str,
+    pcm: PcmQualityReport,
+) -> Result<MarkerQualityReport, String> {
+    assert_no_signal_bad_patterns(astats_log)?;
+    let video_markers = marker_gaps_from_intervals(&parse_blackdetect_intervals(blackdetect_log));
+    let audio_markers =
+        marker_gaps_from_intervals(&parse_silencedetect_intervals(silencedetect_log));
+    if video_markers.len() < 3 || audio_markers.len() < 3 {
+        return Err(format!(
+            "expected at least 3 video/audio markers, got video={} audio={}",
+            video_markers.len(),
+            audio_markers.len()
+        ));
+    }
+    let offsets_ms = nearest_marker_offsets_ms(&video_markers, &audio_markers, 1000.0);
+    if offsets_ms.len() < 3 {
+        return Err(format!(
+            "expected at least 3 paired A/V markers, got {} from video={} audio={}",
+            offsets_ms.len(),
+            video_markers.len(),
+            audio_markers.len()
+        ));
+    }
+    let max_abs_offset_ms = offsets_ms
+        .iter()
+        .map(|value| value.abs())
+        .fold(0.0, f64::max);
+    let drift_ms = match (offsets_ms.first(), offsets_ms.last()) {
+        (Some(first), Some(last)) => (last - first).abs(),
+        _ => 0.0,
+    };
+    let max_audio_pts_gap_ms = max_audio_pts_gap_ms(ashowinfo_log);
+
+    if max_abs_offset_ms > 120.0 {
+        return Err(format!(
+            "A/V marker offset too high: {max_abs_offset_ms:.1}ms"
+        ));
+    }
+    if drift_ms > 80.0 {
+        return Err(format!("A/V marker drift too high: {drift_ms:.1}ms"));
+    }
+    if max_audio_pts_gap_ms > 80.0 {
+        return Err(format!(
+            "audio PTS gap too high: {max_audio_pts_gap_ms:.1}ms"
+        ));
+    }
+    if pcm.clipping_samples > 0 {
+        return Err(format!(
+            "PCM clipping detected: {} samples",
+            pcm.clipping_samples
+        ));
+    }
+    if pcm.max_step > 30_000 {
+        return Err(format!(
+            "PCM impulse/click detected: max step {}",
+            pcm.max_step
+        ));
+    }
+
+    Ok(MarkerQualityReport {
+        video_markers,
+        audio_markers,
+        offsets_ms,
+        max_abs_offset_ms,
+        drift_ms,
+        max_audio_pts_gap_ms,
+        pcm,
+    })
+}
+
+fn nearest_marker_offsets_ms(
+    video_markers: &[f64],
+    audio_markers: &[f64],
+    max_abs_ms: f64,
+) -> Vec<f64> {
+    video_markers
+        .iter()
+        .filter_map(|video| {
+            audio_markers
+                .iter()
+                .map(|audio| (audio - video) * 1000.0)
+                .min_by(|left, right| left.abs().total_cmp(&right.abs()))
+                .filter(|offset| offset.abs() <= max_abs_ms)
+        })
+        .collect()
+}
+
+fn assert_no_signal_bad_patterns(log: &str) -> Result<(), String> {
+    let lower = log.to_ascii_lowercase();
+    let bad_patterns = [
+        "non-monoton",
+        "non monoton",
+        "invalid data",
+        "error while decoding",
+        "timestamp discontinuity",
+        "queue input is backward in time",
+        "too many packets buffered",
+        "aac bitstream error",
+        "missing picture",
+    ];
+    if let Some(pattern) = bad_patterns
+        .iter()
+        .find(|pattern| lower.contains(**pattern))
+    {
+        return Err(format!("signal ffmpeg log matched {pattern:?}"));
+    }
+    Ok(())
+}
+
+fn parse_blackdetect_intervals(log: &str) -> Vec<(f64, f64)> {
+    parse_interval_pairs(log, "black_start:", "black_end:")
+}
+
+fn parse_silencedetect_intervals(log: &str) -> Vec<(f64, f64)> {
+    parse_interval_pairs(log, "silence_start:", "silence_end:")
+}
+
+fn parse_interval_pairs(log: &str, start_key: &str, end_key: &str) -> Vec<(f64, f64)> {
+    let mut intervals = Vec::new();
+    let mut pending_start = None;
+    for line in log.lines() {
+        if let Some(start) = value_after_key(line, start_key) {
+            pending_start = Some(start);
+        }
+        if let Some(end) = value_after_key(line, end_key)
+            && let Some(start) = pending_start.take()
+            && end > start
+        {
+            intervals.push((start, end));
+        }
+    }
+    intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
+    intervals
+}
+
+fn marker_gaps_from_intervals(intervals: &[(f64, f64)]) -> Vec<f64> {
+    intervals
+        .windows(2)
+        .filter_map(|pair| {
+            let previous_end = pair[0].1;
+            let next_start = pair[1].0;
+            let gap = next_start - previous_end;
+            (gap >= 0.050 && gap <= 0.500).then_some(previous_end + gap / 2.0)
+        })
+        .collect()
+}
+
+fn value_after_key(line: &str, key: &str) -> Option<f64> {
+    let start = line.find(key)? + key.len();
+    let value = line[start..]
+        .trim_start()
+        .split(|ch: char| ch.is_whitespace() || ch == '|' || ch == ']')
+        .next()?;
+    value.parse().ok()
+}
+
+fn max_audio_pts_gap_ms(ashowinfo_log: &str) -> f64 {
+    let mut times: Vec<f64> = ashowinfo_log
+        .lines()
+        .filter_map(|line| value_after_key(line, "pts_time:"))
+        .collect();
+    times.sort_by(|left, right| left.total_cmp(right));
+    let mut deltas: Vec<f64> = times
+        .windows(2)
+        .filter_map(|pair| {
+            let delta = pair[1] - pair[0];
+            (delta > 0.0).then_some(delta)
+        })
+        .collect();
+    if deltas.is_empty() {
+        return 0.0;
+    }
+    deltas.sort_by(|left, right| left.total_cmp(right));
+    let median = deltas[deltas.len() / 2];
+    deltas
+        .into_iter()
+        .map(|delta| (delta - median).max(0.0) * 1000.0)
+        .fold(0.0, f64::max)
+}
+
+fn analyze_pcm_s16le(bytes: &[u8]) -> PcmQualityReport {
+    let mut samples = 0usize;
+    let mut clipping_samples = 0usize;
+    let mut max_step = 0i32;
+    let mut sum_sq = 0f64;
+    let mut previous: Option<i32> = None;
+    for chunk in bytes.chunks_exact(2) {
+        let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as i32;
+        samples += 1;
+        if sample.abs() >= 32_760 {
+            clipping_samples += 1;
+        }
+        if let Some(prev) = previous {
+            max_step = max_step.max((sample - prev).abs());
+        }
+        previous = Some(sample);
+        sum_sq += (sample as f64) * (sample as f64);
+    }
+    let rms = if samples == 0 {
+        0.0
+    } else {
+        (sum_sq / samples as f64).sqrt()
+    };
+    PcmQualityReport {
+        samples,
+        clipping_samples,
+        max_step,
+        rms,
+    }
+}
+
+fn safe_artifact_stem(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 async fn stop_mixed_outputs(api: &RampApi, pipeline_id: &str, output_ids: &[String]) {
@@ -10857,10 +11770,10 @@ fn checked_h264_multi_audio_fixture() -> Result<PathBuf, String> {
 
 fn mixed_file_fixture(case: MixedInputCase) -> Result<PathBuf, String> {
     match (case.codec, case.multi_track) {
-        ("h264", false) => checked_h264_fixture(),
-        ("h265", false) => checked_h265_fixture(),
-        ("h264", true) => restream::test_fixtures::bench_transport_fixture("h264", "1.5M", true),
-        ("h265", true) => restream::test_fixtures::bench_transport_fixture("h265", "1.5M", true),
+        ("h264", false) => restream::test_fixtures::av_marker_transport_fixture("h264", false),
+        ("h265", false) => restream::test_fixtures::av_marker_transport_fixture("h265", false),
+        ("h264", true) => restream::test_fixtures::av_marker_transport_fixture("h264", true),
+        ("h265", true) => restream::test_fixtures::av_marker_transport_fixture("h265", true),
         _ => Err(format!("unsupported file input case {}", case.name)),
     }
 }
@@ -11430,6 +12343,117 @@ async fn file_live_edge() -> Result<Value, String> {
     }))
 }
 
+async fn signal_control() -> Result<Value, String> {
+    let work_dir = artifact_path("signal-control");
+    std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
+    let env = MixedEnv::from_env_with_default_work_dir("signal-control", work_dir.clone());
+    let duration = env.av_signal_seconds;
+    let cases = [
+        ("h264-single-source", "h264", false, false),
+        ("h264-single-720p", "h264", false, true),
+        ("h265-single-source", "h265", false, false),
+        ("h265-single-720p", "h265", false, true),
+        ("h264-multi-source", "h264", true, false),
+        ("h265-multi-source", "h265", true, false),
+    ];
+    let mut results = Vec::new();
+    for (name, codec, multi_audio, transcode_720p) in cases {
+        let fixture = restream::test_fixtures::av_marker_transport_fixture(codec, multi_audio)?;
+        let capture_path = work_dir.join(format!("{name}.signal.mkv"));
+        ffmpeg_control_capture(&fixture, &capture_path, duration, transcode_720p).await?;
+        let started = Instant::now();
+        validate_signal_capture_artifact(
+            &env,
+            "signal-control",
+            &format!("SC-{name}"),
+            name,
+            &fixture.to_string_lossy(),
+            &capture_path,
+            duration,
+            started,
+        )
+        .await?;
+        results.push(json!({
+            "name": name,
+            "fixture": fixture,
+            "capture": capture_path,
+            "transcode720p": transcode_720p,
+            "passed": true,
+        }));
+    }
+    Ok(json!({
+        "mode": "signal-control",
+        "passed": true,
+        "durationSecs": duration,
+        "workDir": work_dir,
+        "cases": results,
+    }))
+}
+
+async fn ffmpeg_control_capture(
+    fixture: &Path,
+    capture_path: &Path,
+    duration: u64,
+    transcode_720p: bool,
+) -> Result<(), String> {
+    let duration_s = duration.to_string();
+    let fixture_s = fixture.to_string_lossy().to_string();
+    let mut command = Command::new("ffmpeg");
+    command.args([
+        "-y",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "warning",
+        "-stream_loop",
+        "-1",
+        "-i",
+        &fixture_s,
+        "-t",
+        &duration_s,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+    ]);
+    if transcode_720p {
+        command.args([
+            "-vf",
+            "scale=1280:720",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-g",
+            "60",
+            "-c:a",
+            "copy",
+        ]);
+    } else {
+        command.args(["-c", "copy"]);
+    }
+    command.args(["-f", "matroska"]).arg(capture_path);
+    let child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(Duration::from_secs(duration + 60), child.wait_with_output())
+        .await
+        .map_err(|_| format!("signal control capture timed out: {}", fixture.display()))?
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "signal control capture failed for {}: {}",
+            fixture.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
 async fn run_mixed_file_config(
     env: &MixedEnv,
     api: &RampApi,
@@ -11497,6 +12521,8 @@ async fn run_mixed_file_config(
     let mut output_ids = Vec::with_capacity(total);
     let mut ffmpeg_srt_sinks = Vec::new();
     let mut next_ffmpeg_srt_sink = 0usize;
+    let mut ffmpeg_signal_sinks = Vec::new();
+    let mut next_ffmpeg_signal_sink = 0usize;
     if case.multi_track {
         add_mixed_multi_output_cases(
             env,
@@ -11507,6 +12533,8 @@ async fn run_mixed_file_config(
             output_cases,
             &mut ffmpeg_srt_sinks,
             &mut next_ffmpeg_srt_sink,
+            &mut ffmpeg_signal_sinks,
+            &mut next_ffmpeg_signal_sink,
             &mut output_ids,
         )
         .await?;
@@ -11518,11 +12546,16 @@ async fn run_mixed_file_config(
             restream_pid,
             cfg,
             output_cases,
+            &mut ffmpeg_signal_sinks,
+            &mut next_ffmpeg_signal_sink,
             &mut output_ids,
         )
         .await?;
     }
     verify_mixed_graph_stage_sharing(env, api, cfg, &pipeline_id, case, resume).await?;
+    if !ffmpeg_signal_sinks.is_empty() {
+        finish_ffmpeg_signal_sinks(env, &mut ffmpeg_signal_sinks, resume).await?;
+    }
 
     let duration_secs: u64 = 10;
     if env.check_selected("hls") {
@@ -15562,6 +16595,104 @@ stream|index=1|codec_type=audio\n";
 
         let error = ffprobe_compact_validate_dts(log).expect_err("large DTS gap must fail");
         assert!(error.contains("DTS gap"));
+    }
+
+    #[test]
+    fn marker_gap_parser_extracts_flash_and_beep_times() {
+        let black = "\
+[blackdetect @ 0x1] black_start:0 black_end:2 black_duration:2\n\
+[blackdetect @ 0x1] black_start:2.2 black_end:7 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:7.2 black_end:12 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:12.2 black_end:17 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:17.2 black_end:20 black_duration:2.8\n";
+        let silence = "\
+[silencedetect @ 0x1] silence_start: 0\n\
+[silencedetect @ 0x1] silence_end: 2.02 | silence_duration: 2.02\n\
+[silencedetect @ 0x1] silence_start: 2.22\n\
+[silencedetect @ 0x1] silence_end: 7.02 | silence_duration: 4.8\n\
+[silencedetect @ 0x1] silence_start: 7.22\n\
+[silencedetect @ 0x1] silence_end: 12.02 | silence_duration: 4.8\n\
+[silencedetect @ 0x1] silence_start: 12.22\n\
+[silencedetect @ 0x1] silence_end: 17.02 | silence_duration: 4.8\n\
+[silencedetect @ 0x1] silence_start: 17.22\n";
+
+        let video = marker_gaps_from_intervals(&parse_blackdetect_intervals(black));
+        let audio = marker_gaps_from_intervals(&parse_silencedetect_intervals(silence));
+
+        assert_eq!(video.len(), 4);
+        assert_eq!(audio.len(), 3);
+        assert!((video[0] - 2.1).abs() < 0.001);
+        assert!((audio[0] - 2.12).abs() < 0.001);
+    }
+
+    #[test]
+    fn signal_quality_rejects_marker_drift() {
+        let black = "\
+[blackdetect @ 0x1] black_start:0 black_end:2 black_duration:2\n\
+[blackdetect @ 0x1] black_start:2.2 black_end:7 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:7.2 black_end:12 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:12.2 black_end:17 black_duration:4.8\n\
+[blackdetect @ 0x1] black_start:17.2 black_end:20 black_duration:2.8\n";
+        let silence = "\
+[silencedetect @ 0x1] silence_start: 0\n\
+[silencedetect @ 0x1] silence_end: 2.02 | silence_duration: 2.02\n\
+[silencedetect @ 0x1] silence_start: 2.22\n\
+[silencedetect @ 0x1] silence_end: 7.20 | silence_duration: 4.98\n\
+[silencedetect @ 0x1] silence_start: 7.40\n\
+[silencedetect @ 0x1] silence_end: 12.45 | silence_duration: 5.05\n\
+[silencedetect @ 0x1] silence_start: 12.65\n\
+[silencedetect @ 0x1] silence_end: 17.80 | silence_duration: 5.15\n\
+[silencedetect @ 0x1] silence_start: 18.00\n";
+        let ashow = "\
+[Parsed_ashowinfo_0 @ 0x1] n:0 pts_time:0\n\
+[Parsed_ashowinfo_0 @ 0x1] n:1 pts_time:0.021333\n\
+[Parsed_ashowinfo_0 @ 0x1] n:2 pts_time:0.042666\n";
+        let pcm = PcmQualityReport {
+            samples: 1024,
+            clipping_samples: 0,
+            max_step: 100,
+            rms: 10.0,
+        };
+
+        let error = validate_signal_quality(black, silence, ashow, "", pcm)
+            .expect_err("marker drift must fail");
+        assert!(error.contains("drift") || error.contains("offset"));
+    }
+
+    #[test]
+    fn nearest_marker_pairing_tolerates_live_capture_starting_mid_cycle() {
+        let video = vec![6.4125, 11.4125, 16.4125];
+        let audio = vec![1.396, 6.396, 11.396, 16.396];
+
+        let offsets = nearest_marker_offsets_ms(&video, &audio, 1000.0);
+
+        assert_eq!(offsets.len(), 3);
+        assert!(offsets.iter().all(|offset| offset.abs() < 25.0));
+    }
+
+    #[test]
+    fn audio_pts_gap_uses_median_frame_delta() {
+        let ashow = "\
+[Parsed_ashowinfo_0 @ 0x1] n:0 pts_time:0\n\
+[Parsed_ashowinfo_0 @ 0x1] n:1 pts_time:0.021333\n\
+[Parsed_ashowinfo_0 @ 0x1] n:2 pts_time:0.042666\n\
+[Parsed_ashowinfo_0 @ 0x1] n:3 pts_time:0.200000\n";
+
+        assert!(max_audio_pts_gap_ms(ashow) > 100.0);
+    }
+
+    #[test]
+    fn pcm_quality_detects_clipping_and_impulses() {
+        let mut bytes = Vec::new();
+        for sample in [0i16, 10, -10, 32767, -32768] {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let report = analyze_pcm_s16le(&bytes);
+
+        assert_eq!(report.samples, 5);
+        assert_eq!(report.clipping_samples, 2);
+        assert!(report.max_step > 30_000);
     }
 
     #[test]

@@ -436,7 +436,7 @@ Common runner flags:
 | `--preflight` | Check binary, dependencies, namespace support, and host-mode port conflicts without starting the test. |
 | `--fast` | Set `N_PER_GROUP=1`, `N_OUTPUTS=1`, `SNAP_EVERY=999`, and skip snapshot sleeps for quick agent loops. |
 | `--json <path>` | Write JSONL assertion records alongside the human-readable log. Failed ffprobe assertions include stderr and log tails. |
-| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `hls`, `recording`, `stage-sharing`, `lifecycle`, `load`. |
+| `ONLY_CHECKS=<checks>` | Run selected mixed-input assertion groups. Supported checks: `smoke`, `ffprobe`, `signal`, `soak-drift`, `hls`, `recording`, `stage-sharing`, `lifecycle`, `load`. |
 | `--skip-load` | Skip resource snapshot sleeps and load assertion records while preserving correctness setup. |
 | `--resume-from <id>` | Skip named assertion records until the requested assertion ID is reached. |
 | `RSS_BASELINE=<path>` | Compare mixed-input RSS summaries against a saved CSV baseline. `RSS_BASELINE_THRESHOLD_PCT` defaults to 5. |
@@ -611,8 +611,19 @@ addition to the resource measurements:
 2. **Fatal ffprobe** — after all groups, `verify_stream` (fatal, 30×2s retries)
    on RTMP-src, RTMP-720p, SRT-src, SRT-720p, HLS/mediamtx, and HLS/restream
    endpoints.
-3. **Stop lifecycle** — calls `/stop` on every output and polls `/api/v1/settings` until
+3. **Signal quality** — captures consumer-visible output, detects flash/beep
+   markers, checks marker offset/drift, runs `ashowinfo`, `astats`,
+   `silencedetect`, and scans decoded PCM for clipping and impulse-sized sample
+   steps. The mixed correctness matrix uses checked-in A/V marker fixtures
+   (`av-marker-h264*.ts`, `av-marker-h265*.ts`) so this is a real oracle rather
+   than arbitrary-content probing.
+4. **Stop lifecycle** — calls `/stop` on every output and polls `/api/v1/settings` until
    all reach `"stopped"` within 60 s.
+
+`AV_SIGNAL_SECONDS` controls normal signal capture length and defaults to 20 s.
+`ONLY_CHECKS=soak-drift` switches signal capture to `AV_SOAK_SECONDS`, default
+120 s, so nightly/soak runs can stretch marker drift measurement without
+changing the matrix code.
 
 `ONLY_CHECKS=stage-sharing` asserts that the live processing graph has exactly
 the expected unique `transcoder`, `audio_filter`, and `codec_edge` nodes for the

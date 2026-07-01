@@ -1425,6 +1425,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_720p_stage_emits_live_packets_for_h264_marker_fixture() {
+        let path = crate::test_fixtures::av_marker_transport_fixture("h264", false)
+            .expect("H.264 marker fixture");
+        let file_bytes = std::fs::read(&path).expect("read H.264 marker fixture");
+        let mut demuxer = TsDemuxer::new();
+        let mut packets = Vec::new();
+        for chunk in file_bytes.chunks(1316) {
+            demuxer.feed(chunk);
+            demuxer.drain_into(&mut packets);
+        }
+        demuxer.flush();
+        demuxer.drain_into(&mut packets);
+
+        let probe = demuxer.take_probe().expect("probe H.264 marker fixture");
+        let video = probe.video.expect("marker fixture should contain video");
+        let audio_tracks = probe.audio_tracks;
+
+        let engine = Arc::new(MediaEngine::new());
+        engine
+            .try_register_ingest("pipe-ext-h264-marker", "stream-key", "file")
+            .await
+            .unwrap();
+        engine
+            .update_ingest_meta(
+                "pipe-ext-h264-marker",
+                Some(video),
+                audio_tracks.first().cloned(),
+                None,
+            )
+            .await;
+        engine
+            .update_ingest_audio_tracks("pipe-ext-h264-marker", audio_tracks.clone())
+            .await;
+
+        let source_ring = Arc::new(RingBuffer::new(16_384));
+        source_ring.set_codec_hint("h264");
+        source_ring.set_audio_tracks(audio_tracks);
+        let output_ring = Arc::new(RingBuffer::new(16_384));
+        let mut reader = Reader::new_live(
+            "test_ext_h264_marker_output".to_string(),
+            output_ring.clone(),
+        );
+        let cancel = CancellationToken::new();
+        let stage_key = StageKey::new("pipe-ext-h264-marker", StageKind::video_preset("720p"));
+
+        tokio::spawn(start_external_transcoder_stage(
+            "pipe-ext-h264-marker".to_string(),
+            "video:720p".to_string(),
+            source_ring.clone(),
+            output_ring,
+            engine,
+            cancel.clone(),
+            None,
+            stage_key,
+        ));
+
+        let ready_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if source_ring.reader_snapshots().iter().any(|snapshot| {
+                snapshot
+                    .name
+                    .contains("ext-stage:pipe-ext-h264-marker:video:720p")
+            }) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ready_deadline,
+                "external H.264 marker stage reader did not attach in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        source_ring.push_batch(packets.drain(..));
+        let output_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut output_packets = Vec::new();
+        loop {
+            while let Ok(Some(packet)) = reader.pull() {
+                output_packets.push(packet);
+            }
+            if output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video)
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= output_deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        cancel.cancel();
+
+        assert!(
+            output_packets
+                .iter()
+                .any(|packet| packet.media_type == MediaType::Video),
+            "external H.264 marker stage should emit live video packets"
+        );
+    }
+
+    #[tokio::test]
     async fn external_720p_stage_emits_live_packets_for_single_audio_hevc_fixture() {
         let (video, audio_tracks, mut packets) =
             crate::test_fixtures::primary_av_packets_for_codec("h265")
