@@ -367,8 +367,8 @@ function setOutputTogglePending(
 let currentModalAudioTracks: AudioTrack[] = [];
 let currentModalIngestLive = false;
 
-type ModalAudioMode = "auto" | "pass" | "downmix" | "remap";
-let modalAudioMode: ModalAudioMode = "auto";
+type ModalAudioMode = "all" | "subset" | "downmix" | "remap";
+let modalAudioMode: ModalAudioMode = "all";
 let modalAudioSelectedTracks: number[] = [0];
 
 function getTrackChannelCount(trackIndex: number): number {
@@ -452,6 +452,13 @@ function formatTrackPickLabel(trackIndex: number): string {
   return `Track ${trackIndex + 1} · ${codec} · ${channels}${rate}`;
 }
 
+function getRoutedTrackIndices(mode: ModalAudioMode): number[] {
+  if (mode === "all") {
+    return Array.from({ length: currentModalAudioTracks.length }, (_, i) => i);
+  }
+  return modalAudioSelectedTracks;
+}
+
 function renderAudioCapsBadges(
   platform: ReturnType<typeof detectAudioPlatform>,
   protocol: AudioProtocol,
@@ -489,16 +496,19 @@ function renderAudioWarnings(
   const platformLabel = getAudioPlatformLabel(platform);
   const protoLabel = protocol.toUpperCase();
   const trackCount = Math.max(1, currentModalAudioTracks.length);
-  const selected = modalAudioSelectedTracks;
-  const has51Selected = selected.some((t) => getTrackChannelCount(t) > 2);
-  const exceedsCap = selected.some(
+  const routedTracks = getRoutedTrackIndices(modalAudioMode);
+  const has51Selected = routedTracks.some((t) => getTrackChannelCount(t) > 2);
+  const exceedsCap = routedTracks.some(
     (t) => getTrackChannelCount(t) > caps.maxChannels,
   );
 
-  if (modalAudioMode === "auto") {
+  if (modalAudioMode === "all") {
     items.push({
       cls: "text-base-content/60",
-      text: "FFmpeg default mapping — sends one audio track (highest channel count).",
+      text:
+        trackCount > 1
+          ? `Passthrough all ${trackCount} ingest tracks as-is.`
+          : "Passthrough the ingest audio track as-is.",
     });
   }
   if (caps.maxTracks === 1 && trackCount > 1 && modalAudioMode !== "remap") {
@@ -516,7 +526,7 @@ function renderAudioWarnings(
   if (
     platform === "youtube" &&
     (protocol === "rtmp" || protocol === "rtmps") &&
-    modalAudioMode === "pass" &&
+    (modalAudioMode === "all" || modalAudioMode === "subset") &&
     has51Selected
   ) {
     items.push({
@@ -527,7 +537,7 @@ function renderAudioWarnings(
   if (
     platform === "youtube" &&
     protocol === "hls" &&
-    modalAudioMode === "pass" &&
+    (modalAudioMode === "all" || modalAudioMode === "subset") &&
     has51Selected
   ) {
     items.push({
@@ -535,13 +545,13 @@ function renderAudioWarnings(
       text: "5.1 pass-through supported on YouTube HLS (AAC / AC3 / EAC3).",
     });
   }
-  if (platform === "facebook" && modalAudioMode !== "auto") {
+  if (platform === "facebook" && modalAudioMode !== "all") {
     items.push({
       cls: "text-base-content/60",
       text: "AAC-LC stereo, 44.1/48 kHz, 128 kbps recommended (256 max).",
     });
   }
-  if (platform === "vdocipher" && modalAudioMode !== "auto") {
+  if (platform === "vdocipher" && modalAudioMode !== "all") {
     items.push({
       cls: "text-base-content/60",
       text: "Multi-track or surround audio will be downmixed or fail.",
@@ -550,12 +560,15 @@ function renderAudioWarnings(
   if (
     platform === "generic" &&
     (protocol === "srt" || protocol === "hls") &&
-    modalAudioMode === "pass" &&
-    selected.length > 1
+    (modalAudioMode === "all" || modalAudioMode === "subset") &&
+    routedTracks.length > 1
   ) {
     items.push({
       cls: "text-success",
-      text: `${protoLabel} supports multi-track — all ${selected.length} selected tracks are sent.`,
+      text:
+        modalAudioMode === "all"
+          ? `${protoLabel} supports multi-track — all ${routedTracks.length} ingest tracks are sent.`
+          : `${protoLabel} supports multi-track — all ${routedTracks.length} selected tracks are sent.`,
     });
   }
 
@@ -574,9 +587,9 @@ function renderAudioTrackPicker(multiSelect: boolean): void {
     const checked = modalAudioSelectedTracks.includes(i) ? " checked" : "";
     const type = multiSelect ? "checkbox" : "radio";
     const klass = multiSelect ? "checkbox checkbox-sm" : "radio radio-sm";
-    return `<label class="flex cursor-pointer items-center gap-2 text-sm">
+    return `<label class="border-base-content/10 bg-base-100 hover:bg-base-100/80 flex min-w-0 cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm">
             <input type="${type}" name="out-audio-track" value="${i}" class="${klass}"${checked} />
-            <span>${formatTrackPickLabel(i)}</span>
+            <span class="min-w-0 leading-5">${formatTrackPickLabel(i)}</span>
         </label>`;
   }).join("");
 
@@ -643,14 +656,14 @@ function refreshAudioRoutingUi(): void {
   if (modalAudioSelectedTracks.length === 0) modalAudioSelectedTracks = [0];
 
   const multiAllowed = caps.maxTracks > 1;
-  if (!multiAllowed || modalAudioMode !== "pass") {
+  if (!multiAllowed || modalAudioMode !== "subset") {
     modalAudioSelectedTracks = [modalAudioSelectedTracks[0]];
   }
 
   const passBlocked = modalAudioSelectedTracks.some(
     (t) => getTrackChannelCount(t) > caps.maxChannels,
   );
-  if (modalAudioMode === "pass" && passBlocked) {
+  if (modalAudioMode === "subset" && passBlocked) {
     modalAudioMode = "downmix";
   }
 
@@ -658,7 +671,7 @@ function refreshAudioRoutingUi(): void {
     const button = el as HTMLButtonElement;
     const mode = button.dataset.amode as ModalAudioMode;
     button.classList.toggle("btn-active", mode === modalAudioMode);
-    const disabled = mode === "pass" && passBlocked;
+    const disabled = mode === "subset" && passBlocked;
     button.disabled = disabled;
     button.title = disabled
       ? "Selected track exceeds the destination channel limit — downmix required."
@@ -669,18 +682,19 @@ function refreshAudioRoutingUi(): void {
     };
   });
 
-  const showPicker = modalAudioMode === "pass" || modalAudioMode === "downmix";
+  const showPicker =
+    modalAudioMode === "subset" || modalAudioMode === "downmix";
   document
     .getElementById("out-audio-track-pick")
     ?.classList.toggle("hidden", !showPicker);
   if (showPicker) {
-    renderAudioTrackPicker(modalAudioMode === "pass" && multiAllowed);
+    renderAudioTrackPicker(modalAudioMode === "subset" && multiAllowed);
   }
 
   const remapFields = document.getElementById("out-remap-fields");
   if (remapFields) {
     remapFields.classList.toggle("hidden", modalAudioMode !== "remap");
-    remapFields.classList.toggle("inline-block", modalAudioMode === "remap");
+    remapFields.classList.toggle("flex", modalAudioMode === "remap");
   }
 
   renderAudioWarnings(platform, protocol, caps);
@@ -1423,10 +1437,10 @@ async function openOutModal(
   modalAudioMode = isRemapEncoding
     ? "remap"
     : atrackMatch
-      ? "pass"
+      ? "subset"
       : downmixMatch
         ? "downmix"
-        : "auto";
+        : "all";
   modalAudioSelectedTracks = atrackMatch
     ? atrackMatch[1].split(",").map((t) => parseInt(t, 10))
     : downmixMatch
@@ -1577,7 +1591,7 @@ export async function editOutFormBtn(event: Event): Promise<void> {
 
   // Build the audio routing suffix from the current modal audio state.
   let audioSuffix = "";
-  if (modalAudioMode === "pass") {
+  if (modalAudioMode === "subset") {
     audioSuffix = `atrack:${modalAudioSelectedTracks.join(",")}`;
   } else if (modalAudioMode === "downmix") {
     audioSuffix = `downmix:${modalAudioSelectedTracks[0] ?? 0}`;
@@ -1610,7 +1624,7 @@ export async function editOutFormBtn(event: Event): Promise<void> {
   //   - If there is an audio routing suffix AND the video encoding is NOT 'source',
   //     produce a compound "videoEncoding+audioRouting" string.
   //   - If video is 'source' with audio routing, emit only the audio routing (backward compat).
-  //   - If no audio routing (auto mode), emit just the video encoding.
+  //   - If passthrough-all is selected, emit just the video encoding.
   let resolvedEncoding: string;
   if (audioSuffix) {
     resolvedEncoding =

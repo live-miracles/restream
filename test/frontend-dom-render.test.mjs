@@ -101,6 +101,34 @@ function runCheck(name, fn) {
   test(name, { concurrency: false }, fn);
 }
 
+function appendInspectDom(document) {
+  appendRoot(document, "section", "overview-mode-panel");
+  appendRoot(document, "div", "overview-mode-content");
+  appendRoot(document, "section", "control-mode-panel");
+  appendRoot(document, "div", "control-mode-content");
+  appendRoot(document, "section", "inspect-mode-panel");
+  appendRoot(document, "section", "media-mode-panel");
+  appendRoot(document, "div", "media-mode-content");
+  appendRoot(document, "section", "settings-mode-panel");
+  appendRoot(document, "div", "settings-mode-content");
+  appendRoot(document, "section", "status-mode-panel");
+  appendRoot(document, "div", "status-mode-content");
+  appendRoot(document, "select", "inspect-pipeline-select");
+  appendRoot(document, "button", "inspect-open-pipeline-btn");
+  appendRoot(document, "div", "inspect-pipeline-summary");
+  appendRoot(document, "div", "inspect-diagnostics-summary");
+  appendRoot(document, "button", "inspect-refresh-graph-btn");
+  appendRoot(document, "button", "inspect-open-diagnostics-btn");
+  appendRoot(document, "div", "inspect-graph-status");
+  appendRoot(document, "div", "inspect-graph-container");
+  appendRoot(document, "div", "workspace-mode-summary");
+}
+
+async function flushAsyncWork() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 runCheck("renderPipelinesList skips identical sidebar rewrites", async () => {
   const { document } = installFakeDom();
   const pipelinesList = appendRoot(document, "ul", "pipelines");
@@ -520,6 +548,85 @@ runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", as
   assert.match(document.getElementById("input-audio-tracks").innerHTML, /Stereo/);
   assert.equal(document.getElementById("input-reader-count").textContent, "3");
   assert.equal(document.getElementById("input-output-count").textContent, "1");
+});
+
+runCheck("inspect summary keeps retry badges non-wrapping", async () => {
+  const { document, window } = installFakeDom();
+  appendInspectDom(document);
+  window.location.href = "http://localhost/?mode=inspect&p=pipe-1";
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  const fetchCalls = [];
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { pipelineId: "pipe-1", nodes: [], edges: [] };
+      },
+    };
+  };
+
+  const modes = await loadCompiledFrontendModule("features/modes.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      outs: [
+        makeOutput({
+          desiredState: "running",
+          status: "retrying",
+          retrying: true,
+        }),
+      ],
+    }),
+  ];
+
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+
+  const summaryHtml = document.getElementById("inspect-pipeline-summary").innerHTML;
+  assert.match(summaryHtml, /Output retrying/);
+  assert.match(summaryHtml, /shrink-0/);
+  assert.match(summaryHtml, /whitespace-nowrap/);
+  assert.equal(fetchCalls.length >= 1, true);
+});
+
+runCheck("inspect graph refreshes when pipeline state changes", async () => {
+  const { document, window } = installFakeDom();
+  appendInspectDom(document);
+  window.location.href = "http://localhost/?mode=inspect&p=pipe-1";
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  const fetchCalls = [];
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(String(url));
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { pipelineId: "pipe-1", nodes: [], edges: [] };
+      },
+    };
+  };
+
+  const modes = await loadCompiledFrontendModule("features/modes.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [makePipeline()];
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+  const firstFetchCount = fetchCalls.length;
+
+  state.pipelines[0].outs[0].status = "retrying";
+  state.pipelines[0].outs[0].retrying = true;
+  modes.renderDashboardModes();
+  await flushAsyncWork();
+
+  assert.equal(fetchCalls.length > firstFetchCount, true);
 });
 
 runCheck("metric-format reuses subtle-unit spans across updates", async () => {

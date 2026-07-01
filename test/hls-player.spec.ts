@@ -449,6 +449,7 @@ test.describe('HLS Player — DOM rendering', () => {
         expect(result.childrenAfterSecondCall).toBeGreaterThan(0);
         expect(result.sameChildren).toBe(true);
     });
+
 });
 
 test.describe('HLS Player — integration', () => {
