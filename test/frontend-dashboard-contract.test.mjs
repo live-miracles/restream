@@ -2071,11 +2071,15 @@ test("status mode reuses its own restream log SSE without opening a second lifec
   const originalEventSource = globalThis.EventSource;
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
+  let setIntervalCalls = 0;
   Object.defineProperty(globalThis, "EventSource", {
     value: FakeEventSource,
     configurable: true,
   });
-  globalThis.setInterval = () => 1;
+  globalThis.setInterval = () => {
+    setIntervalCalls += 1;
+    return 1;
+  };
   globalThis.clearInterval = () => {};
 
   try {
@@ -2092,6 +2096,13 @@ test("status mode reuses its own restream log SSE without opening a second lifec
       requests.filter((href) => href === "/api/v1/engine").length,
       1,
       "status mode should fetch the engine status snapshot once",
+    );
+    assert.equal(
+      requests.filter(
+        (href) => href === "/metrics/system" || href === "/metrics/system?view=summary",
+      ).length,
+      0,
+      "status mode should not keep the dashboard metrics poll alive under its dedicated status transport",
     );
     assert.equal(
       requests.filter(
@@ -2115,6 +2126,11 @@ test("status mode reuses its own restream log SSE without opening a second lifec
       ),
       false,
       "status mode should not open a second lifecycle-only SSE stream",
+    );
+    assert.equal(
+      setIntervalCalls,
+      0,
+      "status mode should not register the dashboard runtime poller at all",
     );
   } finally {
     for (const stream of streams) {

@@ -480,33 +480,56 @@ const DASHBOARD_HIDDEN_POLL_INTERVAL_MS = 30000;
 let dashboardPollTimer: ReturnType<typeof setInterval> | null = null;
 let dashboardPollEveryMs: number | null = null;
 let dashboardRuntimeStarted = false;
+let dashboardRuntimeDocument: Document | null = null;
 
-function startDashboardPolling(intervalMs: number): void {
+function dashboardPollingIntervalMs(): number | null {
+  if (currentDashboardMode() === "status") return null;
+  return document.hidden
+    ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS
+    : DASHBOARD_POLL_INTERVAL_MS;
+}
+
+function startDashboardPolling(intervalMs: number | null): void {
   if (dashboardPollTimer && dashboardPollEveryMs === intervalMs) return;
-  if (dashboardPollTimer) clearInterval(dashboardPollTimer);
+  if (dashboardPollTimer) {
+    clearInterval(dashboardPollTimer);
+    dashboardPollTimer = null;
+  }
   dashboardPollEveryMs = intervalMs;
+  if (intervalMs === null) return;
   dashboardPollTimer = setInterval(
     () => void requestDashboardRefresh(),
     intervalMs,
   );
 }
 
+export function syncDashboardPolling(): void {
+  if (!dashboardRuntimeStarted || dashboardRuntimeDocument !== document) return;
+  startDashboardPolling(dashboardPollingIntervalMs());
+}
+
 async function onVisibilityChange(): Promise<void> {
-  if (document.hidden) {
-    startDashboardPolling(DASHBOARD_HIDDEN_POLL_INTERVAL_MS);
-    syncDashboardRuntimeStream();
-    await syncHistoryPollingWithVisibility();
-    return;
-  }
-  startDashboardPolling(DASHBOARD_POLL_INTERVAL_MS);
+  syncDashboardPolling();
   syncDashboardRuntimeStream();
   await syncHistoryPollingWithVisibility();
-  await requestDashboardRefresh(true);
+  if (!document.hidden && currentDashboardMode() !== "status") {
+    await requestDashboardRefresh(true);
+  }
 }
 
 export function startDashboardRuntime(): void {
-  if (dashboardRuntimeStarted) return;
+  const documentChanged = dashboardRuntimeDocument !== document;
+  if (dashboardRuntimeStarted && !documentChanged) return;
+  if (documentChanged) {
+    closeDashboardRuntimeStream();
+    if (dashboardPollTimer) {
+      clearInterval(dashboardPollTimer);
+      dashboardPollTimer = null;
+    }
+    dashboardPollEveryMs = null;
+  }
   dashboardRuntimeStarted = true;
+  dashboardRuntimeDocument = document;
 
   document.addEventListener(
     "visibilitychange",
@@ -515,13 +538,11 @@ export function startDashboardRuntime(): void {
 
   void (async () => {
     await loadAudioCaps();
-    await requestDashboardRefresh();
+    if (currentDashboardMode() !== "status") {
+      await requestDashboardRefresh();
+    }
     syncDashboardRuntimeStream();
-    startDashboardPolling(
-      document.hidden
-        ? DASHBOARD_HIDDEN_POLL_INTERVAL_MS
-        : DASHBOARD_POLL_INTERVAL_MS,
-    );
+    syncDashboardPolling();
   })();
 }
 

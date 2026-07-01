@@ -36,6 +36,7 @@ import {
   refreshDashboard,
   refreshDashboardRuntime,
   requestDetailedMetricsRefresh,
+  syncDashboardPolling,
   syncDashboardRuntimeStream,
 } from "./dashboard.js";
 import type { AppLogRow, OutputView, PipelineView } from "../types.js";
@@ -1129,6 +1130,7 @@ function applyMode(mode: DashboardMode): void {
   }
   if (mode === "settings") renderSettingsMode();
   if (mode === "status") renderStatusMode();
+  syncDashboardPolling();
 }
 
 function modeUsesPipelineSelection(mode: DashboardMode): boolean {
