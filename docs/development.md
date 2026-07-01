@@ -156,6 +156,18 @@ reuse returned mutation payloads or apply targeted local removals to patch
 dashboard state immediately instead of following each mutation with another
 `/api/v1/settings?view=dashboard` fetch.
 
+Recommended transport split for this dashboard:
+
+| UI surface | Transport | Why |
+| --- | --- | --- |
+| Restream lifecycle, output/pipeline history live tails, global process indicator | SSE (`/api/v1/logs/stream`) | These are edge-triggered event streams where waiting for the next poll feels laggy and wasteful. SSE stays on plain HTTP, survives ordinary load balancers / tunnels more easily than WebSockets, and gives us `Last-Event-ID` resume without inventing a custom session layer. |
+| Dashboard runtime cards, pipeline detail runtime, inspect graph refreshes, host metrics | Polling snapshot (`/api/v1/dashboard/runtime`, `/metrics/system`) | These are durable state snapshots, not append-only events. Polling keeps the backend contract simple, lets the client recover from missed lifecycle events, and avoids pushing high-frequency metric streams through proxies. |
+| Mutations that already return the user-visible state (`recording`, config edits, create/update/delete flows) | Mutation response + local patch | If the response already contains what the operator needs to see, refetching immediately is redundant. Patch local state and rerender. |
+| Mutations that need runtime confirmation (`output` and `file-ingest` start/stop) | Mutation response + immediate local intent + lifecycle SSE + bounded poll fallback | The click should feel instant, but the runtime still has to converge. Show the in-flight intent immediately, let lifecycle SSE wake the confirming runtime refresh when available, and keep one short fallback refresh for cold/no-stream cases. |
+| Background / hidden tabs | Slower polling, close SSE | Hidden tabs should not hold open hot event streams or 5 s runtime polls. Resume from the last event id or take a fresh snapshot when visible again. |
+
+The practical rule is: use SSE for sparse, operator-visible edges; use polling for compact snapshots that must stay self-healing; use mutation responses whenever they already carry the exact UI state.
+
 ## Testing
 
 For the broader testing story, use [Testing](testing.md). The short version:
