@@ -2097,6 +2097,193 @@ test("status mode reuses its own restream log SSE without opening a second lifec
   }
 });
 
+test("inspect mode refreshes graphs from dashboard runtime cadence without its own timer", async () => {
+  const settingsUrl = "/api/v1/settings?view=dashboard";
+  const firstRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=full&pipeline_id=pipe-1";
+  const steadyRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary&pipeline_id=pipe-1";
+  const graphUrl = "/api/v1/pipelines/pipe-1/graph";
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=inspect&p=pipe-1";
+  appendRoot(document, "div", "dashboard-grid");
+  appendRoot(document, "section", "inspect-mode-panel");
+  appendRoot(document, "select", "inspect-pipeline-select");
+  appendRoot(document, "button", "inspect-open-pipeline-btn");
+  appendRoot(document, "div", "inspect-pipeline-summary");
+  appendRoot(document, "div", "inspect-diagnostics-summary");
+  appendRoot(document, "button", "inspect-refresh-graph-btn");
+  appendRoot(document, "button", "inspect-open-diagnostics-btn");
+  appendRoot(document, "div", "inspect-graph-status");
+  appendRoot(document, "div", "inspect-graph-container");
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === settingsUrl) {
+      return new Response(
+        JSON.stringify({
+          serverName: "Restream",
+          pipelines: [
+            {
+              id: "pipe-1",
+              name: "Primary",
+              streamKey: "primary",
+              ingestUrls: { rtmp: null, srt: null },
+            },
+          ],
+          outputs: [
+            {
+              id: "out-1",
+              pipelineId: "pipe-1",
+              name: "Primary Output",
+              url: "rtmp://example.com/live/primary",
+              desiredState: "started",
+            },
+          ],
+          jobs: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === firstRuntimeUrl || href === steadyRuntimeUrl) {
+      return new Response(
+        JSON.stringify({
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: {
+                  status: "on",
+                  probeReady: true,
+                  readers: 1,
+                  publisher: { protocol: "srt" },
+                  bytesReceived: 1024,
+                  bytesSent: 2048,
+                  bitrateKbps: 3200,
+                },
+                outputs: {
+                  "out-1": {
+                    status: "running",
+                    rawStatus: "running",
+                    bitrateKbps: 1200,
+                    totalSize: 4096,
+                  },
+                },
+                recording: { enabled: false, active: false },
+              },
+            },
+          },
+          metrics: {
+            generatedAt:
+              href === firstRuntimeUrl
+                ? "2026-06-30T00:00:00Z"
+                : "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 12 },
+            memory: { usedPercent: 20 },
+            disk: { usedPercent: 40 },
+            network: { downloadKbps: 1, uploadKbps: 2 },
+            engine: {
+              cpuPercent: 3,
+              totalMemoryBytes: 1234,
+              cpuSampleReady: true,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === graphUrl) {
+      return new Response(
+        JSON.stringify({
+          pipelineId: "pipe-1",
+          nodes: [
+            {
+              id: "pipe-1_ingest",
+              type: "ingest",
+              label: "Ingest",
+              active: true,
+              metrics: {
+                packetsIn: 1,
+                packetsOut: 1,
+                bytesIn: 1024,
+                bytesOut: 1024,
+                processingUs: 10,
+                avgUsPerPacket: 10,
+                packetsPerSec: 1,
+                uptimeSecs: 5,
+              },
+            },
+          ],
+          edges: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  let setIntervalCalls = 0;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setInterval = (...args) => {
+    setIntervalCalls += 1;
+    return originalSetInterval(...args);
+  };
+  globalThis.clearInterval = (...args) => originalClearInterval(...args);
+
+  try {
+    const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+    const modes = await loadCompiledFrontendModule("features/modes.js");
+
+    dashboard.setDashboardHooks({
+      afterRender: () => {
+        modes.renderDashboardModes();
+      },
+    });
+
+    await dashboard.refreshDashboardRuntime();
+    await flushAsyncWork();
+
+    await dashboard.refreshDashboardRuntime();
+    await flushAsyncWork();
+
+    assert.equal(
+      requests.filter((href) => href === graphUrl).length,
+      2,
+      "inspect mode should refresh the graph on runtime refreshes",
+    );
+    assert.equal(
+      setIntervalCalls,
+      0,
+      "inspect graph refresh should not allocate a second polling timer",
+    );
+
+    const autoRefreshButton = document.getElementById(
+      "inspect-refresh-graph-btn",
+    );
+    autoRefreshButton.onclick();
+    requests.length = 0;
+
+    await dashboard.refreshDashboardRuntime();
+    await flushAsyncWork();
+
+    assert.equal(
+      requests.includes(graphUrl),
+      false,
+      "disabling inspect auto refresh should stop graph fetches on runtime refresh",
+    );
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
 test("pipeline runtime mode uses summary health plus focused selected-pipeline detail", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeWithFullMetricsUrl =

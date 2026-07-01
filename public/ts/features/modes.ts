@@ -70,10 +70,8 @@ let inspectGraphInFlight: Promise<void> | null = null;
 let inspectGraphRequestSeq = 0;
 let inspectGraphRenderedStateKey: string | null = null;
 let inspectGraphAutoRefresh = true;
-let inspectGraphTimer: ReturnType<typeof setInterval> | null = null;
 let settingsMounted = false;
 let statusMounted = false;
-const INSPECT_GRAPH_REFRESH_MS = 5000;
 type StatusTone = "success" | "warning" | "error" | "neutral" | "info";
 type OverviewMetricKey =
   | "inputs"
@@ -857,7 +855,6 @@ function renderInspect(): void {
     );
     refreshBtn.onclick = () => {
       inspectGraphAutoRefresh = !inspectGraphAutoRefresh;
-      syncInspectGraphAutoRefresh();
       renderInspect();
       if (inspectGraphAutoRefresh) void refreshInspectGraph();
     };
@@ -879,8 +876,9 @@ function renderInspect(): void {
       inspectGraphRenderedStateKey !== stateKey)
   ) {
     void refreshInspectGraph();
+  } else if (pipe && inspectGraphAutoRefresh && !document.hidden) {
+    void refreshInspectGraph();
   }
-  syncInspectGraphAutoRefresh();
 }
 
 function resetInspectGraphForSelection(pipeId: string | null): void {
@@ -1023,52 +1021,6 @@ async function refreshInspectGraph(): Promise<void> {
   }
 }
 
-function inspectGraphStateKey(pipe: PipelineView | null): string | null {
-  if (!pipe) return null;
-  const outputs = pipe.outs
-    .map((out) =>
-      [
-        out.id,
-        out.status,
-        out.desiredState,
-        out.encoding,
-        out.phase || "",
-        out.retrying ? "1" : "0",
-        out.flapping ? "1" : "0",
-        out.lastError || "",
-      ].join(":"),
-    )
-    .join("|");
-  return [
-    pipe.id,
-    pipe.name,
-    pipe.input.status,
-    pipe.input.probeStatus,
-    pipe.input.readers,
-    pipe.input.audioTracks.length,
-    pipe.input.video?.codec || "",
-    pipe.hlsPreview?.active ? "1" : "0",
-    pipe.hlsPreview?.segments || 0,
-    outputs,
-  ].join("::");
-}
-
-function syncInspectGraphAutoRefresh(): void {
-  if (inspectGraphTimer) {
-    clearInterval(inspectGraphTimer);
-    inspectGraphTimer = null;
-  }
-  if (
-    !inspectGraphAutoRefresh ||
-    currentMode !== "inspect" ||
-    !getInspectPipeline()
-  )
-    return;
-  inspectGraphTimer = setInterval(() => {
-    if (!document.hidden) void refreshInspectGraph();
-  }, INSPECT_GRAPH_REFRESH_MS);
-}
-
 function renderSettingsMode(): void {
   const container = document.getElementById("settings-mode-content");
   if (!container) return;
@@ -1157,7 +1109,6 @@ function applyMode(mode: DashboardMode): void {
                   ? "Server configuration"
                   : "Runtime status";
   }
-  syncInspectGraphAutoRefresh();
   if (
     previousMode !== null &&
     previousMode !== mode &&
@@ -1227,6 +1178,13 @@ export function initDashboardModes(): void {
   document.addEventListener("visibilitychange", () => {
     syncOverviewActivityStream();
     syncStatusStreamVisibility();
+    if (
+      !document.hidden &&
+      normalizeMode(getUrlParam("mode")) === "inspect" &&
+      inspectGraphAutoRefresh
+    ) {
+      void refreshInspectGraph();
+    }
   });
   window.setDashboardMode = setDashboardMode;
   refreshActiveMode();
