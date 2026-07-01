@@ -13,6 +13,7 @@ This report summarizes the model, property, unit, and live-harness proof surface
 | AVIO/MemoryQueue close/wake/backpressure | Loom + unit/proptest tests | `avio_loom`, `media::avio::tests`, `write_batch_round_trips_random_chunks` |
 | Stage registry replacement and TS muxer sweep | Loom + lifecycle unit tests | `transcoder_stage_loom`, `ts_muxer_stage_loom`, stale attempt tests |
 | External transcoder pipe/output/SRT path | Unit + proptest + focused live harness | external transcoder marker tests, DTS routing proptest, `mixed-file-h264-single` smoke |
+| Internal transcoder/libavcodec timestamp and metadata continuity | Unit + proptest + loom | chunked remux timestamp-order test, source-stage DTS chunking proptest, codec metadata replacement loom |
 | SRT protocol boundaries | Unit/stress tests | stream-id normalization tests, sender semaphore tests, `epoll_waiter_coordination` |
 | Child process lifecycle and cleanup | Static script guard + unit test + live contract cleanup checks | `kill_and_wait_child_terminates_spawned_process`, process lifecycle guard, post-harness orphan checks |
 | Runtime status after cleanup/recovery | API/status tests + live harness | API lifecycle tests, `fault-resilience`, `fault-egress-retry`, `fault-output-stall`, `recovery` |
@@ -40,8 +41,16 @@ This report summarizes the model, property, unit, and live-harness proof surface
 
 - `tests/transcoder_stage_loom.rs`
   - Added cleanup/replacement atomicity coverage for stage registry state.
+  - Added codec metadata continuity coverage so cancelled stage replacement preserves codec-hint contract under concurrent creators.
 - `tests/ts_muxer_stage_loom.rs`
   - Added sweep-vs-reader-registration coverage using a loom-compatible liveness model.
+
+### Internal Transcoder / libavcodec Path
+
+- `tests/transcoder.rs`
+  - Added `internal_scale_stage_chunked_remux_input_preserves_video_timestamp_order`, proving in-process decode/scale/encode output DTS remains monotonic when input TS is delivered in irregular queue chunks.
+  - Added `prop_source_stage_chunked_input_preserves_per_stream_dts_order`, checking per-stream DTS monotonicity and non-negative PTS/DTS across randomized queue chunk boundaries in the internal source-stage demux path.
+  - Added `replacement_video_stage_preserves_codec_hint_and_audio_tracks`, proving replacement stage creation after cancellation preserves codec hint and audio-track metadata contract.
 
 ### Critical External Transcoder / SRT Path
 
@@ -117,6 +126,9 @@ RESTREAM_BUILD_LOCK_FILE=relative scripts/resource-limit true # expected exit 2
 ./scripts/run-loom-target.sh avio_loom
 ./scripts/run-loom-target.sh transcoder_stage_loom
 ./scripts/run-loom-target.sh ts_muxer_stage_loom
+scripts/resource-limit cargo test internal_scale_stage_chunked_remux_input_preserves_video_timestamp_order --test transcoder -- --nocapture
+scripts/resource-limit cargo test prop_source_stage_chunked_input_preserves_per_stream_dts_order --test transcoder -- --nocapture
+scripts/resource-limit cargo test replacement_video_stage_preserves_codec_hint_and_audio_tracks --test transcoder -- --nocapture
 scripts/resource-limit cargo test prop_multi_reader_migration_preserves_each_reader_order --test ring_migration -- --nocapture
 scripts/resource-limit cargo test media::avio::tests --lib -- --nocapture
 scripts/resource-limit cargo test srt_stream_ids_normalize_equivalent --lib -- --nocapture
@@ -131,5 +143,4 @@ The full live `scripts/check-concurrency-contract.sh` gate remains the sign-off 
 
 - The full contract gate is intentionally heavier than the focused checks above; run it before final sign-off when host resources allow.
 - More live chaos coverage would still be valuable for slow-sink isolation across high output counts.
-- Internal transcoder/libavcodec paths have separate correctness concerns from the external FFmpeg subprocess path and should get their own proof slice when touched.
 - Recording/HLS timestamp behavior is not fully proved by the external-transcoder/SRT path tests; keep those as separate proof domains.
