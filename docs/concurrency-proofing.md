@@ -36,7 +36,10 @@ Use the narrowest proof that can actually catch the bug:
 4. Live harness chaos tests
    - Use when the behavior crosses real sockets, child processes, FFmpeg, or
      OS-thread boundaries.
-   - Current live contract slices: `fault-resilience` and `recovery`.
+   - Current live contract slices: `fault-resilience`, `fault-egress-retry`,
+     and `recovery`.
+     `fault-egress-retry` proves dead sinks surface `retrying` first and then
+     settle to `failed` once the configured retry budget is exhausted.
      `recovery` also covers hung HLS PUT destinations timing out, surfacing
      retry/error state, recovering after the sink restarts, rapid same-pipeline
      SRT publisher replacement races, and repeated RTMP and SRT downstream sink
@@ -85,10 +88,11 @@ bash ./scripts/check-concurrency-contract.sh
 ```
 
 The fast gate runs the loom targets, focused API tests, and harness unit tests.
-The full gate also builds the binaries and runs the live `fault-resilience`
-and `recovery` harness modes. `recovery` is the focused reconnect/grace/retry
-contract so we can target that behavior directly without depending on the
-broader teardown bucket.
+The full gate also builds the binaries and runs the live `fault-resilience`,
+`fault-egress-retry`, and `recovery` harness modes. `fault-egress-retry`
+owns the retry-budget exhaustion contract for dead sinks. `recovery` is the
+focused reconnect/grace/retry contract so we can target that behavior directly
+without depending on the broader teardown bucket.
 
 Both gates also carry explicit property/stress coverage for lifecycle
 permutations and thread-hop wakeups, rather than relying on the general
@@ -145,6 +149,7 @@ surface already covers it.
 - `src/media/srt.rs`
   - `epoll_waiter_coordination`
 - `src/bin/test_harness.rs`
+  - `fault-egress-retry`
   - `fault-resilience`
   - `recovery`
 

@@ -43,5 +43,9 @@ RESTREAM_BIN=target/debug/restream \
   target/debug/test_harness fault-resilience
 
 RESTREAM_BIN=target/debug/restream \
+  WORK_DIR=test/artifacts/concurrency-fault-egress-retry \
+  target/debug/test_harness fault-egress-retry
+
+RESTREAM_BIN=target/debug/restream \
   WORK_DIR=test/artifacts/concurrency-recovery \
   target/debug/test_harness recovery

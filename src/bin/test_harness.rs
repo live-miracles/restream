@@ -538,7 +538,17 @@ async fn start_restream_child(
     db_path: &Path,
     log_path: &Path,
 ) -> Result<Child, String> {
-    start_restream_child_opts(bin, ports, db_path, log_path, true, None).await
+    start_restream_child_opts(bin, ports, db_path, log_path, true, None, &[]).await
+}
+
+async fn start_restream_child_with_env(
+    bin: &Path,
+    ports: &TestPorts,
+    db_path: &Path,
+    log_path: &Path,
+    env_overrides: &[(&str, String)],
+) -> Result<Child, String> {
+    start_restream_child_opts(bin, ports, db_path, log_path, true, None, env_overrides).await
 }
 
 async fn start_restream_child_in_media_dir(
@@ -548,7 +558,7 @@ async fn start_restream_child_in_media_dir(
     log_path: &Path,
     media_dir: &Path,
 ) -> Result<Child, String> {
-    start_restream_child_opts(bin, ports, db_path, log_path, true, Some(media_dir)).await
+    start_restream_child_opts(bin, ports, db_path, log_path, true, Some(media_dir), &[]).await
 }
 
 async fn start_restream_child_opts(
@@ -558,6 +568,7 @@ async fn start_restream_child_opts(
     log_path: &Path,
     clean_db: bool,
     media_dir: Option<&Path>,
+    env_overrides: &[(&str, String)],
 ) -> Result<Child, String> {
     if !bin.exists() {
         return Err(format!("restream binary not found at {}", bin.display()));
@@ -585,6 +596,9 @@ async fn start_restream_child_opts(
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr_log))
         .kill_on_drop(true);
+    for (key, value) in env_overrides {
+        command.env(key, value);
+    }
     if let Some(media_dir) = media_dir {
         command.env(
             "RESTREAM_MEDIA_DIR",
@@ -4254,10 +4268,17 @@ async fn api_smoke() -> Result<Value, String> {
     println!("[api-smoke] stopped first instance");
 
     let log2_path = work_dir.join("restream-2.log");
-    let mut child2 =
-        start_restream_child_opts(&restream_bin, &ports, &db_path, &log2_path, false, None)
-            .await
-            .map_err(|e| format!("restart failed: {e}"))?;
+    let mut child2 = start_restream_child_opts(
+        &restream_bin,
+        &ports,
+        &db_path,
+        &log2_path,
+        false,
+        None,
+        &[],
+    )
+    .await
+    .map_err(|e| format!("restart failed: {e}"))?;
     let mut api2 = RampApi::new(ports.http);
     api2.login().await?;
     println!("[api-smoke] restarted and authenticated");
@@ -10288,6 +10309,8 @@ async fn fault_egress_retry() -> Result<Value, String> {
     let restream_bin = default_restream_bin();
     let db_path = work_dir.join("data.sqlite");
     let log_path = work_dir.join("restream.log");
+    let retry_limit_db_path = work_dir.join("retry-limit.sqlite");
+    let retry_limit_log_path = work_dir.join("retry-limit.log");
     let sink_port: u16 = env_u16("SINK_PORT", SINK_PORT);
     let ports = TestPorts::from_env();
     let timeout = Duration::from_secs(15);
@@ -10303,6 +10326,34 @@ async fn fault_egress_retry() -> Result<Value, String> {
     ];
 
     stop_child(&mut child).await;
+
+    let retry_limit_env = [
+        ("RESTREAM_OUTPUT_MAX_RETRIES", "2".to_string()),
+        ("RESTREAM_OUTPUT_RETRY_BASE_MS", "200".to_string()),
+        ("RESTREAM_OUTPUT_RETRY_MAX_MS", "400".to_string()),
+        ("RESTREAM_RECONCILER_INTERVAL_MS", "100".to_string()),
+    ];
+    let mut retry_limit_child = start_restream_child_with_env(
+        &restream_bin,
+        &ports,
+        &retry_limit_db_path,
+        &retry_limit_log_path,
+        &retry_limit_env,
+    )
+    .await?;
+    let mut retry_limit_api = RampApi::new(ports.http);
+    retry_limit_api.login().await?;
+    let retry_limit_result = fault_rtmp_egress_retry_budget_exhausts_to_failed(
+        &retry_limit_api,
+        &ports,
+        &fixture_h264,
+        sink_port.saturating_add(77),
+    )
+    .await?;
+    stop_child(&mut retry_limit_child).await;
+
+    let mut results = results;
+    results.push(retry_limit_result);
 
     let all_passed = results.iter().all(|r| r["passed"] == true);
     let result = json!({
@@ -10320,6 +10371,133 @@ async fn fault_egress_retry() -> Result<Value, String> {
         return Err("fault-egress-retry: not all tests passed".to_string());
     }
     Ok(result)
+}
+
+async fn fault_rtmp_egress_retry_budget_exhausts_to_failed(
+    api: &RampApi,
+    ports: &TestPorts,
+    fixture_h264: &Path,
+    dead_sink_port: u16,
+) -> Result<Value, String> {
+    let pipeline = api
+        .post_json(
+            "/api/v1/pipelines",
+            json!({"name": "fault-egress-rtmp-retry-limit", "streamKey": "fault-egress-rtmp-retry-limit"}),
+        )
+        .await?;
+    let pid = pipeline["pipeline"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let output = api
+        .post_json(
+            &format!("/api/v1/pipelines/{pid}/outputs"),
+            json!({
+                "name": "rtmp-dead-sink",
+                "url": format!("rtmp://127.0.0.1:{dead_sink_port}/live/retry-limit"),
+                "encoding": "source"
+            }),
+        )
+        .await?;
+    let oid = output["output"]["id"]
+        .as_str()
+        .ok_or("missing id")?
+        .to_string();
+
+    let mut pub_child = spawn_publisher(
+        fixture_h264,
+        &format!(
+            "rtmp://127.0.0.1:{}/live/fault-egress-rtmp-retry-limit",
+            ports.rtmp
+        ),
+        "flv",
+        false,
+    )
+    .await?;
+    wait_for_api_input_live(api, &pid, Duration::from_secs(15)).await?;
+
+    api.post_json(
+        &format!("/api/v1/pipelines/{pid}/outputs/{oid}/start"),
+        json!({}),
+    )
+    .await?;
+
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(8);
+    let mut saw_retrying = false;
+    let mut saw_failed = false;
+    let mut final_status = None;
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = api
+            .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+            .await?;
+        if status["status"].as_str() == Some("retrying") {
+            saw_retrying = true;
+        }
+        if status["status"].as_str() == Some("failed") {
+            saw_failed = true;
+            final_status = Some(status);
+            break;
+        }
+        final_status = Some(status);
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let stable_status = api
+        .get_json(&format!("/api/v1/pipelines/{pid}/outputs/{oid}/status"))
+        .await?;
+    let health = api.get_json("/api/v1/engine/health").await?;
+    let health_output = &health["pipelines"][&pid]["outputs"][&oid];
+
+    let final_status = final_status.unwrap_or_else(|| stable_status.clone());
+    let retry_attempts = final_status["retryAttempts"].as_u64();
+    let retry_backoff_ms = final_status["retryBackoffMs"].as_u64();
+    let status_failed = stable_status["status"].as_str() == Some("failed");
+    let health_failed = health_output["status"].as_str() == Some("failed");
+    let stable_not_retrying = stable_status["retrying"].as_bool() == Some(false)
+        && stable_status["retryAttempts"].is_null()
+        && stable_status["retryBackoffMs"].is_null()
+        && stable_status["retryRemainingMs"].is_null();
+    let last_error = stable_status["lastError"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    println!(
+        "[fault] RTMP egress retry budget exhausts: {} (sawRetrying={}, sawFailed={}, statusFailed={}, healthFailed={}, stableNotRetrying={}, retryAttempts={:?}, retryBackoffMs={:?}, lastError={}, {:.1}s)",
+        if saw_retrying && saw_failed && status_failed && health_failed && stable_not_retrying {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+        saw_retrying,
+        saw_failed,
+        status_failed,
+        health_failed,
+        stable_not_retrying,
+        retry_attempts,
+        retry_backoff_ms,
+        last_error,
+        started.elapsed().as_secs_f64()
+    );
+
+    stop_child(&mut pub_child).await;
+
+    Ok(json!({
+        "test": "rtmp-egress-retry-budget-exhausts",
+        "passed": saw_retrying && saw_failed && status_failed && health_failed && stable_not_retrying,
+        "sawRetrying": saw_retrying,
+        "sawFailed": saw_failed,
+        "statusFailed": status_failed,
+        "healthFailed": health_failed,
+        "stableNotRetrying": stable_not_retrying,
+        "retryAttempts": retry_attempts,
+        "retryBackoffMs": retry_backoff_ms,
+        "lastError": last_error,
+        "elapsedMs": started.elapsed().as_millis(),
+    }))
 }
 
 async fn recovery_live_cases(
