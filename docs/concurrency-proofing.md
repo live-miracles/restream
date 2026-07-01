@@ -38,8 +38,9 @@ Use the narrowest proof that can actually catch the bug:
      OS-thread boundaries.
    - Current live contract slices: `fault-resilience`, `fault-egress-retry`,
      `fault-output-stall`, and `recovery`.
-     `fault-egress-retry` proves dead sinks surface `retrying` first and then
-     settle to `failed` once the configured retry budget is exhausted.
+     `fault-egress-retry` proves RTMP and SRT dead sinks surface `retrying`
+     first and then settle to `failed` once the configured retry budget is
+     exhausted.
      `fault-output-stall` proves a connected RTMP sink that stops draining media
      surfaces `stalled` in both output status and health instead of looking
      healthy or failing immediately.
@@ -93,7 +94,8 @@ bash ./scripts/check-concurrency-contract.sh
 The fast gate runs the loom targets, focused API tests, and harness unit tests.
 The full gate also builds the binaries and runs the live `fault-resilience`,
 `fault-egress-retry`, `fault-output-stall`, and `recovery` harness modes.
-`fault-egress-retry` owns the retry-budget exhaustion contract for dead sinks.
+`fault-egress-retry` owns the retry-budget exhaustion contract for RTMP and SRT
+dead sinks.
 `fault-output-stall` owns the stalled-output contract for connected-but-not-
 draining RTMP sinks. `recovery` is the focused reconnect/grace/retry contract
 so we can target that behavior directly without depending on the broader
