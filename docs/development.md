@@ -140,8 +140,9 @@ File-ingest start/stop now follow the same pattern when a lifecycle stream is
 already open, while cold/no-stream file-ingest controls still fall back
 directly to a runtime refresh. The file-ingest button now also shows its own
 `Starting...` / `Stopping...` in-flight state immediately so operators do not
-have to infer whether the backend accepted the click. Recording start/stop is
-different in transport shape: the mutation
+have to infer whether the backend accepted the click, and it clears as soon as
+the mutation response confirms the new `running` flag while the runtime refresh
+continues in the background. Recording start/stop is different in transport shape: the mutation
 response already contains the operator-facing `enabled` / `active` state, so
 the dashboard patches local recording state immediately instead of forcing a
 follow-up runtime fetch, while the button itself still shows immediate

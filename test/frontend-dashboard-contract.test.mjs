@@ -1488,7 +1488,6 @@ test("recording patches local state immediately, while file-ingest falls back to
   pipelineView.setPipelineViewDependencies({
     refreshDashboardRuntime: dashboard.refreshDashboardRuntime,
   });
-
   await dashboard.refreshDashboard();
   pipelineView.renderPipelineInfoColumn("pipe-1");
   requests.length = 0;
@@ -1515,6 +1514,8 @@ test("recording patches local state immediately, while file-ingest falls back to
     "active recording should lock pipeline editing immediately from the mutation response",
   );
 
+  document.hidden = true;
+  dashboard.syncDashboardRuntimeStream();
   pipelineView.renderPipelineInfoColumn("pipe-1");
   requests.length = 0;
 
@@ -1531,11 +1532,13 @@ test("recording patches local state immediately, while file-ingest falls back to
   await startIngestPromise;
   await flushAsyncWork();
 
+  assert.equal(fileIngestButton.textContent, "Stop File");
+  assert.equal(fileIngestButton.disabled, false);
+  assert.equal(state.config.pipelines[0].fileIngest?.running, true);
   assert.deepEqual(requests, [
     ["POST", startIngestUrl],
     ["GET", steadyRuntimeUrl],
   ]);
-  assert.equal(state.config.pipelines[0].fileIngest?.running, true);
   assert.equal(
     requests.some(([, href]) => href === settingsUrl),
     false,

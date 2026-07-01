@@ -629,7 +629,7 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
               targetGopSeconds: res.targetGopSeconds,
               running: res.running,
             });
-            await awaitDashboardRuntimeMutationConvergence();
+            void awaitDashboardRuntimeMutationConvergence();
           }
         } finally {
           setPendingFileIngestIntent(pipe.id, null);
