@@ -15,6 +15,22 @@ frontend_files=()
 stashed=0
 stash_label="pre-commit-$(date +%s)-$$"
 
+stash_unstaged() {
+    if git stash push --keep-index --include-untracked -q -m "$stash_label"; then
+        stashed=1
+        return 0
+    fi
+
+    echo "pre-commit: stash with untracked files failed; retrying with tracked-only changes"
+    if git stash push --keep-index -q -m "$stash_label"; then
+        stashed=1
+        return 0
+    fi
+
+    echo "pre-commit: failed to stash unstaged changes; aborting"
+    return 1
+}
+
 restore_unstaged() {
     if ((stashed == 1)); then
         if ! git stash pop -q; then
@@ -25,8 +41,7 @@ restore_unstaged() {
 }
 
 if ! git diff --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-    git stash push --keep-index --include-untracked -q -m "$stash_label"
-    stashed=1
+    stash_unstaged
 fi
 
 trap restore_unstaged EXIT
