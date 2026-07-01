@@ -129,6 +129,45 @@ struct SpsVideoInfo {
     fps: f64,
 }
 
+fn sps_dimensions(
+    pic_width: u32,
+    pic_height: u32,
+    frame_mbs_only: u32,
+    crop_left: u32,
+    crop_right: u32,
+    crop_top: u32,
+    crop_bottom: u32,
+) -> Option<(u32, u32)> {
+    if frame_mbs_only > 1 {
+        return None;
+    }
+
+    let frame_mbs_factor = 2u64.checked_sub(frame_mbs_only as u64)?;
+
+    let width_base = (pic_width as u64).checked_add(1)?.checked_mul(16)?;
+    let width_crop = (crop_left as u64)
+        .checked_add(crop_right as u64)?
+        .checked_mul(2)?;
+    if width_base <= width_crop {
+        return None;
+    }
+    let width = u32::try_from(width_base - width_crop).ok()?;
+
+    let height_base = (pic_height as u64)
+        .checked_add(1)?
+        .checked_mul(frame_mbs_factor)?
+        .checked_mul(16)?;
+    let height_crop = (crop_top as u64)
+        .checked_add(crop_bottom as u64)?
+        .checked_mul(2)?;
+    if height_base <= height_crop {
+        return None;
+    }
+    let height = u32::try_from(height_base - height_crop).ok()?;
+
+    Some((width, height))
+}
+
 fn parse_sps_video_info(sps_nalu: &[u8]) -> Option<SpsVideoInfo> {
     if sps_nalu.is_empty() {
         return None;
@@ -228,8 +267,15 @@ fn parse_sps_video_info(sps_nalu: &[u8]) -> Option<SpsVideoInfo> {
         (0, 0, 0, 0)
     };
 
-    let width = (pic_width + 1) * 16 - crop_left * 2 - crop_right * 2;
-    let height = (2 - frame_mbs_only) * (pic_height + 1) * 16 - crop_top * 2 - crop_bottom * 2;
+    let (width, height) = sps_dimensions(
+        pic_width,
+        pic_height,
+        frame_mbs_only,
+        crop_left,
+        crop_right,
+        crop_top,
+        crop_bottom,
+    )?;
     let mut info = SpsVideoInfo {
         width,
         height,
@@ -2155,6 +2201,43 @@ mod tests {
         // May or may not parse correctly depending on the exact bitstream
         // The important thing is it doesn't panic
         assert!(result.is_none() || result.unwrap().width > 0);
+    }
+
+    #[test]
+    fn sps_dimensions_rejects_overflow_inputs() {
+        assert!(sps_dimensions(u32::MAX, 0, 1, 0, 0, 0, 0).is_none());
+        assert!(sps_dimensions(0, u32::MAX, 1, 0, 0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn sps_dimensions_rejects_invalid_or_cropped_out_frames() {
+        assert!(sps_dimensions(0, 0, 2, 0, 0, 0, 0).is_none());
+        assert!(sps_dimensions(0, 0, 1, 4, 4, 0, 0).is_none());
+        assert!(sps_dimensions(0, 0, 1, 0, 0, 4, 4).is_none());
+    }
+
+    #[test]
+    fn sps_dimensions_accepts_valid_inputs() {
+        let dims = sps_dimensions(79, 44, 1, 0, 0, 0, 0).expect("valid dimensions");
+        assert_eq!(dims, (1280, 720));
+    }
+
+    #[test]
+    fn parse_sps_video_info_randomized_inputs_do_not_panic() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for len in 1..=96 {
+            for _ in 0..256 {
+                let mut data = vec![0u8; len];
+                for byte in &mut data {
+                    state ^= state << 7;
+                    state ^= state >> 9;
+                    state ^= state << 8;
+                    *byte = (state & 0xFF) as u8;
+                }
+                let result = std::panic::catch_unwind(|| parse_sps_video_info(&data));
+                assert!(result.is_ok(), "parser panicked for len={len}");
+            }
+        }
     }
 
     #[test]
