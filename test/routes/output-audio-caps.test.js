@@ -106,6 +106,45 @@ test('buildFfmpegOutputArgs maps selected tracks for atrack encoding', () => {
     assert.ok(joined.includes('-f mpegts'), joined);
 });
 
+test('buildFfmpegOutputArgs normalizes selected atrack audio for RTMP outputs', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'srt://localhost:10080?streamid=read:live/key02',
+        outputUrl: 'rtmp://a.rtmp.youtube.com/live2/streamkey',
+        encoding: 'atrack:1',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-map 0:v -map 0:a:1'), joined);
+    assert.ok(joined.includes('-c:v copy'), joined);
+    assert.ok(joined.includes('-af aresample=async=1:first_pts=0'), joined);
+    assert.ok(joined.includes('-c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
+    assert.ok(!joined.includes('-c:a copy'), joined);
+    assert.ok(joined.includes('-f flv'), joined);
+});
+
+test('buildFfmpegOutputArgs keeps selected atrack audio copy for HLS outputs', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'srt://localhost:10080?streamid=read:live/key02',
+        outputUrl: 'https://example.com/live/out.m3u8',
+        encoding: 'atrack:1',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-map 0:v -map 0:a:1'), joined);
+    assert.ok(joined.includes('-c:v copy -c:a copy'), joined);
+    assert.ok(!joined.includes('-af aresample=async=1:first_pts=0'), joined);
+    assert.ok(joined.includes('-f hls'), joined);
+});
+
+test('buildFfmpegOutputArgs recomputes selected atrack audio PTS for RTMP inputs', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'rtmp://localhost:1935/live/key02',
+        outputUrl: 'rtmp://a.rtmp.youtube.com/live2/streamkey',
+        encoding: 'atrack:1',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-af asetpts=STARTPTS+N/SR/TB'), joined);
+    assert.ok(joined.includes('-c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
+});
+
 test('buildFfmpegOutputArgs downmixes the selected track to stereo', () => {
     const args = buildFfmpegOutputArgs({
         inputUrl: 'rtmp://localhost:1935/live/test',
@@ -226,6 +265,20 @@ test('buildFfmpegOutputArgs: video preset + atrack routing (SRT output)', () => 
     assert.ok(joined.includes('-f mpegts'), joined);
     // No accidental -c:a aac from video preset leaking into output
     assert.ok(!joined.includes('-c:a aac'), joined);
+});
+
+test('buildFfmpegOutputArgs: video preset + atrack routing (RTMP output)', () => {
+    const args = buildFfmpegOutputArgs({
+        inputUrl: 'srt://localhost:10080?streamid=read:live/key02',
+        outputUrl: 'rtmp://a.rtmp.youtube.com/live2/streamkey',
+        encoding: '720p+atrack:1',
+    });
+    const joined = args.join(' ');
+    assert.ok(joined.includes('-map 0:v -map 0:a:1'), joined);
+    assert.ok(joined.includes('libx264'), joined);
+    assert.ok(joined.includes('-af aresample=async=1:first_pts=0'), joined);
+    assert.ok(joined.includes('-c:a aac -b:a 128k -ar 48000 -ac 2'), joined);
+    assert.ok(joined.includes('-f flv'), joined);
 });
 
 test('buildFfmpegOutputArgs: source passthrough + downmix (RTMP output)', () => {

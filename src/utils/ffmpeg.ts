@@ -132,6 +132,13 @@ export function parseDownmixEncoding(encoding: string): number | null {
     return parseInt(m[1], 10);
 }
 
+function selectedAudioFlvArgs(inputUrl: string): string[] {
+    const audioFilter = inputUrl.startsWith('srt://')
+        ? 'aresample=async=1:first_pts=0'
+        : 'asetpts=STARTPTS+N/SR/TB';
+    return ['-af', audioFilter, '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2'];
+}
+
 // Parse a compound encoding string into its video and audio routing parts.
 //
 // Compound format:  "<videoEncoding>+<audioRouting>"
@@ -243,6 +250,7 @@ export function buildFfmpegOutputArgs({
         outputProtocol = '';
     }
     const isHlsOutput = isHlsOutputUrl(parsedOutputUrl);
+    const isFlvOutput = outputProtocol !== 'srt:' && !isHlsOutput;
     const args = [
         '-hide_banner',
         '-loglevel',
@@ -312,7 +320,7 @@ export function buildFfmpegOutputArgs({
         if (remap) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         } else if (atracks) {
-            args.push('-c:a', 'copy');
+            args.push(...(isFlvOutput ? selectedAudioFlvArgs(inputUrl) : ['-c:a', 'copy']));
         } else if (downmixTrack !== null) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         }
@@ -347,7 +355,11 @@ export function buildFfmpegOutputArgs({
             for (const track of tracks) {
                 args.push('-map', `0:a:${track}`);
             }
-            args.push('-c:v', 'copy', '-c:a', 'copy');
+            args.push(
+                '-c:v',
+                'copy',
+                ...(isFlvOutput ? selectedAudioFlvArgs(inputUrl) : ['-c:a', 'copy']),
+            );
         } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
             const track = parseDownmixEncoding(normalizedEncoding)!;
             args.push(

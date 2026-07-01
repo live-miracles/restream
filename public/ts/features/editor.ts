@@ -426,6 +426,12 @@ function renderAudioWarnings(
             text: `${platformLabel} ${protoLabel} accepts 1 audio track — the other ${trackCount - 1} ingest track(s) are not sent.`,
         });
     }
+    if ((protocol === 'rtmp' || protocol === 'rtmps') && modalAudioMode === 'pass') {
+        items.push({
+            cls: 'text-base-content/60',
+            text: `${protoLabel} passthrough selects the chosen track, then outputs compatibility AAC stereo (48 kHz, 128 kbps) to avoid ingest crackling. SRT/HLS keep bit-exact audio copy.`,
+        });
+    }
     if (modalAudioMode === 'downmix' && exceedsCap) {
         items.push({
             cls: 'text-warning',
