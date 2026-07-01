@@ -1094,8 +1094,6 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
     "/api/v1/dashboard/runtime?health_view=summary&metrics_view=full&pipeline_id=pipe-1";
   const streamKeysUrl = "/api/v1/stream-keys";
   const updatePipelineUrl = "/api/v1/pipelines/pipe-1";
-  const getFileIngestUrl = "/api/v1/pipelines/pipe-1/file-ingest";
-  const putFileIngestUrl = "/api/v1/pipelines/pipe-1/file-ingest";
   const mediaUrl = "/api/v1/media";
   const mediaAnalysisUrl = "/api/v1/media/recording-1.ts/analysis";
   const { document, window } = installFakeDom();
@@ -1152,6 +1150,10 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
               name: "Pipeline 1",
               streamKey: "stream-key",
               inputSource: null,
+              fileIngest: {
+                configured: false,
+                running: false,
+              },
             },
           ],
           outputs: [],
@@ -1214,13 +1216,6 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
       );
     }
 
-    if (href === getFileIngestUrl && method === "GET") {
-      return new Response(
-        JSON.stringify({ configured: false, running: false }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-
     if (href === mediaUrl) {
       return new Response(
         JSON.stringify({
@@ -1257,24 +1252,18 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
               rtmp: "rtmp://stream.example.com:1935/live/stream-key",
               srt: "srt://stream.example.com:10080?streamid=publish:live/stream-key",
             },
+            fileIngest: {
+              configured: true,
+              id: "ingest-1",
+              filename: "recording-1.ts",
+              streamKey: "stream-key",
+              loop: true,
+              startTime: "00:00:05",
+              liveOptimized: true,
+              targetGopSeconds: 3,
+              running: false,
+            },
           },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-
-    if (href === putFileIngestUrl && method === "PUT") {
-      return new Response(
-        JSON.stringify({
-          configured: true,
-          id: "ingest-1",
-          filename: "recording-1.ts",
-          streamKey: "stream-key",
-          loop: true,
-          startTime: "00:00:05",
-          liveOptimized: true,
-          targetGopSeconds: 3,
-          running: false,
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -1301,17 +1290,17 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
   await editor.pipeFormBtn({ preventDefault() {} });
   await flushAsyncWork();
 
-  const mutationRequests = requests.filter(
-    ([method]) => method === "PATCH" || method === "PUT",
-  );
-  assert.deepEqual(mutationRequests, [
-    ["PATCH", updatePipelineUrl],
-    ["PUT", putFileIngestUrl],
-  ]);
+  const mutationRequests = requests.filter(([method]) => method === "PATCH");
+  assert.deepEqual(mutationRequests, [["PATCH", updatePipelineUrl]]);
   assert.equal(
     requests.some(([, href]) => href === settingsUrl),
     false,
     "editing a pipeline should not refetch dashboard settings when the API returned the updated pipeline",
+  );
+  assert.equal(
+    requests.some(([, href]) => href.endsWith("/file-ingest")),
+    false,
+    "editing a pipeline should reuse inline file-ingest state instead of issuing a second file-ingest mutation",
   );
   assert.equal(state.config.pipelines[0].name, "Edited Pipeline");
   assert.equal(state.config.pipelines[0].inputSource, "file:recording-1.ts");

@@ -1175,6 +1175,112 @@ struct PipelinePayload {
     input_source: Option<Option<String>>,
     encoding: Option<String>,
     srt_ingest_policy: Option<SrtPipelineIngestConfig>,
+    file_ingest: Option<Option<PipelineFileIngestPayload>>,
+}
+
+fn validate_pipeline_file_ingest_payload(payload: &PipelineFileIngestPayload) -> Option<Response> {
+    if let Some(r) = check_field_len("filename", &payload.filename, MAX_NAME_LEN) {
+        return Some(r);
+    }
+    if let Some(ref start_time) = payload.start_time
+        && let Some(r) = check_field_len("start_time", start_time, 64)
+    {
+        return Some(r);
+    }
+    if payload.filename.trim().is_empty() {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Filename cannot be empty"})),
+            )
+                .into_response(),
+        );
+    }
+
+    None
+}
+
+async fn apply_pipeline_file_ingest_payload(
+    state: &Arc<AppState>,
+    pipeline: &Pipeline,
+    previous_stream_key: Option<&str>,
+    payload: Option<Option<PipelineFileIngestPayload>>,
+) -> Result<crate::application::ingest::PipelineFileIngestState, Response> {
+    let ingest_store = SqliteIngestLookup::new(state.db.clone());
+    let pipeline_store = SqlitePipelineStore::new(state.db.clone());
+
+    if let Some(previous_stream_key) =
+        previous_stream_key.filter(|previous| *previous != pipeline.stream_key.as_str())
+        && clear_stream_key_file_ingests(
+            &pipeline_store,
+            &ingest_store,
+            &state.engine,
+            previous_stream_key,
+        )
+        .await
+        .is_err()
+    {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+
+    if let Some(payload) = payload {
+        if clear_stream_key_file_ingests(
+            &pipeline_store,
+            &ingest_store,
+            &state.engine,
+            &pipeline.stream_key,
+        )
+        .await
+        .is_err()
+        {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+
+        match payload {
+            Some(payload) => {
+                let saved = persist_pipeline_file_ingest(
+                    &ingest_store,
+                    &ingest_store,
+                    &pipeline_store,
+                    pipeline,
+                    &FileIngestConfig {
+                        filename: payload.filename,
+                        loop_flag: payload.loop_flag.unwrap_or(false),
+                        start_time: payload.start_time.unwrap_or_default(),
+                        live_optimized: payload.live_optimized.unwrap_or(false),
+                        target_gop_seconds: sanitize_target_gop_seconds(payload.target_gop_seconds),
+                    },
+                    || format!("ingest_{}", to_hex(&rand::random::<[u8; 8]>())),
+                )
+                .await;
+                if matches!(
+                    saved,
+                    Err(PersistFileIngestError::IngestLookup(_))
+                        | Err(PersistFileIngestError::IngestWrite(_))
+                        | Err(PersistFileIngestError::PipelineStore(_))
+                ) {
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                }
+            }
+            None => {
+                if remove_pipeline_file_ingest(
+                    &ingest_store,
+                    &ingest_store,
+                    &pipeline_store,
+                    pipeline,
+                )
+                .await
+                .is_err()
+                {
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                }
+            }
+        }
+    }
+
+    load_pipeline_file_ingest_state(&ingest_store, &state.engine, pipeline)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn pipelines_post_handler(
@@ -1205,6 +1311,11 @@ async fn pipelines_post_handler(
     }
     if let Some(ref e) = payload.encoding
         && let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN)
+    {
+        return r;
+    }
+    if let Some(Some(ref file_ingest)) = payload.file_ingest
+        && let Some(r) = validate_pipeline_file_ingest_payload(file_ingest)
     {
         return r;
     }
@@ -1278,6 +1389,17 @@ async fn pipelines_post_handler(
     {
         Ok(pipeline) => {
             refresh_srt_ingest_policy_store(&state).await;
+            let file_ingest = match apply_pipeline_file_ingest_payload(
+                &state,
+                &pipeline,
+                None,
+                payload.file_ingest,
+            )
+            .await
+            {
+                Ok(file_ingest) => file_ingest,
+                Err(response) => return response,
+            };
             let ingest_host = get_ingest_host(&state.db)
                 .await
                 .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
@@ -1285,11 +1407,13 @@ async fn pipelines_post_handler(
                 StatusCode::CREATED,
                 Json(serde_json::json!({
                     "message": "Pipeline created",
-                    "pipeline": api_view_models::pipeline_response_json(
+                    "pipeline": api_view_models::pipeline_response_json_with_file_ingest(
                         &pipeline,
                         &ingest_host,
                         state.ports.rtmp,
-                        state.ports.srt
+                        state.ports.srt,
+                        file_ingest.ingest,
+                        file_ingest.running,
                     )
                 })),
             )
@@ -1338,6 +1462,11 @@ async fn pipelines_update_handler(
     }
     if let Some(ref e) = payload.encoding
         && let Some(r) = check_field_len("encoding", e, MAX_ENCODING_LEN)
+    {
+        return r;
+    }
+    if let Some(Some(ref file_ingest)) = payload.file_ingest
+        && let Some(r) = validate_pipeline_file_ingest_payload(file_ingest)
     {
         return r;
     }
@@ -1403,16 +1532,29 @@ async fn pipelines_update_handler(
     {
         Ok(Some(updated)) => {
             refresh_srt_ingest_policy_store(&state).await;
+            let file_ingest = match apply_pipeline_file_ingest_payload(
+                &state,
+                &updated,
+                Some(existing_stream_key.as_str()),
+                payload.file_ingest,
+            )
+            .await
+            {
+                Ok(file_ingest) => file_ingest,
+                Err(response) => return response,
+            };
             let ingest_host = get_ingest_host(&state.db)
                 .await
                 .unwrap_or_else(|_| DEFAULT_INGEST_HOST.to_string());
             Json(serde_json::json!({
                 "message": "Pipeline updated",
-                "pipeline": api_view_models::pipeline_response_json(
+                "pipeline": api_view_models::pipeline_response_json_with_file_ingest(
                     &updated,
                     &ingest_host,
                     state.ports.rtmp,
-                    state.ports.srt
+                    state.ports.srt,
+                    file_ingest.ingest,
+                    file_ingest.running,
                 )
             }))
             .into_response()

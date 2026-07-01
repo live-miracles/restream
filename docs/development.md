@@ -157,7 +157,11 @@ without overriding an in-progress `Stopping` state. Output create/update
 flows, output deletes, pipeline create/update flows, and pipeline deletes now
 reuse returned mutation payloads or apply targeted local removals to patch
 dashboard state immediately instead of following each mutation with another
-`/api/v1/settings?view=dashboard` fetch.
+`/api/v1/settings?view=dashboard` fetch. Pipeline edit/create now also reuses
+the dashboard's inline `fileIngest` state when opening the modal and sends file
+ingest changes inside the same pipeline mutation, removing the extra
+`GET/PUT/DELETE /api/v1/pipelines/:id/file-ingest` round-trips from the common
+editor flow.
 
 Recommended transport split for this dashboard:
 

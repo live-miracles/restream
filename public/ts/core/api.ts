@@ -238,6 +238,13 @@ interface CreatePipelineArgs {
   inputSource?: string | null;
   encoding?: string | null;
   srtIngestPolicy?: SrtPipelineIngestConfig | null;
+  fileIngest?: {
+    filename: string;
+    loopFlag: boolean;
+    startTime: string;
+    liveOptimized: boolean;
+    targetGopSeconds: number;
+  } | null;
 }
 
 export interface PipelineMutationResponse {

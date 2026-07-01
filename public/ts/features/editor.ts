@@ -11,8 +11,6 @@ import {
   listMediaFiles,
   getPipelineFileIngest,
   getMediaFileAnalysis,
-  putPipelineFileIngest,
-  deletePipelineFileIngest,
 } from "../core/api.js";
 import type {
   MediaFile,
@@ -1161,8 +1159,9 @@ async function openPipeModal(
   }
 
   const fallbackFilename = filenameFromInputSource(pipe?.inputSource);
-  let fileIngest: PipelineFileIngestConfig | null = null;
-  if (mode === "edit" && pipe?.id) {
+  let fileIngest: PipelineFileIngestConfig | null =
+    pipe?.fileIngest !== undefined ? pipe.fileIngest : null;
+  if (mode === "edit" && pipe?.id && pipe?.fileIngest === undefined) {
     fileIngest = await getPipelineFileIngest(pipe.id);
   }
   const sourceType =
@@ -1365,6 +1364,16 @@ export async function pipeFormBtn(event: Event): Promise<void> {
     ) || DEFAULT_FILE_INGEST_GOP_SECONDS,
     1,
   );
+  const fileIngest =
+    sourceType === "file"
+      ? {
+          filename,
+          loopFlag,
+          startTime,
+          liveOptimized,
+          targetGopSeconds,
+        }
+      : null;
 
   let savedPipeline: ConfigPipeline | null = currentPipeModalPipeline
     ? {
@@ -1377,13 +1386,6 @@ export async function pipeFormBtn(event: Event): Promise<void> {
         fileIngest: currentPipeModalPipeline.fileIngest,
       }
     : null;
-  if (
-    currentPipeModalMode === "edit" &&
-    currentPipeModalPipeline?.key !== streamKey &&
-    pipeId
-  ) {
-    await deletePipelineFileIngest(pipeId);
-  }
 
   if (currentPipeModalMode === "create") {
     const response = await createPipeline({
@@ -1391,6 +1393,7 @@ export async function pipeFormBtn(event: Event): Promise<void> {
       streamKey,
       inputSource,
       srtIngestPolicy,
+      fileIngest,
     });
     if (response === null) return;
     savedPipeline = response.pipeline;
@@ -1400,6 +1403,7 @@ export async function pipeFormBtn(event: Event): Promise<void> {
       streamKey,
       inputSource,
       srtIngestPolicy,
+      fileIngest,
     });
     if (response === null) return;
     savedPipeline = response.pipeline;
@@ -1407,23 +1411,11 @@ export async function pipeFormBtn(event: Event): Promise<void> {
 
   const savedPipeId = savedPipeline?.id || "";
   if (!savedPipeId || !savedPipeline) return;
-  let savedFileIngest = savedPipeline.fileIngest || null;
-  if (sourceType === "file") {
-    const response = await putPipelineFileIngest(savedPipeId, {
-      filename,
-      loopFlag,
-      startTime,
-      liveOptimized,
-      targetGopSeconds,
-    });
-    if (response === null) return;
-    savedFileIngest = response;
-  } else {
-    await deletePipelineFileIngest(savedPipeId);
-    savedFileIngest = null;
-  }
 
-  upsertDashboardPipelineConfig(savedPipeline, savedFileIngest);
+  upsertDashboardPipelineConfig(
+    savedPipeline,
+    savedPipeline.fileIngest || null,
+  );
   modal?.close();
   if (currentPipeModalMode === "create") {
     setUrlParam("p", savedPipeId);

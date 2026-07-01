@@ -131,7 +131,16 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
   });
   await api.getHealth({ view: "summary" });
   await api.getSystemMetrics({ view: "summary" });
-  await api.updatePipeline("pipe-1", { name: "Updated" });
+  await api.updatePipeline("pipe-1", {
+    name: "Updated",
+    fileIngest: {
+      filename: "clip.ts",
+      loopFlag: true,
+      startTime: "00:00:01",
+      liveOptimized: true,
+      targetGopSeconds: 2,
+    },
+  });
   await api.updateOutput("pipe-1", "out-1", { name: "Output" });
   await api.getPipelineHistory("pipe-1", 25);
   await api.getOutputHistory("pipe-1", "out-1", { filter: "lifecycle" });
@@ -167,6 +176,16 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
       ["POST", "/api/v1/auth/logout"],
     ],
   );
+  assert.deepEqual(requests[7].body, {
+    name: "Updated",
+    fileIngest: {
+      filename: "clip.ts",
+      loopFlag: true,
+      startTime: "00:00:01",
+      liveOptimized: true,
+      targetGopSeconds: 2,
+    },
+  });
 });
 
 test("frontend API helpers preserve response fields and build diagnostics URLs centrally", async () => {

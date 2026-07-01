@@ -142,7 +142,14 @@ Create/update body:
   "name": "Main Feed",
   "streamKey": "stream-key",
   "inputSource": null,
-  "encoding": null
+  "encoding": null,
+  "fileIngest": {
+    "filename": "recording-1.ts",
+    "loopFlag": true,
+    "startTime": "00:00:05",
+    "liveOptimized": true,
+    "targetGopSeconds": 3
+  }
 }
 ```
 
@@ -153,11 +160,19 @@ built-in key is selected.
 `inputSource` and pipeline-level `encoding` are persisted but are not used to
 pull remote media or transform the active native ingest path.
 
+`fileIngest` is optional. When present, pipeline create/update persists or
+replaces the pipeline's file-ingest config in the same mutation response; send
+`"fileIngest": null` to clear the configured file source as part of the same
+pipeline edit instead of issuing a follow-up `/file-ingest` request.
+
 Create and update responses include a normalized `pipeline` object plus the
 mutation message so clients can patch dashboard pipeline state locally without
-an immediate follow-up settings fetch. Pipeline deletes intentionally return a
-simple acknowledgement because the client can remove the matching pipeline,
-outputs, jobs, and cached health rows locally.
+an immediate follow-up settings fetch. That response now also includes the
+normalized `fileIngest` state so the editor can avoid a separate read or write
+round-trip when a pipeline switches between publisher and file-source modes.
+Pipeline deletes intentionally return a simple acknowledgement because the
+client can remove the matching pipeline, outputs, jobs, and cached health rows
+locally.
 
 Deletion cancels configured output tasks, the active ingest, and any
 file-ingest FFmpeg subprocesses whose `streamKey` matches the pipeline's
