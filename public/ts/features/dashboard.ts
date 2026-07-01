@@ -265,11 +265,25 @@ function rememberDashboardRuntimeEventId(log: AppLogRow): void {
   }
 }
 
-function lifecycleEventShouldRefresh(log: AppLogRow): boolean {
+export function dashboardLifecycleEventShouldRefresh(log: AppLogRow): boolean {
   const eventType = String(log?.eventType || "")
     .trim()
     .toLowerCase();
-  return !eventType.startsWith("restream.shutdown.");
+  if (eventType.startsWith("restream.shutdown.")) {
+    return false;
+  }
+
+  const focusedPipelineId = selectedDashboardRuntimePipelineId();
+  if (!focusedPipelineId) {
+    return true;
+  }
+
+  const eventPipelineId = String(log?.pipelineId || "").trim();
+  if (!eventPipelineId) {
+    return true;
+  }
+
+  return eventPipelineId === focusedPipelineId;
 }
 
 function scheduleDashboardRuntimeRefresh(): void {
@@ -360,7 +374,7 @@ export function awaitDashboardRuntimeMutationConvergence(
 export function handleDashboardRuntimeLifecycleLog(log: AppLogRow): void {
   rememberDashboardRuntimeEventId(log);
   updateRestreamProcessIndicatorFromLog(log);
-  if (lifecycleEventShouldRefresh(log)) {
+  if (dashboardLifecycleEventShouldRefresh(log)) {
     scheduleDashboardRuntimeRefresh();
   }
 }

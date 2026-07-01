@@ -628,7 +628,10 @@ The dashboard currently uses:
   SSE-triggered refreshes
 - `health_view=summary&pipeline_id=<selected>` for selected-pipeline detail
   paths so the dashboard keeps summary liveness for every pipeline while
-  returning full runtime detail for the active pipeline in the same snapshot
+  returning full runtime detail for the active pipeline in the same snapshot;
+  focused pipeline and inspect modes only let selected-pipeline or restream-wide
+  lifecycle events wake that immediate SSE refresh path, while unrelated
+  pipelines stay on the steady summary poll
 - `health_view=full` without `pipeline_id` for publisher-health paths that need
   the full runtime view across pipelines
 - lifecycle-SSE-driven output start/stop convergence in pipeline/control modes,

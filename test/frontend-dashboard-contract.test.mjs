@@ -542,7 +542,6 @@ test("output start and stop controls prefer lifecycle SSE convergence before fal
       entry.fn();
     }
   };
-
   const originalEventSource = globalThis.EventSource;
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
@@ -2649,6 +2648,50 @@ test("pipeline runtime mode uses summary health plus focused selected-pipeline d
     globalThis.setInterval = originalSetInterval;
     globalThis.clearInterval = originalClearInterval;
   }
+});
+
+test("focused pipeline lifecycle filter ignores sibling events but keeps selected and restream wakes", async () => {
+  const { window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+
+  const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+
+  assert.equal(
+    dashboard.dashboardLifecycleEventShouldRefresh({
+      pipelineId: "pipe-2",
+      outputId: null,
+      eventType: "pipeline.publisher.connected",
+    }),
+    false,
+    "focused pipeline mode should ignore sibling lifecycle wakeups",
+  );
+  assert.equal(
+    dashboard.dashboardLifecycleEventShouldRefresh({
+      pipelineId: "pipe-1",
+      outputId: null,
+      eventType: "pipeline.publisher.connected",
+    }),
+    true,
+    "focused pipeline mode should still react immediately to the selected pipeline",
+  );
+  assert.equal(
+    dashboard.dashboardLifecycleEventShouldRefresh({
+      pipelineId: null,
+      outputId: null,
+      eventType: "restream.http.ready",
+    }),
+    true,
+    "restream-wide lifecycle events should still wake the focused pipeline view",
+  );
+  assert.equal(
+    dashboard.dashboardLifecycleEventShouldRefresh({
+      pipelineId: null,
+      outputId: null,
+      eventType: "restream.shutdown.completed",
+    }),
+    false,
+    "terminal shutdown events should continue skipping runtime refreshes",
+  );
 });
 
 test("focused pipeline runtime refresh keeps sibling summaries while enriching the selected pipeline", async () => {
