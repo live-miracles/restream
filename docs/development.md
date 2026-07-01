@@ -126,19 +126,22 @@ report as a diagnostic view.
 
 The dashboard runtime surface now prefers a single `/api/v1/dashboard/runtime`
 snapshot whenever a refresh needs both engine health and host metrics; only
-metrics-only modes still hit `/metrics/system` directly. In pipeline/control
-runtime modes, output start/stop now reuse the mutation response to patch local
-desired state immediately, then let the already-open lifecycle SSE drive the
-runtime re-sync with a short `/api/v1/dashboard/runtime` fallback if no wakeup
-arrives. File-ingest start/stop now follow the same pattern when a lifecycle
-stream is already open, while cold/no-stream file-ingest controls still fall
-back directly to a runtime refresh. Recording start/stop is different: the
-mutation response already contains the operator-facing `enabled` / `active`
-state, so the dashboard patches local recording state immediately instead of
-forcing a follow-up runtime fetch. Status mode now reuses its own restream log
-SSE instead of opening a second lifecycle-only dashboard stream on top.
-Settings and media modes also use their existing metrics refresh to mark the
-Rust process indicator as running immediately, rather than waiting for a later
+metrics-only modes still hit `/metrics/system` directly. In selected-pipeline
+detail modes, full health requests now include the selected `pipeline_id` so
+the backend only sends detailed runtime state for the active pipeline while the
+dashboard keeps summary health for sibling pipelines already in memory.
+Output start/stop now reuse the mutation response to patch local desired state
+immediately, then let the already-open lifecycle SSE drive the runtime re-sync
+with a short `/api/v1/dashboard/runtime` fallback if no wakeup arrives.
+File-ingest start/stop now follow the same pattern when a lifecycle stream is
+already open, while cold/no-stream file-ingest controls still fall back
+directly to a runtime refresh. Recording start/stop is different: the mutation
+response already contains the operator-facing `enabled` / `active` state, so
+the dashboard patches local recording state immediately instead of forcing a
+follow-up runtime fetch. Status mode now reuses its own restream log SSE
+instead of opening a second lifecycle-only dashboard stream on top. Settings
+and media modes also use their existing metrics refresh to mark the Rust
+process indicator as running immediately, rather than waiting for a later
 lifecycle event to clear the initial "Connecting" state. Output create/update
 flows, output deletes, pipeline create/update flows, and pipeline deletes now
 reuse returned mutation payloads or apply targeted local removals to patch

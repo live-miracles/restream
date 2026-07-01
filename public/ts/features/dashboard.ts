@@ -23,6 +23,7 @@ import type {
   AppLogRow,
   ConfigOutput,
   ConfigPipeline,
+  HealthData,
   PipelineFileIngestState,
   PipelineView,
 } from "../types.js";
@@ -54,6 +55,7 @@ const DASHBOARD_RUNTIME_MODES = new Set([
   "inspect",
   "control",
 ]);
+const DASHBOARD_SCOPED_RUNTIME_MODES = new Set(["pipeline", "inspect"]);
 const DASHBOARD_RUNTIME_LIFECYCLE_STREAM_MODES = new Set([
   "pipeline",
   "inspect",
@@ -218,6 +220,34 @@ function shouldFetchDashboardConfig(): boolean {
   return DASHBOARD_CONFIG_MODES.has(currentDashboardMode());
 }
 
+function selectedDashboardRuntimePipelineId(
+  fetchDetailedHealth: boolean,
+): string | null {
+  if (!fetchDetailedHealth) return null;
+  if (publisherHealthModalOpen()) return null;
+  if (!DASHBOARD_SCOPED_RUNTIME_MODES.has(currentDashboardMode())) return null;
+  return getUrlParam("p");
+}
+
+function mergeDashboardHealthSnapshot(
+  previous: Partial<HealthData>,
+  next: HealthData,
+  scopedPipelineId: string | null,
+): Partial<HealthData> {
+  if (!scopedPipelineId) {
+    return next;
+  }
+
+  return {
+    ...previous,
+    ...next,
+    pipelines: {
+      ...(previous.pipelines || {}),
+      ...(next.pipelines || {}),
+    },
+  };
+}
+
 function closeDashboardRuntimeStream(): void {
   if (dashboardRuntimeStreamReconnectTimer) {
     clearTimeout(dashboardRuntimeStreamReconnectTimer);
@@ -350,6 +380,8 @@ async function fetchAndRerender(): Promise<void> {
   const fetchDetailedMetrics = fetchDetailedMetricsNextTick;
   const fetchHealth = shouldFetchRuntimeHealth();
   const fetchDetailedHealth = shouldFetchDetailedRuntimeHealth();
+  const runtimePipelineId =
+    selectedDashboardRuntimePipelineId(fetchDetailedHealth);
   const fetchConfig = shouldFetchDashboardConfig();
   fetchConfigNextTick = false;
   fetchDetailedMetricsNextTick = false;
@@ -364,6 +396,7 @@ async function fetchAndRerender(): Promise<void> {
       ? getDashboardRuntimeSnapshot({
           healthView: runtimeHealthView,
           metricsView: runtimeMetricsView,
+          pipelineId: runtimePipelineId,
         })
       : Promise.resolve(null),
     fetchHealth
@@ -379,7 +412,11 @@ async function fetchAndRerender(): Promise<void> {
     setServerConfig(state.config?.serverName);
   }
   if (runtimeResult?.health) {
-    state.health = runtimeResult.health;
+    state.health = mergeDashboardHealthSnapshot(
+      state.health,
+      runtimeResult.health,
+      runtimePipelineId,
+    );
   }
   const nextMetrics =
     runtimeResult?.metrics ?? (metricsResult as typeof state.metrics | null);

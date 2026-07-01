@@ -3145,33 +3145,62 @@ async fn status_get_handler(
 }
 
 async fn build_health_snapshot(state: &AppState) -> serde_json::Value {
-    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
-        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
-        Err(_) => vec![],
-    };
-    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+    let pipeline_ids = list_dashboard_runtime_pipeline_ids(state).await;
+    build_health_snapshot_for_pipeline_ids(state, &pipeline_ids).await
+}
+
+async fn build_health_summary_snapshot(state: &AppState) -> serde_json::Value {
+    let pipeline_ids = list_dashboard_runtime_pipeline_ids(state).await;
+    build_health_summary_snapshot_for_pipeline_ids(state, &pipeline_ids).await
+}
+
+async fn build_health_snapshot_for_pipeline_ids(
+    state: &AppState,
+    pipeline_ids: &[String],
+) -> serde_json::Value {
+    let recording_enabled = recording_enabled_map(state, pipeline_ids).await;
     crate::api_runtime_views::health_snapshot(
         &state.engine,
-        &pipeline_ids,
+        pipeline_ids,
         &recording_enabled,
         state.ingest_disconnect_grace_ms,
     )
     .await
 }
 
-async fn build_health_summary_snapshot(state: &AppState) -> serde_json::Value {
-    let pipeline_ids: Vec<String> = match db::list_pipelines(&state.db).await {
-        Ok(rows) => rows.into_iter().map(|r| r.id).collect(),
-        Err(_) => vec![],
-    };
-    let recording_enabled = recording_enabled_map(state, &pipeline_ids).await;
+async fn build_health_summary_snapshot_for_pipeline_ids(
+    state: &AppState,
+    pipeline_ids: &[String],
+) -> serde_json::Value {
+    let recording_enabled = recording_enabled_map(state, pipeline_ids).await;
     crate::api_runtime_views::health_summary_snapshot(
         &state.engine,
-        &pipeline_ids,
+        pipeline_ids,
         &recording_enabled,
         state.ingest_disconnect_grace_ms,
     )
     .await
+}
+
+fn select_dashboard_runtime_pipeline_ids(
+    requested_pipeline_id: Option<&str>,
+    summary_health: bool,
+    all_pipeline_ids: Vec<String>,
+) -> Vec<String> {
+    if summary_health {
+        return all_pipeline_ids;
+    }
+
+    requested_pipeline_id
+        .map(|pipeline_id| vec![pipeline_id.to_string()])
+        .unwrap_or(all_pipeline_ids)
+}
+
+async fn list_dashboard_runtime_pipeline_ids(state: &AppState) -> Vec<String> {
+    match db::list_pipelines(&state.db).await {
+        Ok(rows) => rows.into_iter().map(|row| row.id).collect(),
+        Err(_) => vec![],
+    }
 }
 
 async fn build_system_metrics_snapshot(state: &AppState, summary: bool) -> serde_json::Value {
@@ -3408,6 +3437,7 @@ async fn v1_engine_health_handler(
 struct DashboardRuntimeQuery {
     health_view: Option<String>,
     metrics_view: Option<String>,
+    pipeline_id: Option<String>,
 }
 
 async fn v1_dashboard_runtime_handler(
@@ -3421,12 +3451,17 @@ async fn v1_dashboard_runtime_handler(
 
     let summary_health = query.health_view.as_deref() == Some("summary");
     let summary_metrics = query.metrics_view.as_deref() == Some("summary");
+    let health_pipeline_ids = select_dashboard_runtime_pipeline_ids(
+        query.pipeline_id.as_deref(),
+        summary_health,
+        list_dashboard_runtime_pipeline_ids(&state).await,
+    );
     let (health, metrics) = tokio::join!(
         async {
             if summary_health {
-                build_health_summary_snapshot(&state).await
+                build_health_summary_snapshot_for_pipeline_ids(&state, &health_pipeline_ids).await
             } else {
-                build_health_snapshot(&state).await
+                build_health_snapshot_for_pipeline_ids(&state, &health_pipeline_ids).await
             }
         },
         build_system_metrics_snapshot(&state, summary_metrics)
@@ -7431,5 +7466,35 @@ mod tests {
         // Sanity: the hash must differ from the input
         let token = "my_raw_session_token";
         assert_ne!(hash_session_token(token), token);
+    }
+
+    #[test]
+    fn select_dashboard_runtime_pipeline_ids_keeps_summary_unscoped() {
+        let all_pipeline_ids = vec!["pipe-1".to_string(), "pipe-2".to_string()];
+
+        let selected =
+            select_dashboard_runtime_pipeline_ids(Some("pipe-1"), true, all_pipeline_ids.clone());
+
+        assert_eq!(selected, all_pipeline_ids);
+    }
+
+    #[test]
+    fn select_dashboard_runtime_pipeline_ids_scopes_full_health_to_selected_pipeline() {
+        let selected = select_dashboard_runtime_pipeline_ids(
+            Some("pipe-1"),
+            false,
+            vec!["pipe-1".to_string(), "pipe-2".to_string()],
+        );
+
+        assert_eq!(selected, vec!["pipe-1".to_string()]);
+    }
+
+    #[test]
+    fn select_dashboard_runtime_pipeline_ids_keeps_full_health_unscoped_without_selection() {
+        let all_pipeline_ids = vec!["pipe-1".to_string(), "pipe-2".to_string()];
+
+        let selected = select_dashboard_runtime_pipeline_ids(None, false, all_pipeline_ids.clone());
+
+        assert_eq!(selected, all_pipeline_ids);
     }
 }

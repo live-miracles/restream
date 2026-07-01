@@ -224,9 +224,9 @@ test("dashboard steady-state polling avoids repeated settings fetches", async ()
 test("output start and stop controls refresh runtime without invalidating dashboard settings", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const steadyRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1";
   const startUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/start";
   const stopUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/stop";
   const { document, window } = installFakeDom();
@@ -359,9 +359,9 @@ test("output start and stop controls refresh runtime without invalidating dashbo
 test("output start and stop controls prefer lifecycle SSE convergence before fallback runtime refresh", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const steadyRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1";
   const startUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/start";
   const stopUrl = "/api/v1/pipelines/pipe-1/outputs/out-1/stop";
   const { document, window } = installFakeDom();
@@ -672,7 +672,7 @@ test("output start and stop controls prefer lifecycle SSE convergence before fal
 test("output config mutations reuse returned output payloads instead of refetching dashboard settings", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const updateUrl = "/api/v1/pipelines/pipe-1/outputs/out-1";
   const createUrl = "/api/v1/pipelines/pipe-1/outputs";
   const { document, window } = installFakeDom();
@@ -877,7 +877,7 @@ test("output config mutations reuse returned output payloads instead of refetchi
 test("pipeline and output deletes patch dashboard state locally instead of refetching settings", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const deleteOutputUrl = "/api/v1/pipelines/pipe-1/outputs/out-1";
   const deletePipelineUrl = "/api/v1/pipelines/pipe-1";
   const { document, window } = installFakeDom();
@@ -1094,7 +1094,7 @@ test("pipeline and output deletes patch dashboard state locally instead of refet
 test("pipeline edits reuse returned pipeline payloads instead of refetching dashboard settings", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const streamKeysUrl = "/api/v1/stream-keys";
   const updatePipelineUrl = "/api/v1/pipelines/pipe-1";
   const getFileIngestUrl = "/api/v1/pipelines/pipe-1/file-ingest";
@@ -1325,9 +1325,9 @@ test("pipeline edits reuse returned pipeline payloads instead of refetching dash
 test("recording patches local state immediately, while file-ingest falls back to runtime refresh when no lifecycle stream is open", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const steadyRuntimeUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1";
   const startRecordingUrl = "/api/v1/pipelines/pipe-1/recording/start";
   const startIngestUrl = "/api/v1/ingests/ingest-1/start";
   const { document, window } = installFakeDom();
@@ -2100,9 +2100,9 @@ test("status mode reuses its own restream log SSE without opening a second lifec
 test("pipeline runtime mode keeps the full health contract", async () => {
   const settingsUrl = "/api/v1/settings?view=dashboard";
   const fullRuntimeWithFullMetricsUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=full&pipeline_id=pipe-1";
   const fullRuntimeWithSummaryMetricsUrl =
-    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary";
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1";
   const summaryRuntimeUrl =
     "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary";
   const { document, window } = installFakeDom();
@@ -2195,15 +2195,151 @@ test("pipeline runtime mode keeps the full health contract", async () => {
 
     assert.equal(
       requests.some((href) =>
-        href.startsWith("/api/v1/dashboard/runtime?health_view=full&"),
+        href.startsWith(
+          "/api/v1/dashboard/runtime?health_view=full&metrics_view=",
+        ) && href.includes("pipeline_id=pipe-1"),
       ),
       true,
-      "pipeline mode should request a runtime snapshot with the full health view",
+      "pipeline mode should request a scoped runtime snapshot with the full health view",
     );
     assert.equal(
       requests.includes(summaryRuntimeUrl),
       false,
       "pipeline mode should not downgrade to the summary runtime view",
+    );
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
+test("scoped pipeline runtime refresh preserves summary health for sibling pipelines", async () => {
+  const scopedRuntimeUrl =
+    "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1";
+  const { document, window } = installFakeDom();
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+  appendRoot(document, "div", "dashboard-grid");
+
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === scopedRuntimeUrl) {
+      return new Response(
+        JSON.stringify({
+          health: {
+            status: "ready",
+            pipelines: {
+              "pipe-1": {
+                input: { status: "on", readers: 2, probeReady: true },
+                outputs: {
+                  "out-1": {
+                    status: "running",
+                    rawStatus: "running",
+                    bitrateKbps: 1500,
+                  },
+                },
+              },
+            },
+          },
+          metrics: {
+            generatedAt: "2026-06-30T00:00:05Z",
+            cpu: { usagePercent: 14 },
+            memory: { usedPercent: 21 },
+            disk: { usedPercent: 41 },
+            network: { downloadKbps: 3, uploadKbps: 4 },
+            engine: {
+              cpuPercent: 4,
+              totalMemoryBytes: 1236,
+              cpuSampleReady: true,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setInterval = () => 1;
+  globalThis.clearInterval = () => {};
+
+  try {
+    const { state } = await loadCompiledFrontendModule("core/state.js");
+    const dashboard = await loadCompiledFrontendModule("features/dashboard.js");
+
+    state.config = {
+      serverName: "Restream",
+      pipelines: [
+        {
+          id: "pipe-1",
+          name: "Primary",
+          streamKey: "primary",
+        },
+        {
+          id: "pipe-2",
+          name: "Backup",
+          streamKey: "backup",
+        },
+      ],
+      outputs: [
+        {
+          id: "out-1",
+          pipelineId: "pipe-1",
+          name: "Primary Output",
+          url: "rtmp://example.com/live/primary",
+          desiredState: "started",
+        },
+        {
+          id: "out-2",
+          pipelineId: "pipe-2",
+          name: "Backup Output",
+          url: "rtmp://example.com/live/backup",
+          desiredState: "started",
+        },
+      ],
+      jobs: [],
+    };
+    state.health = {
+      status: "ready",
+      pipelines: {
+        "pipe-1": {
+          input: { status: "on", readers: 1 },
+          outputs: {
+            "out-1": {
+              status: "running",
+              rawStatus: "running",
+            },
+          },
+        },
+        "pipe-2": {
+          input: { status: "warning", readers: 0 },
+          outputs: {
+            "out-2": {
+              status: "retrying",
+              rawStatus: "stopped",
+              retrying: true,
+            },
+          },
+        },
+      },
+    };
+    state.metrics = {};
+    state.pipelines = [];
+
+    await dashboard.refreshDashboardRuntime();
+    await flushAsyncWork();
+
+    assert.deepEqual(requests, [scopedRuntimeUrl]);
+    assert.equal(state.health.pipelines["pipe-1"].input.readers, 2);
+    assert.equal(
+      state.health.pipelines["pipe-2"].outputs["out-2"].status,
+      "retrying",
+      "scoped runtime refresh should preserve sibling pipeline health from the previous summary snapshot",
     );
   } finally {
     globalThis.setInterval = originalSetInterval;

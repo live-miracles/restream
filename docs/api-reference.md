@@ -579,6 +579,7 @@ Query params:
 | --- | --- | --- |
 | `health_view` | `full` | `summary` trims pipeline/output runtime detail for overview wakes and lighter dashboard refreshes. |
 | `metrics_view` | `full` | `summary` trims the host metrics payload to aggregate percentages/rates while preserving `engine` totals. |
+| `pipeline_id` | — | Optional selected-pipeline scope for `health_view=full`. Summary health stays unscoped so overview/sidebar state can stay complete. |
 
 ```json
 {
@@ -610,8 +611,11 @@ The dashboard currently uses:
   disk/interface metadata can be cached client-side
 - `health_view=summary&metrics_view=summary` for steady-state overview wakes and
   SSE-triggered refreshes
-- `health_view=full` for pipeline/inspect/control and publisher-health paths
-  that need detailed runtime state
+- `health_view=full&pipeline_id=<selected>` for selected-pipeline detail paths
+  that need detailed runtime state for the active pipeline without resending
+  every other pipeline's full health payload
+- `health_view=full` without `pipeline_id` for publisher-health paths that need
+  the full runtime view across pipelines
 - lifecycle-SSE-driven output start/stop convergence in pipeline/control modes,
   with a short runtime-refresh fallback when no lifecycle wakeup arrives
 - lifecycle-SSE-driven file-ingest start/stop convergence when the pipeline

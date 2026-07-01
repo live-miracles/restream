@@ -161,6 +161,7 @@ async function getSystemMetrics(
 interface GetDashboardRuntimeOptions {
   healthView?: "full" | "summary";
   metricsView?: "full" | "summary";
+  pipelineId?: string | null;
 }
 
 async function getDashboardRuntimeSnapshot(
@@ -169,6 +170,7 @@ async function getDashboardRuntimeSnapshot(
   const query = new URLSearchParams();
   if (options.healthView) query.set("health_view", options.healthView);
   if (options.metricsView) query.set("metrics_view", options.metricsView);
+  if (options.pipelineId) query.set("pipeline_id", options.pipelineId);
   const suffix = query.toString();
   const url = suffix
     ? `/api/v1/dashboard/runtime?${suffix}`
