@@ -1022,6 +1022,36 @@ async function refreshInspectGraph(): Promise<void> {
   }
 }
 
+function inspectGraphStateKey(pipe: PipelineView | null): string | null {
+  if (!pipe) return null;
+  const outputs = pipe.outs
+    .map((out) =>
+      [
+        out.id,
+        out.status,
+        out.desiredState,
+        out.encoding,
+        out.phase || "",
+        out.retrying ? "1" : "0",
+        out.flapping ? "1" : "0",
+        out.lastError || "",
+      ].join(":"),
+    )
+    .join("|");
+  return [
+    pipe.id,
+    pipe.name,
+    pipe.input.status,
+    pipe.input.probeStatus,
+    pipe.input.readers,
+    pipe.input.audioTracks.length,
+    pipe.input.video?.codec || "",
+    pipe.hlsPreview?.active ? "1" : "0",
+    pipe.hlsPreview?.segments || 0,
+    outputs,
+  ].join("::");
+}
+
 function renderSettingsMode(): void {
   const container = document.getElementById("settings-mode-content");
   if (!container) return;
