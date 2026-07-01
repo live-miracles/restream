@@ -323,6 +323,22 @@ async fn wait_for_stage_metadata(
     }
 }
 
+fn external_output_stream_idx(
+    media_type: MediaType,
+    track_index: u32,
+    audio_tracks: &[AudioMeta],
+    include_audio: bool,
+) -> Option<usize> {
+    match media_type {
+        MediaType::Video => Some(0),
+        MediaType::Audio if include_audio => audio_tracks
+            .iter()
+            .position(|track| track.track_index == track_index)
+            .map(|index| index + 1),
+        MediaType::Audio => None,
+    }
+}
+
 // ── Shared stage entry point ───────────────────────────────────────────────
 
 /// Run one external transcoder stage for `(pipeline_id, encoding)`.
@@ -692,23 +708,16 @@ async fn start_external_transcoder_stage_inner(
                         demuxer.feed(&buf[..n]);
                         demuxer.drain_into(&mut pkts);
                         for pkt in &mut pkts {
-                            let stream_idx = match pkt.media_type {
-                                MediaType::Video => 0,
-                                MediaType::Audio => {
-                                    if !out_include_audio {
-                                        continue;
-                                    }
-                                    let video_offset = 1;
-                                    out_audio_tracks
-                                        .iter()
-                                        .position(|track| track.track_index == pkt.track_index)
-                                        .map(|index| index + video_offset)
-                                        .unwrap_or(video_offset)
-                                }
-                            };
-                            let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
-                            pkt.pts = pts;
-                            pkt.dts = dts;
+                            if let Some(stream_idx) = external_output_stream_idx(
+                                pkt.media_type,
+                                pkt.track_index,
+                                &out_audio_tracks,
+                                out_include_audio,
+                            ) {
+                                let (pts, dts) = dts_enforcer.enforce(stream_idx, pkt.pts, pkt.dts);
+                                pkt.pts = pts;
+                                pkt.dts = dts;
+                            }
                             out_stage_metrics.record_out(pkt.payload.len() as u64);
                         }
                         out_ring.push_batch(pkts.drain(..));
@@ -818,6 +827,8 @@ mod tests {
     use crate::media::feeder::{PacketFeedConfig, TsPacketFeeder};
     use crate::media::mpegts::TsDemuxer;
     use crate::media::ring_buffer::{MediaType, Reader};
+    use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
     use tokio_util::sync::CancellationToken;
 
     fn extract_2v16a_hevc_ts_sample_for_duration(seconds: u32) -> Vec<u8> {
@@ -893,6 +904,99 @@ mod tests {
             count += 1;
         }
         assert!(count > 0, "{label} should include video packets");
+    }
+
+    fn test_audio_track(track_index: u32) -> AudioMeta {
+        AudioMeta {
+            codec: "aac".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
+            channel_layout: Some("stereo".to_string()),
+            track_index,
+            pid: None,
+            language: None,
+            title: None,
+            profile: None,
+        }
+    }
+
+    #[test]
+    fn external_output_stream_idx_routes_known_tracks_without_aliasing() {
+        let audio_tracks = vec![
+            test_audio_track(7),
+            test_audio_track(2),
+            test_audio_track(11),
+        ];
+
+        assert_eq!(
+            external_output_stream_idx(MediaType::Video, 0, &audio_tracks, true),
+            Some(0)
+        );
+        assert_eq!(
+            external_output_stream_idx(MediaType::Audio, 7, &audio_tracks, true),
+            Some(1)
+        );
+        assert_eq!(
+            external_output_stream_idx(MediaType::Audio, 2, &audio_tracks, true),
+            Some(2)
+        );
+        assert_eq!(
+            external_output_stream_idx(MediaType::Audio, 11, &audio_tracks, true),
+            Some(3)
+        );
+        assert_eq!(
+            external_output_stream_idx(MediaType::Audio, 99, &audio_tracks, true),
+            None
+        );
+        assert_eq!(
+            external_output_stream_idx(MediaType::Audio, 7, &audio_tracks, false),
+            None
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn proptest_external_output_dts_routing_preserves_per_stream_monotonicity(
+            track_set in proptest::collection::btree_set(0u32..64, 1..=6),
+            events in proptest::collection::vec((0u8..4, 0usize..16, -10i64..40, -10i64..40), 1..160),
+        ) {
+            let audio_tracks = track_set
+                .into_iter()
+                .map(test_audio_track)
+                .collect::<Vec<_>>();
+            let mut enforcer = DtsEnforcer::new(1 + audio_tracks.len());
+            let mut previous_by_stream = vec![None; 1 + audio_tracks.len()];
+
+            for (kind, index_seed, pts, dts) in events {
+                let (media_type, track_index, should_route) = match kind {
+                    0 => (MediaType::Video, 0, true),
+                    1 | 2 => {
+                        let track = audio_tracks[index_seed % audio_tracks.len()].track_index;
+                        (MediaType::Audio, track, true)
+                    }
+                    _ => (MediaType::Audio, 10_000 + index_seed as u32, false),
+                };
+
+                let stream_idx = external_output_stream_idx(
+                    media_type,
+                    track_index,
+                    &audio_tracks,
+                    true,
+                );
+                prop_assert_eq!(stream_idx.is_some(), should_route);
+
+                if let Some(stream_idx) = stream_idx {
+                    let (out_pts, out_dts) = enforcer.enforce(stream_idx, pts, dts);
+                    prop_assert!(out_pts >= out_dts);
+                    if let Some(previous) = previous_by_stream[stream_idx] {
+                        prop_assert!(out_dts > previous);
+                    }
+                    previous_by_stream[stream_idx] = Some(out_dts);
+                }
+            }
+        }
     }
 
     #[test]
