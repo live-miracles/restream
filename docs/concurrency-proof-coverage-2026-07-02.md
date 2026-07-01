@@ -64,6 +64,12 @@ This report summarizes the model, property, unit, and live-harness proof surface
 - `src/media/ts_chunk_ring.rs`
   - `TsChunkReader::new_live` backs the SRT egress live-edge proof.
 
+### Recording / HLS Timestamp Boundaries
+
+- `src/media/hls.rs`
+  - Added `hls_segment_boundaries_preserve_non_decreasing_dts_per_stream`, a deterministic in-memory proof that demuxed DTS values stay non-decreasing per stream across consecutive HLS MPEG-TS segment boundaries.
+  - Coverage includes both packet-level DTS monotonicity and explicit first-packet-vs-previous-segment-last boundary checks after HLS keyframe-triggered segmentation.
+
 ### SRT Protocol Boundaries
 
 - `src/media/srt.rs`
@@ -146,5 +152,6 @@ The full live `scripts/check-concurrency-contract.sh` gate remains the sign-off 
 ## Remaining Gaps
 
 - The full contract gate is intentionally heavier than the focused checks above; run it before final sign-off when host resources allow.
-- More live chaos coverage would still be valuable for slow-sink isolation across high output counts.
-- Recording/HLS timestamp behavior is not fully proved by the external-transcoder/SRT path tests; keep those as separate proof domains.
+- Slow-sink sibling isolation now has focused harness coverage at low output counts; broader high-output soak coverage remains a separate, resource-heavy confidence run.
+- Internal transcoder/libavcodec timestamp and metadata continuity now has unit, proptest, and loom coverage; live multi-codec soak coverage remains a separate confidence run.
+- HLS segment-boundary DTS monotonicity is now covered in memory, but recording remux continuity (TS -> MP4 -> TS timestamp continuity under source-retention permutations) still lacks a dedicated proof test.
