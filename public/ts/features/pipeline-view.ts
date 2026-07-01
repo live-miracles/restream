@@ -4,6 +4,7 @@ import {
   formatChannelCount,
   formatCodecName,
   formatMaskedStreamKey,
+  getUrlParam,
   msToHHMMSS,
   showCopiedNotification,
 } from "../core/utils.js";
@@ -54,7 +55,7 @@ let pendingAudioLabelFocusKey: string | null = null;
 const sourceFileMetadataCache = new Map<string, MediaFile | null>();
 const sourceFileAnalysisCache = new Map<string, MediaFileAnalysis | null>();
 let sourceFileMetadataLoadPromise: Promise<void> | null = null;
-let sourceFileAnalysisLoadPromise: Promise<void> | null = null;
+const sourceFileAnalysisLoadPromises = new Map<string, Promise<void>>();
 const pendingRecordingIntents = new Map<string, "starting" | "stopping">();
 const pendingFileIngestIntents = new Map<string, "starting" | "stopping">();
 
@@ -178,10 +179,27 @@ function setTextIfPresent(id: string, value: string): void {
   if (element) element.textContent = value;
 }
 
-function scheduleSourceFileMetadataLoad(
-  selectedPipe: string,
+function rerenderSelectedPipelineIfSourceFileLoaded(
   filename: string | null,
+  kind: "metadata" | "analysis",
 ): void {
+  const selectedPipe = getUrlParam("p");
+  if (!selectedPipe) return;
+  const selectedPipeline =
+    state.pipelines.find((pipe) => pipe.id === selectedPipe) || null;
+  if (!selectedPipeline) return;
+  const selectedFilename = getFileSourceName(selectedPipeline);
+  if (!selectedFilename) return;
+  if (filename && selectedFilename !== filename) return;
+  const hasLoadedData =
+    kind === "metadata"
+      ? sourceFileMetadataCache.has(selectedFilename)
+      : sourceFileAnalysisCache.has(selectedFilename);
+  if (!hasLoadedData) return;
+  renderPipelineInfoColumn(selectedPipe);
+}
+
+function scheduleSourceFileMetadataLoad(filename: string | null): void {
   if (!filename || sourceFileMetadataCache.has(filename)) return;
   if (typeof fetch !== "function" || sourceFileMetadataLoadPromise) return;
 
@@ -199,20 +217,16 @@ function scheduleSourceFileMetadataLoad(
     })
     .finally(() => {
       sourceFileMetadataLoadPromise = null;
-      if (state.pipelines.some((pipe) => pipe.id === selectedPipe)) {
-        renderPipelineInfoColumn(selectedPipe);
-      }
+      rerenderSelectedPipelineIfSourceFileLoaded(null, "metadata");
     });
 }
 
-function scheduleSourceFileAnalysisLoad(
-  selectedPipe: string,
-  filename: string | null,
-): void {
+function scheduleSourceFileAnalysisLoad(filename: string | null): void {
   if (!filename || sourceFileAnalysisCache.has(filename)) return;
-  if (typeof fetch !== "function" || sourceFileAnalysisLoadPromise) return;
+  if (typeof fetch !== "function") return;
+  if (sourceFileAnalysisLoadPromises.has(filename)) return;
 
-  sourceFileAnalysisLoadPromise = getMediaFileAnalysis(filename)
+  const request = getMediaFileAnalysis(filename)
     .then((analysis) => {
       sourceFileAnalysisCache.set(filename, analysis);
     })
@@ -220,11 +234,10 @@ function scheduleSourceFileAnalysisLoad(
       sourceFileAnalysisCache.set(filename, null);
     })
     .finally(() => {
-      sourceFileAnalysisLoadPromise = null;
-      if (state.pipelines.some((pipe) => pipe.id === selectedPipe)) {
-        renderPipelineInfoColumn(selectedPipe);
-      }
+      sourceFileAnalysisLoadPromises.delete(filename);
+      rerenderSelectedPipelineIfSourceFileLoaded(filename, "analysis");
     });
+  sourceFileAnalysisLoadPromises.set(filename, request);
 }
 
 interface PublisherMetaBadgeSpec {
@@ -713,8 +726,8 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     ? sourceFileAnalysisCache.get(fileSourceName) || null
     : null;
   if (isFileSource) {
-    scheduleSourceFileMetadataLoad(selectedPipe, fileSourceName);
-    scheduleSourceFileAnalysisLoad(selectedPipe, fileSourceName);
+    scheduleSourceFileMetadataLoad(fileSourceName);
+    scheduleSourceFileAnalysisLoad(fileSourceName);
   }
   setTextIfPresent(
     "file-source-container",

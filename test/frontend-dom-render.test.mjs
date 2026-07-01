@@ -605,6 +605,194 @@ runCheck("renderPipelineInfoColumn shows file ingest controls for file sources",
   );
 });
 
+runCheck("renderPipelineInfoColumn keeps the active file-source panel ahead of stale async loads", async () => {
+  const { document, window } = installFakeDom();
+  if (!FakeElement.prototype.pause) {
+    FakeElement.prototype.pause = () => {};
+  }
+  if (!FakeElement.prototype.load) {
+    FakeElement.prototype.load = () => {};
+  }
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-1";
+  appendRoot(document, "div", "pipe-info-col");
+  appendRoot(document, "div", "pipe-name");
+  appendRoot(document, "button", "file-ingest-pipe-btn");
+  appendRoot(document, "button", "record-pipe-btn");
+  appendRoot(document, "button", "graph-pipe-btn");
+  appendRoot(document, "button", "diagnose-pipe-btn");
+  appendRoot(document, "button", "edit-pipe-btn");
+  appendRoot(document, "button", "delete-pipe-btn");
+  appendRoot(document, "div", "input-time");
+  appendRoot(document, "section", "file-source-section");
+  appendRoot(document, "span", "file-source-inline");
+  appendRoot(document, "details", "file-source-details");
+  appendRoot(document, "div", "file-source-container");
+  appendRoot(document, "div", "file-source-size");
+  appendRoot(document, "div", "file-source-modified");
+  appendRoot(document, "div", "file-source-loop");
+  appendRoot(document, "div", "file-source-start-time");
+  appendRoot(document, "div", "file-source-optimization");
+  appendRoot(document, "div", "file-source-video-codec");
+  appendRoot(document, "div", "file-source-fps");
+  appendRoot(document, "div", "file-source-duration");
+  appendRoot(document, "div", "file-source-gop");
+  appendRoot(document, "div", "file-source-gop-warning");
+  appendRoot(document, "section", "stream-key-section");
+  appendRoot(document, "code", "stream-key-inline");
+  appendRoot(document, "button", "stream-key-copy-btn");
+  appendRoot(document, "section", "ingest-url-section");
+  appendRoot(document, "button", "ingest-url-copy-btn");
+  appendRoot(document, "div", "ingest-url-surface");
+  appendRoot(document, "code", "ingest-url");
+  appendRoot(document, "div", "ingest-url-details");
+  appendRoot(document, "div", "ingest-details-grid");
+  appendRoot(document, "div", "video-player");
+  appendRoot(document, "div", "input-stats");
+
+  const requests = [];
+  let resolveMediaList;
+  let resolveAlphaAnalysis;
+  let resolveBetaAnalysis;
+  const mediaListReady = new Promise((resolve) => {
+    resolveMediaList = resolve;
+  });
+  const alphaAnalysisReady = new Promise((resolve) => {
+    resolveAlphaAnalysis = resolve;
+  });
+  const betaAnalysisReady = new Promise((resolve) => {
+    resolveBetaAnalysis = resolve;
+  });
+
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+
+    if (href === "/api/v1/media") {
+      await mediaListReady;
+      return new Response(
+        JSON.stringify({
+          files: [
+            {
+              name: "alpha.ts",
+              kind: "recording",
+              size: 1200,
+              modifiedAt: "2026-06-30T00:00:00Z",
+            },
+            {
+              name: "beta.ts",
+              kind: "recording",
+              size: 3400,
+              modifiedAt: "2026-06-30T00:05:00Z",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === "/api/v1/media/alpha.ts/analysis") {
+      await alphaAnalysisReady;
+      return new Response(
+        JSON.stringify({
+          videoCodec: "h264",
+          fps: 30,
+          durationSec: 60,
+          averageKeyframeIntervalSec: 2,
+          maxKeyframeIntervalSec: 2,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    if (href === "/api/v1/media/beta.ts/analysis") {
+      await betaAnalysisReady;
+      return new Response(
+        JSON.stringify({
+          videoCodec: "hevc",
+          fps: 60,
+          durationSec: 120,
+          averageKeyframeIntervalSec: 1,
+          maxKeyframeIntervalSec: 1,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${href}`);
+  };
+
+  const pipelineView = await loadCompiledFrontendModule("features/pipeline-view.js");
+  const { state } = await loadCompiledFrontendModule("core/state.js");
+
+  state.pipelines = [
+    makePipeline({
+      inputSource: "file:alpha.ts",
+      fileIngest: {
+        configured: true,
+        id: "ingest-1",
+        filename: "alpha.ts",
+        running: false,
+      },
+      ingestUrls: {
+        rtmp: "rtmp://example.com/live/alpha",
+        srt: "srt://example.com:9000?streamid=alpha",
+      },
+    }),
+    makePipeline({
+      id: "pipe-2",
+      name: "Pipeline 2",
+      key: "stream-key-2",
+      inputSource: "file:beta.ts",
+      fileIngest: {
+        configured: true,
+        id: "ingest-2",
+        filename: "beta.ts",
+        running: false,
+      },
+      outs: [makeOutput({ pipe: "pipe-2" })],
+      ingestUrls: {
+        rtmp: "rtmp://example.com/live/beta",
+        srt: "srt://example.com:9000?streamid=beta",
+      },
+    }),
+  ];
+
+  pipelineView.renderPipelineInfoColumn("pipe-1");
+  assert.equal(document.getElementById("file-source-inline").textContent, "alpha.ts");
+
+  window.location.href = "http://localhost/?mode=pipeline&p=pipe-2";
+  pipelineView.renderPipelineInfoColumn("pipe-2");
+  assert.equal(document.getElementById("file-source-inline").textContent, "beta.ts");
+  assert.equal(
+    requests.includes("/api/v1/media/beta.ts/analysis"),
+    true,
+    "switching to a different file-backed pipeline should start its analysis immediately",
+  );
+
+  resolveAlphaAnalysis();
+  await flushAsyncWork();
+  assert.equal(
+    document.getElementById("file-source-inline").textContent,
+    "beta.ts",
+    "a stale alpha analysis completion should not repaint the pipe-2 panel",
+  );
+
+  resolveMediaList();
+  await flushAsyncWork();
+  assert.equal(
+    document.getElementById("file-source-size").textContent,
+    "3.3 KiB",
+    "shared media metadata should re-render the currently selected pipeline",
+  );
+
+  resolveBetaAnalysis();
+  await flushAsyncWork();
+  assert.equal(
+    document.getElementById("file-source-video-codec").textContent,
+    "HEVC",
+  );
+});
+
 runCheck("renderPipelineInfoColumn fills live video and audio stat surfaces", async () => {
   const { document } = installFakeDom();
   appendRoot(document, "div", "pipe-info-col");
