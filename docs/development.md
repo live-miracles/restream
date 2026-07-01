@@ -127,9 +127,9 @@ report as a diagnostic view.
 The dashboard runtime surface now prefers a single `/api/v1/dashboard/runtime`
 snapshot whenever a refresh needs both engine health and host metrics; only
 metrics-only modes still hit `/metrics/system` directly. In selected-pipeline
-detail modes, full health requests now include the selected `pipeline_id` so
-the backend only sends detailed runtime state for the active pipeline while the
-dashboard keeps summary health for sibling pipelines already in memory.
+detail modes, summary health requests now include the selected `pipeline_id` so
+the backend can keep summary liveness for every pipeline while upgrading the
+active pipeline entry to the full runtime shape in the same response.
 Output start/stop now reuse the mutation response to patch local desired state
 immediately, then let the already-open lifecycle SSE drive the runtime re-sync
 with a short `/api/v1/dashboard/runtime` fallback if no wakeup arrives.

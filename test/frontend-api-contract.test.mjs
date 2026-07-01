@@ -125,7 +125,7 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
     metricsView: "full",
   });
   await api.getDashboardRuntimeSnapshot({
-    healthView: "full",
+    healthView: "summary",
     metricsView: "summary",
     pipelineId: "pipe-1",
   });
@@ -151,7 +151,7 @@ test("frontend API helpers call the canonical v1 routes and methods", async () =
       ],
       [
         "GET",
-        "/api/v1/dashboard/runtime?health_view=full&metrics_view=summary&pipeline_id=pipe-1",
+        "/api/v1/dashboard/runtime?health_view=summary&metrics_view=summary&pipeline_id=pipe-1",
       ],
       ["GET", "/api/v1/engine/health?view=summary"],
       ["GET", "/metrics/system?view=summary"],

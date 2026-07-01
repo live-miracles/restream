@@ -210,20 +210,15 @@ function shouldFetchRuntimeHealth(): boolean {
   return DASHBOARD_RUNTIME_MODES.has(currentDashboardMode());
 }
 
-function shouldFetchDetailedRuntimeHealth(): boolean {
-  if (publisherHealthModalOpen()) return true;
-  const mode = currentDashboardMode();
-  return mode === "pipeline" || mode === "inspect";
+function shouldFetchFullRuntimeHealth(): boolean {
+  return publisherHealthModalOpen();
 }
 
 function shouldFetchDashboardConfig(): boolean {
   return DASHBOARD_CONFIG_MODES.has(currentDashboardMode());
 }
 
-function selectedDashboardRuntimePipelineId(
-  fetchDetailedHealth: boolean,
-): string | null {
-  if (!fetchDetailedHealth) return null;
+function selectedDashboardRuntimePipelineId(): string | null {
   if (publisherHealthModalOpen()) return null;
   if (!DASHBOARD_SCOPED_RUNTIME_MODES.has(currentDashboardMode())) return null;
   return getUrlParam("p");
@@ -379,15 +374,14 @@ async function fetchAndRerender(): Promise<void> {
   const fetchConf = fetchConfigNextTick;
   const fetchDetailedMetrics = fetchDetailedMetricsNextTick;
   const fetchHealth = shouldFetchRuntimeHealth();
-  const fetchDetailedHealth = shouldFetchDetailedRuntimeHealth();
-  const runtimePipelineId =
-    selectedDashboardRuntimePipelineId(fetchDetailedHealth);
+  const fetchFullHealth = shouldFetchFullRuntimeHealth();
+  const runtimePipelineId = selectedDashboardRuntimePipelineId();
   const fetchConfig = shouldFetchDashboardConfig();
   fetchConfigNextTick = false;
   fetchDetailedMetricsNextTick = false;
 
   const runtimeMetricsView = fetchDetailedMetrics ? "full" : "summary";
-  const runtimeHealthView = fetchDetailedHealth ? "full" : "summary";
+  const runtimeHealthView = fetchFullHealth ? "full" : "summary";
   const [configResult, runtimeResult, metricsResult] = await Promise.all([
     fetchConf && fetchConfig
       ? getConfig({ view: "dashboard" })
@@ -412,11 +406,14 @@ async function fetchAndRerender(): Promise<void> {
     setServerConfig(state.config?.serverName);
   }
   if (runtimeResult?.health) {
-    state.health = mergeDashboardHealthSnapshot(
-      state.health,
-      runtimeResult.health,
-      runtimePipelineId,
-    );
+    state.health =
+      runtimeHealthView === "full" && runtimePipelineId
+        ? mergeDashboardHealthSnapshot(
+            state.health,
+            runtimeResult.health,
+            runtimePipelineId,
+          )
+        : runtimeResult.health;
   }
   const nextMetrics =
     runtimeResult?.metrics ?? (metricsResult as typeof state.metrics | null);

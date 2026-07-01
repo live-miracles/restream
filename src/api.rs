@@ -3196,6 +3196,32 @@ fn select_dashboard_runtime_pipeline_ids(
         .unwrap_or(all_pipeline_ids)
 }
 
+fn merge_dashboard_runtime_focus_pipeline(
+    health: &mut serde_json::Value,
+    focused_health: &serde_json::Value,
+    pipeline_id: &str,
+) {
+    let Some(focused_pipeline) = focused_health
+        .get("pipelines")
+        .and_then(|pipelines| pipelines.as_object())
+        .and_then(|pipelines| pipelines.get(pipeline_id))
+        .cloned()
+    else {
+        return;
+    };
+
+    let Some(health_object) = health.as_object_mut() else {
+        return;
+    };
+    let pipelines = health_object
+        .entry("pipelines")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(pipelines_object) = pipelines.as_object_mut() else {
+        return;
+    };
+    pipelines_object.insert(pipeline_id.to_string(), focused_pipeline);
+}
+
 async fn list_dashboard_runtime_pipeline_ids(state: &AppState) -> Vec<String> {
     match db::list_pipelines(&state.db).await {
         Ok(rows) => rows.into_iter().map(|row| row.id).collect(),
@@ -3451,15 +3477,34 @@ async fn v1_dashboard_runtime_handler(
 
     let summary_health = query.health_view.as_deref() == Some("summary");
     let summary_metrics = query.metrics_view.as_deref() == Some("summary");
+    let all_pipeline_ids = list_dashboard_runtime_pipeline_ids(&state).await;
+    let requested_pipeline_id = query.pipeline_id.as_deref().filter(|pipeline_id| {
+        all_pipeline_ids
+            .iter()
+            .any(|candidate| candidate == *pipeline_id)
+    });
     let health_pipeline_ids = select_dashboard_runtime_pipeline_ids(
-        query.pipeline_id.as_deref(),
+        requested_pipeline_id,
         summary_health,
-        list_dashboard_runtime_pipeline_ids(&state).await,
+        all_pipeline_ids.clone(),
     );
     let (health, metrics) = tokio::join!(
         async {
             if summary_health {
-                build_health_summary_snapshot_for_pipeline_ids(&state, &health_pipeline_ids).await
+                let mut health =
+                    build_health_summary_snapshot_for_pipeline_ids(&state, &health_pipeline_ids)
+                        .await;
+                if let Some(pipeline_id) = requested_pipeline_id {
+                    let focused_health =
+                        build_health_snapshot_for_pipeline_ids(&state, &[pipeline_id.to_string()])
+                            .await;
+                    merge_dashboard_runtime_focus_pipeline(
+                        &mut health,
+                        &focused_health,
+                        pipeline_id,
+                    );
+                }
+                health
             } else {
                 build_health_snapshot_for_pipeline_ids(&state, &health_pipeline_ids).await
             }
@@ -7496,5 +7541,40 @@ mod tests {
         let selected = select_dashboard_runtime_pipeline_ids(None, false, all_pipeline_ids.clone());
 
         assert_eq!(selected, all_pipeline_ids);
+    }
+
+    #[test]
+    fn merge_dashboard_runtime_focus_pipeline_replaces_only_selected_pipeline() {
+        let mut summary = serde_json::json!({
+            "status": "ready",
+            "pipelines": {
+                "pipe-1": {
+                    "input": { "status": "on", "readers": 1 }
+                },
+                "pipe-2": {
+                    "input": { "status": "warning", "readers": 0 }
+                }
+            }
+        });
+        let focused = serde_json::json!({
+            "status": "ready",
+            "pipelines": {
+                "pipe-1": {
+                    "input": { "status": "on", "readers": 2, "probeReady": true },
+                    "outputs": {
+                        "out-1": {
+                            "status": "running",
+                            "rawStatus": "running"
+                        }
+                    }
+                }
+            }
+        });
+
+        merge_dashboard_runtime_focus_pipeline(&mut summary, &focused, "pipe-1");
+
+        assert_eq!(summary["pipelines"]["pipe-1"]["input"]["readers"], 2);
+        assert_eq!(summary["pipelines"]["pipe-1"]["input"]["probeReady"], true);
+        assert_eq!(summary["pipelines"]["pipe-2"]["input"]["status"], "warning");
     }
 }
