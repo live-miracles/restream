@@ -844,7 +844,7 @@ impl GeneralizedSinkMetrics {
                     continue;
                 }
                 if let Some(prev) = last_video_ts {
-                    if pkt.timestamp_ms < prev {
+                    if pkt.timestamp_ms <= prev {
                         return false;
                     }
                 }
@@ -8485,6 +8485,37 @@ async fn verify_mixed_decode_scan(
     }
 
     let started = Instant::now();
+    let (passed, status, matched_pattern, stderr) = ffmpeg_decode_scan(label, url).await?;
+    emit_mixed_result(
+        env,
+        cfg,
+        id,
+        if passed { "pass" } else { "fail" },
+        started.elapsed(),
+        Some(json!({
+            "label": label,
+            "url": url,
+            "status": status,
+            "matchedPattern": matched_pattern,
+            "stderr": stderr.lines().take(20).collect::<Vec<_>>(),
+        })),
+    )?;
+
+    if passed {
+        log_mixed_ok(env, &format!("{label}: decode scan clean"))?;
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: decode scan failed status={status:?} matched={matched_pattern:?}: {}",
+            stderr.lines().take(5).collect::<Vec<_>>().join(" | ")
+        ))
+    }
+}
+
+async fn ffmpeg_decode_scan(
+    label: &str,
+    url: &str,
+) -> Result<(bool, Option<i32>, Option<&'static str>, String), String> {
     let mut command = Command::new("ffmpeg");
     command.args([
         "-nostdin",
@@ -8529,31 +8560,7 @@ async fn verify_mixed_decode_scan(
         .find(|pattern| stderr_lower.contains(**pattern))
         .copied();
     let passed = output.status.success() && matched_pattern.is_none();
-    emit_mixed_result(
-        env,
-        cfg,
-        id,
-        if passed { "pass" } else { "fail" },
-        started.elapsed(),
-        Some(json!({
-            "label": label,
-            "url": url,
-            "status": output.status.code(),
-            "matchedPattern": matched_pattern,
-            "stderr": stderr.lines().take(20).collect::<Vec<_>>(),
-        })),
-    )?;
-
-    if passed {
-        log_mixed_ok(env, &format!("{label}: decode scan clean"))?;
-        Ok(())
-    } else {
-        Err(format!(
-            "{label}: decode scan failed status={:?} matched={matched_pattern:?}: {}",
-            output.status.code(),
-            stderr.lines().take(5).collect::<Vec<_>>().join(" | ")
-        ))
-    }
+    Ok((passed, output.status.code(), matched_pattern, stderr))
 }
 
 async fn stop_mixed_outputs(api: &RampApi, pipeline_id: &str, output_ids: &[String]) {
@@ -8929,7 +8936,7 @@ async fn srt_to_rtmp_atrack_correctness() -> Result<Value, String> {
     let output = api
         .post_json(
             &format!("/api/v1/pipelines/{pipeline_id}/outputs"),
-            json!({"name": "rtmp-atrack-sink", "url": sink_url, "encoding": "source+atrack:0"}),
+            json!({"name": "rtmp-atrack-sink", "url": sink_url, "encoding": "source+atrack:1"}),
         )
         .await?;
     let output_id = output["output"]["id"]
@@ -9008,12 +9015,12 @@ async fn srt_to_rtmp_atrack_correctness() -> Result<Value, String> {
 
     let output_phase = output_status["phase"].as_str().unwrap_or("unknown");
     let output_error = output_status["lastError"].as_str();
-    // This slice is specifically about audio-routing correctness on the
-    // SRT -> RTMP atrack path. Packet-level DTS monotonicity is covered by the
-    // dedicated RTMP/B-frame correctness harness; keep it informational here so
-    // video config packets do not mask the AAC assertions this test owns.
+    // This slice owns the selected-audio RTMP contract, including strict DTS:
+    // FFmpeg treats equal DTS as non-monotonic even when the RTMP sink accepts
+    // the packet sequence.
     let passed = video_count > 0
         && audio_count > 0
+        && dts_ok
         && detected_audio.as_deref() == Some("aac")
         && first_audio_packet_type == Some(0)
         && audio_sequence_headers > 0
@@ -9024,7 +9031,7 @@ async fn srt_to_rtmp_atrack_correctness() -> Result<Value, String> {
 
     let results = json!({
         "passed": passed,
-        "encoding": "source+atrack:0",
+        "encoding": "source+atrack:1",
         "dtsMonotone": dts_ok,
         "videoCount": video_count,
         "audioCount": audio_count,
@@ -10371,7 +10378,7 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
         &pipeline_id,
         "rtmp-source-atrack-b",
         &source_b_url,
-        "source+atrack:0",
+        "source+atrack:1",
     )
     .await?;
     let scaled_id = create_mixed_output(
@@ -10398,7 +10405,7 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
     )
     .await?;
     let source_b_probe = wait_for_probe_shape(
-        "source+atrack:0 B",
+        "source+atrack:1 B",
         &source_b_url,
         None,
         "h264",
@@ -10406,6 +10413,9 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
         Duration::from_secs(45),
     )
     .await?;
+    let source_a_decode = ffmpeg_decode_scan("source+atrack:0 A", &source_a_url).await?;
+    let source_b_decode = ffmpeg_decode_scan("source+atrack:1 B", &source_b_url).await?;
+    let scaled_decode = ffmpeg_decode_scan("1080p+atrack:0", &scaled_url).await?;
     let scaled_probe = wait_for_probe_shape(
         "1080p+atrack:0",
         &scaled_url,
@@ -10432,7 +10442,8 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
         ffmpeg.count <= 3
     };
     let graph_ok = codec_edges == 2 && video_stages == 1 && audio_routes == 2;
-    let passed = graph_ok && external_stage_count_ok;
+    let decode_ok = source_a_decode.0 && source_b_decode.0 && scaled_decode.0;
+    let passed = graph_ok && external_stage_count_ok && decode_ok;
 
     stop_mixed_outputs(&api, &pipeline_id, &output_ids).await;
     stop_child(&mut publisher).await;
@@ -10445,15 +10456,36 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
         "inputAudioTracks": input_audio_tracks,
         "sourceA": {
             "url": source_a_url,
+            "encoding": "source+atrack:0",
             "probe": source_a_probe,
+            "decode": {
+                "passed": source_a_decode.0,
+                "status": source_a_decode.1,
+                "matchedPattern": source_a_decode.2,
+                "stderr": source_a_decode.3.lines().take(20).collect::<Vec<_>>(),
+            },
         },
         "sourceB": {
             "url": source_b_url,
+            "encoding": "source+atrack:1",
             "probe": source_b_probe,
+            "decode": {
+                "passed": source_b_decode.0,
+                "status": source_b_decode.1,
+                "matchedPattern": source_b_decode.2,
+                "stderr": source_b_decode.3.lines().take(20).collect::<Vec<_>>(),
+            },
         },
         "scaled": {
             "url": scaled_url,
+            "encoding": "1080p+atrack:0",
             "probe": scaled_probe,
+            "decode": {
+                "passed": scaled_decode.0,
+                "status": scaled_decode.1,
+                "matchedPattern": scaled_decode.2,
+                "stderr": scaled_decode.3.lines().take(20).collect::<Vec<_>>(),
+            },
         },
         "graph": {
             "codecEdges": codec_edges,
@@ -10465,6 +10497,7 @@ async fn hevc_rtmp_atrack_correctness() -> Result<Value, String> {
         "backend": if internal_backend { "internal" } else { "external" },
         "externalFfmpegPipe1Count": ffmpeg.count,
         "externalStageCountOk": external_stage_count_ok,
+        "decodeOk": decode_ok,
         "artifacts": {
             "restreamLog": restream_log,
             "mediamtxLog": mediamtx_log,
@@ -15268,6 +15301,62 @@ mod tests {
         let fields = parse_log_fields(&log).expect("parsed fields");
         assert_eq!(fields["correlation_id"], "out-0001");
         assert_eq!(fields["phase"], "connect");
+    }
+
+    #[test]
+    fn generalized_sink_rejects_equal_video_dts() {
+        let metrics = GeneralizedSinkMetrics::default();
+        metrics.packets.lock().unwrap().extend([
+            SinkPacket {
+                media_type: "video",
+                timestamp_ms: 10,
+                audio_packet_type: None,
+                audio_has_adts_sync: false,
+                video_is_sequence_header: false,
+            },
+            SinkPacket {
+                media_type: "video",
+                timestamp_ms: 10,
+                audio_packet_type: None,
+                audio_has_adts_sync: false,
+                video_is_sequence_header: false,
+            },
+        ]);
+
+        assert!(
+            !metrics.dts_monotone(),
+            "FFmpeg rejects equal DTS as non-monotonic; harness must too"
+        );
+    }
+
+    #[test]
+    fn generalized_sink_ignores_video_sequence_headers_for_dts() {
+        let metrics = GeneralizedSinkMetrics::default();
+        metrics.packets.lock().unwrap().extend([
+            SinkPacket {
+                media_type: "video",
+                timestamp_ms: 10,
+                audio_packet_type: None,
+                audio_has_adts_sync: false,
+                video_is_sequence_header: false,
+            },
+            SinkPacket {
+                media_type: "video",
+                timestamp_ms: 10,
+                audio_packet_type: None,
+                audio_has_adts_sync: false,
+                video_is_sequence_header: true,
+            },
+            SinkPacket {
+                media_type: "video",
+                timestamp_ms: 11,
+                audio_packet_type: None,
+                audio_has_adts_sync: false,
+                video_is_sequence_header: false,
+            },
+        ]);
+
+        assert!(metrics.dts_monotone());
     }
 
     #[test]
