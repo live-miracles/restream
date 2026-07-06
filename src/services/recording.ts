@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn as nodeSpawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { unlink, mkdir } from 'fs/promises';
 import path from 'path';
@@ -38,17 +38,19 @@ export function createRecordingService({
     mediaDir,
     isInputOn,
     getInputPullProtocol = () => 'rtmp',
+    spawn = nodeSpawn,
 }: {
     db: Db;
     mediaDir: string;
     isInputOn: (pipelineId: string) => boolean;
     getInputPullProtocol?: (pipelineId: string) => PullProtocol;
+    spawn?: typeof nodeSpawn;
 }): RecordingService {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const processes = new Map<string, ChildProcess>();
     const startedAt = new Map<string, number>();
     const filePaths = new Map<string, string>();
-    const stopRequested = new Set<string>();
+    let shuttingDown = false;
 
     function isEnabled(pipelineId: string): boolean {
         return db.getMeta(`recording_enabled:${pipelineId}`) === '1';
@@ -110,11 +112,9 @@ export function createRecordingService({
             processes.delete(pipelineId);
             startedAt.delete(pipelineId);
             filePaths.delete(pipelineId);
-            stopRequested.delete(pipelineId);
         });
 
         child.on('exit', (code, signal) => {
-            const wasStopRequested = stopRequested.delete(pipelineId);
             const duration = Date.now() - (startedAt.get(pipelineId) ?? Date.now());
             const fp = filePaths.get(pipelineId);
             processes.delete(pipelineId);
@@ -128,9 +128,19 @@ export function createRecordingService({
                 log('info', 'Deleted short recording', { pipelineId, filename, duration });
             }
 
-            if (!wasStopRequested && isEnabled(pipelineId) && isInputOn(pipelineId)) {
+            // Restart purely from desired state: recording enabled and input on.
+            // Gating on "was this exit requested" instead loses recordings when the
+            // input recovers while the previous ffmpeg is still shutting down —
+            // onInputRecovered() no-ops (old process still tracked) and the exit
+            // handler then refuses to restart because the stop was requested.
+            if (!shuttingDown && isEnabled(pipelineId) && isInputOn(pipelineId)) {
                 setTimeout(() => {
-                    if (!isActive(pipelineId) && isEnabled(pipelineId) && isInputOn(pipelineId)) {
+                    if (
+                        !shuttingDown &&
+                        !isActive(pipelineId) &&
+                        isEnabled(pipelineId) &&
+                        isInputOn(pipelineId)
+                    ) {
                         startRecording(pipelineId);
                     }
                 }, CRASH_RESTART_DELAY_MS);
@@ -141,7 +151,6 @@ export function createRecordingService({
     function stopRecording(pipelineId: string): void {
         const proc = processes.get(pipelineId);
         if (!proc) return;
-        stopRequested.add(pipelineId);
         gracefullyKillProcess(proc, { logTag: `recording:${pipelineId}` });
     }
 
@@ -166,8 +175,8 @@ export function createRecordingService({
         },
 
         async stopAll(): Promise<void> {
+            shuttingDown = true;
             const promises = [...processes.entries()].map(async ([pipelineId, child]) => {
-                stopRequested.add(pipelineId);
                 return new Promise<void>((resolve) => {
                     if (!isProcessAlive(child)) {
                         return resolve();
