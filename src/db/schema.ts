@@ -1,6 +1,14 @@
 import type Database from 'better-sqlite3';
 
 export function setupDatabaseSchema(db: Database.Database): void {
+    // Every ffmpeg stderr line and lifecycle event is a synchronous INSERT on
+    // the event loop. WAL avoids fsyncing a rollback journal per commit, and
+    // synchronous=NORMAL only fsyncs at WAL checkpoints — a safe trade for
+    // log/telemetry data. busy_timeout covers transient locks from external
+    // readers (e.g. sqlite3 CLI inspection of a live data.db).
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
     db.pragma('foreign_keys = ON');
 
     db.prepare(
