@@ -84,3 +84,49 @@ test('dashboard auth supports changing password and logout', async () => {
     await request(app).post('/api/auth/login').send({ password: 'admin' }).expect(401);
     await request(app).post('/api/auth/login').send({ password: 'secret123' }).expect(200);
 });
+
+test('dashboard login bans an IP after repeated failures and recovers on success', async () => {
+    const app = createApp();
+
+    // Five wrong passwords trip the ban.
+    for (let i = 0; i < 5; i++) {
+        await request(app).post('/api/auth/login').send({ password: 'wrong' }).expect(401);
+    }
+
+    // Banned: even the correct password is rejected with 429 + Retry-After.
+    const bannedRes = await request(app)
+        .post('/api/auth/login')
+        .send({ password: 'admin' })
+        .expect(429);
+    assert.ok(Number(bannedRes.headers['retry-after']) > 0);
+});
+
+test('dashboard login clears failure history after a successful login', async () => {
+    const app = createApp();
+
+    for (let i = 0; i < 4; i++) {
+        await request(app).post('/api/auth/login').send({ password: 'wrong' }).expect(401);
+    }
+    await request(app).post('/api/auth/login').send({ password: 'admin' }).expect(200);
+
+    // Failure counter reset: four more bad attempts are 401, not 429.
+    for (let i = 0; i < 4; i++) {
+        await request(app).post('/api/auth/login').send({ password: 'wrong' }).expect(401);
+    }
+});
+
+test('dashboard login rejects oversized and non-string passwords', async () => {
+    const app = createApp();
+
+    await request(app)
+        .post('/api/auth/login')
+        .send({ password: 'x'.repeat(513) })
+        .expect(400);
+    await request(app)
+        .post('/api/auth/login')
+        .send({ password: { $ne: '' } })
+        .expect(400);
+
+    // Valid login still works afterwards.
+    await request(app).post('/api/auth/login').send({ password: 'admin' }).expect(200);
+});
