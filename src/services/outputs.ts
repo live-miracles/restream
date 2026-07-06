@@ -25,6 +25,7 @@ const SIGKILL_WAIT_TIMEOUT_MS = SIGTERM_ESCALATION_MS + SIGKILL_ESCALATION_MS + 
 export interface OutputLifecycle {
     clearOutputRestartState(pipelineId: string, outputId: string): void;
     getOutputDesiredState(output: { desiredState?: string } | undefined | null): string;
+    hasOutputGivenUp(pipelineId: string, outputId: string): boolean;
     reconcileOutput(
         pipelineId: string,
         outputId: string,
@@ -67,6 +68,7 @@ export function createOutputLifecycleService({
     ffmpegProgressByJobId,
     isInputOn,
     getInputPullProtocol = () => 'rtmp',
+    maxRetries = MAX_RETRIES,
 }: {
     db: Db;
     spawn: typeof nodeSpawn;
@@ -74,11 +76,16 @@ export function createOutputLifecycleService({
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
     isInputOn: (pipelineId: string) => boolean;
     getInputPullProtocol?: (pipelineId: string) => PullProtocol;
+    maxRetries?: number;
 }): OutputLifecycle {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const stopRequestedJobIds = new Set<string>();
     const startLocks = new Set<string>();
     const retryStateByKey = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>();
+    // Outputs whose desired state the system flipped to stopped after
+    // exhausting automatic retries. Runtime-only: surfaced in the health
+    // snapshot so the UI can distinguish "gave up" from an operator stop.
+    const gaveUpOutputKeys = new Set<string>();
 
     function outputKey(pipelineId: string, outputId: string): string {
         return `${pipelineId}:${outputId}`;
@@ -102,12 +109,18 @@ export function createOutputLifecycleService({
         const state = retryStateByKey.get(key);
         if (state) clearRetryTimer(state);
         retryStateByKey.delete(key);
+        gaveUpOutputKeys.delete(key);
     }
 
     function resetOutputFailureCount(pipelineId: string, outputId: string) {
         const state = getRetryState(pipelineId, outputId);
         clearRetryTimer(state);
         state.failures = 0;
+        gaveUpOutputKeys.delete(outputKey(pipelineId, outputId));
+    }
+
+    function hasOutputGivenUp(pipelineId: string, outputId: string): boolean {
+        return gaveUpOutputKeys.has(outputKey(pipelineId, outputId));
     }
 
     function getOutputDesiredState(output: { desiredState?: string } | undefined | null): string {
@@ -160,6 +173,8 @@ export function createOutputLifecycleService({
         log('warn', 'Output giving up', { pipelineId, outputId, reason });
         setOutputDesiredState(pipelineId, outputId, 'stopped', { source: 'system', reason });
         clearOutputRestartState(pipelineId, outputId);
+        // Mark last: the calls above clear the flag as part of their state reset.
+        gaveUpOutputKeys.add(outputKey(pipelineId, outputId));
         const latestJob = db.listJobsForOutput(pipelineId, outputId)[0] || null;
         db.appendJobLog(
             latestJob?.id || null,
@@ -173,7 +188,7 @@ export function createOutputLifecycleService({
 
     function scheduleRetry(pipelineId: string, outputId: string) {
         const state = getRetryState(pipelineId, outputId);
-        if (state.failures >= MAX_RETRIES) {
+        if (state.failures >= maxRetries) {
             giveUpOutput(pipelineId, outputId, 'retry_limit_exhausted');
             return;
         }
@@ -403,6 +418,7 @@ export function createOutputLifecycleService({
             status: 'running',
             startedAt: new Date().toISOString(),
         });
+        gaveUpOutputKeys.delete(outputKey(pipelineId, outputId));
         processes.set(job.id, child);
         ffmpegProgressByJobId.set(job.id, {});
 
@@ -530,7 +546,7 @@ export function createOutputLifecycleService({
                     state.failures++;
                     if (isInputOn(pipelineId)) {
                         scheduleRetry(pipelineId, outputId);
-                    } else if (state.failures >= MAX_RETRIES) {
+                    } else if (state.failures >= maxRetries) {
                         giveUpOutput(pipelineId, outputId, 'retry_limit_exhausted');
                     } else {
                         pushLog(
@@ -616,6 +632,7 @@ export function createOutputLifecycleService({
     return {
         clearOutputRestartState,
         getOutputDesiredState,
+        hasOutputGivenUp,
         reconcileOutput,
         resetOutputFailureCount,
         restartPipelineOutputsOnInputRecovery,

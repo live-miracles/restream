@@ -196,7 +196,9 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
 
     const deletePipeBtn = document.getElementById('delete-pipe-btn');
     if (deletePipeBtn) {
-        if (pipe.outs.find((o) => o.status !== 'off')) {
+        // Gave-up outputs report status 'error' but nothing is running and the
+        // desired state is stopped, so they must not block pipeline deletion.
+        if (pipe.outs.find((o) => o.status !== 'off' && !o.gaveUp)) {
             deletePipeBtn.classList.add('btn-disabled');
             deletePipeBtn.title = 'Stop all outputs before deleting the pipeline';
         } else {
@@ -444,6 +446,12 @@ export function renderOutsColumn(selectedPipe: string | null): void {
             }
 
             badges.push(metricBadge(o.encoding, 'Selected encoding'));
+
+            if (o.gaveUp) {
+                badges.push(
+                    `<span class="badge badge-sm badge-error whitespace-nowrap" title="Automatic restarts exhausted the retry limit; the system stopped this output. Press Start to try again.">Gave up</span>`,
+                );
+            }
 
             if (isActive) {
                 const outputTotalSizeBytes = Number(o.totalSize);

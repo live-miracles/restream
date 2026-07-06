@@ -187,6 +187,9 @@ healthMonitor.registerInputRecoveryHandler((pipelineId) => {
 healthMonitor.registerInputLostHandler((pipelineId) => {
     recordingService.onInputLost(pipelineId);
 });
+healthMonitor.registerOutputGaveUpProvider((pipelineId, outputId) =>
+    outputLifecycle.hasOutputGivenUp(pipelineId, outputId),
+);
 healthMonitor.registerRecordingStateProvider((pipelineId) => recordingService.getState(pipelineId));
 
 const {

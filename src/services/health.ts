@@ -92,6 +92,7 @@ interface OutputHealth {
     jobId: string | null;
     totalSize: number | null;
     bitrateKbps: number | null;
+    gaveUp: boolean;
 }
 
 interface InputHealth {
@@ -130,6 +131,7 @@ export interface HealthMonitor {
     isInputOn(pipelineId: string): boolean;
     registerInputRecoveryHandler(fn: (pipelineId: string) => void): void;
     registerInputLostHandler(fn: (pipelineId: string) => void): void;
+    registerOutputGaveUpProvider(fn: (pipelineId: string, outputId: string) => boolean): void;
     registerRecordingStateProvider(
         fn: (pipelineId: string) => { enabled: boolean; active: boolean },
     ): void;
@@ -408,6 +410,7 @@ export function createHealthMonitorService({
 }): HealthMonitor {
     let inputRecoveryHandler: ((pipelineId: string) => void) | null = null;
     let inputLostHandler: ((pipelineId: string) => void) | null = null;
+    let outputGaveUpProvider: ((pipelineId: string, outputId: string) => boolean) | null = null;
     let recordingStateProvider:
         | ((pipelineId: string) => { enabled: boolean; active: boolean })
         | null = null;
@@ -795,7 +798,11 @@ export function createHealthMonitorService({
         };
     }
 
-    function buildOutputHealthSnapshot(latestJob: Job | null, desiredState: string): OutputHealth {
+    function buildOutputHealthSnapshot(
+        latestJob: Job | null,
+        desiredState: string,
+        gaveUp = false,
+    ): OutputHealth {
         let status = 'off';
         const ffmpegProgress = latestJob?.id
             ? ffmpegProgressByJobId.get(latestJob.id) || null
@@ -805,12 +812,15 @@ export function createHealthMonitorService({
         const bitrateKbps = parseFfmpegBitrateKbps(ffmpegProgress?.bitrate);
 
         if (latestJob?.status === 'failed' && desiredState === 'running') status = 'error';
+        // The system stopped this output after exhausting retries; without this
+        // it would render as an intentional operator stop.
+        if (gaveUp) status = 'error';
         if (latestJob?.status === 'running') {
             const hasData = (totalSize !== null && totalSize > 0) || bitrateKbps !== null;
             status = hasData ? 'on' : 'warning';
         }
 
-        return { status, jobId: latestJob?.id || null, totalSize, bitrateKbps };
+        return { status, jobId: latestJob?.id || null, totalSize, bitrateKbps, gaveUp };
     }
 
     function buildPipelineHealthSnapshot(
@@ -875,6 +885,7 @@ export function createHealthMonitorService({
             outputsHealth[output.id] = buildOutputHealthSnapshot(
                 jobByOutputId.get(output.id) || null,
                 output.desiredState,
+                outputGaveUpProvider?.(pipeline.id, output.id) ?? false,
             );
         }
 
@@ -1043,6 +1054,9 @@ export function createHealthMonitorService({
         },
         registerInputLostHandler(fn: (pipelineId: string) => void) {
             inputLostHandler = fn;
+        },
+        registerOutputGaveUpProvider(fn: (pipelineId: string, outputId: string) => boolean) {
+            outputGaveUpProvider = fn;
         },
         registerRecordingStateProvider(
             fn: (pipelineId: string) => { enabled: boolean; active: boolean },

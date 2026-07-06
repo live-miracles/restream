@@ -138,6 +138,7 @@ export interface OutputHealth {
     status?: string;
     totalSize?: number | null;
     bitrateKbps?: number | null;
+    gaveUp?: boolean;
 }
 
 export interface PipelineHealth {
@@ -184,6 +185,7 @@ export interface OutputView {
     job: Job | null;
     totalSize: number | null;
     bitrateKbps: number | null;
+    gaveUp: boolean;
 }
 
 export interface PipelineStats {

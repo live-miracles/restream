@@ -15,7 +15,9 @@ import { state } from '../core/state.js';
 import type { AudioTrack, OutputView, PipelineView } from '../types.js';
 
 function isOutputIntentStopped(output: OutputView | null | undefined): boolean {
-    return output?.desiredState === 'stopped';
+    // A gave-up output is desired-stopped in the DB, but the system flipped it
+    // after exhausting retries — treat it as down, not as an operator stop.
+    return output?.desiredState === 'stopped' && !output?.gaveUp;
 }
 
 function isOutputRunning(output: OutputView | null | undefined): boolean {

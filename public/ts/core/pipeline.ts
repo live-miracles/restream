@@ -220,6 +220,7 @@ function parsePipelinesInfo(
             job: latestJob || null,
             totalSize: outputTotalSize,
             bitrateKbps: outBitrateKbps,
+            gaveUp: outHealth?.gaveUp ?? false,
         });
     });
 
