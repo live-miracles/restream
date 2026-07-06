@@ -893,11 +893,6 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         (document.getElementById('out-mode-input') as HTMLInputElement | null)?.value || 'edit';
     const pipeId =
         (document.getElementById('out-pipe-id-input') as HTMLInputElement | null)?.value || '';
-    const serverUrl =
-        (document.getElementById('out-server-url-input') as HTMLSelectElement | null)?.value || '';
-    const rawInputValue =
-        (document.getElementById('out-rtmp-key-input') as HTMLInputElement | null)?.value.trim() ||
-        '';
     const outId = (document.getElementById('out-id-input') as HTMLInputElement | null)?.value || '';
     const selectedEncoding =
         (document.getElementById('out-encoding-input') as HTMLSelectElement | null)?.value ||
@@ -944,11 +939,6 @@ export async function editOutFormBtn(event: Event): Promise<void> {
         encoding: resolvedEncoding,
         url: getEffectiveOutputUrlFromModal(),
     };
-
-    if (serverUrl.includes('${s_prp}')) {
-        const params = new URLSearchParams(rawInputValue.split('?')[1]);
-        data.url = data.url.replaceAll('${s_prp}', params.get('s_prp') || '');
-    }
 
     const isOutputUrlValid = isValidOutput(data.url);
     const outputErrorField =

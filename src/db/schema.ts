@@ -9,8 +9,7 @@ export function setupDatabaseSchema(db: Database.Database): void {
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     stream_key TEXT NOT NULL,
-    encoding TEXT,
-    input_ever_seen_live INTEGER NOT NULL DEFAULT 0
+    encoding TEXT
   )
 `,
     ).run();

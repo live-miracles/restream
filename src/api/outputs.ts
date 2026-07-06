@@ -374,14 +374,6 @@ export function registerOutputApi({
                 });
             }
 
-            if (reconciliation.action === 'waiting_for_input') {
-                return res.status(409).json({
-                    error: 'Pipeline input is not available yet',
-                    message: 'Output desired state set to running; waiting for input',
-                    desiredState: 'running',
-                });
-            }
-
             if (reconciliation.action === 'start_in_progress') {
                 return res.status(409).json({ error: 'Start already in progress for this output' });
             }
