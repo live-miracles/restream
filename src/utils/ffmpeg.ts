@@ -243,6 +243,12 @@ export function buildFfmpegOutputArgs({
         outputProtocol = '';
     }
     const isHlsOutput = isHlsOutputUrl(parsedOutputUrl);
+    // FLV (RTMP/RTMPS) cannot carry a bit-exact copy of AAC selected from a
+    // multi-track ingest without audible crackling on platform ingest servers,
+    // so atrack re-encodes the selected track(s) for FLV outputs only. Source
+    // sample rate and channel layout are preserved; SRT/HLS keep '-c:a copy'.
+    const isFlvOutput = outputProtocol !== 'srt:' && !isHlsOutput;
+    const atrackAudioCodecArgs = isFlvOutput ? ['-c:a', 'aac', '-b:a', '128k'] : ['-c:a', 'copy'];
     const args = [
         '-hide_banner',
         '-loglevel',
@@ -312,7 +318,7 @@ export function buildFfmpegOutputArgs({
         if (remap) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         } else if (atracks) {
-            args.push('-c:a', 'copy');
+            args.push(...atrackAudioCodecArgs);
         } else if (downmixTrack !== null) {
             args.push('-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2');
         }
@@ -347,7 +353,7 @@ export function buildFfmpegOutputArgs({
             for (const track of tracks) {
                 args.push('-map', `0:a:${track}`);
             }
-            args.push('-c:v', 'copy', '-c:a', 'copy');
+            args.push('-c:v', 'copy', ...atrackAudioCodecArgs);
         } else if (parseDownmixEncoding(normalizedEncoding) !== null) {
             const track = parseDownmixEncoding(normalizedEncoding)!;
             args.push(
