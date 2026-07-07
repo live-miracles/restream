@@ -83,6 +83,7 @@ npm run test:integration # 2x3 end-to-end test (requires running app + MediaMTX)
 | Path | Description |
 |---|---|
 | `data.db` | SQLite database — symlink to `/var/lib/restream/data.db` on VM deployments |
+| `data.db-wal`, `data.db-shm` | SQLite WAL sidecar files created next to `data.db` while the app is running |
 | `media/` | Recordings and video ingest sources — symlink to `/var/lib/restream/media/` on VM deployments |
 | `public/output.css` | Generated CSS — do not edit |
 | `public/js/` | Compiled frontend JS — do not edit |
@@ -230,9 +231,14 @@ curl -fsS http://127.0.0.1:9090/-/ready
 Backup data:
 
 ```sh
-cp /var/lib/restream/data.db /var/lib/restream/data.db.bak-$(date +%F-%H%M%S)
+cd /opt/restream
+sudo -u restream node -e "const Database=require('better-sqlite3'); const src='/var/lib/restream/data.db'; const dst='/var/lib/restream/data.db.bak-' + new Date().toISOString().replace(/[:.]/g,'-'); const db=new Database(src,{readonly:true,fileMustExist:true}); db.backup(dst).finally(()=>db.close())"
 # media files live in /var/lib/restream/media/
 ```
+
+Restream uses SQLite WAL mode, so a live database may also have `data.db-wal` and `data.db-shm`
+next to `data.db`. Do not back up a running service by copying only `data.db`; use the online
+backup command above, or stop `restream.service` first and then copy the database files.
 
 ### Reverse Proxy and TLS
 
