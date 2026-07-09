@@ -32,6 +32,11 @@ GRAFANA_DASHBOARD_DIR=/var/lib/grafana/dashboards
 MEDIAMTX_VERSION=1.17.1
 FFMPEG_VERSION=7.1
 
+SRT_RELAY_RELEASE_TAG="${SRT_RELAY_RELEASE_TAG:-v2.0.0}"
+SRT_RELAY_FILENAME="srt-bonding-relay-linux-x86_64.tar.gz"
+SRT_RELAY_URL="${SRT_RELAY_URL:-https://github.com/live-miracles/srt-bonding-relay/releases/download/${SRT_RELAY_RELEASE_TAG}/${SRT_RELAY_FILENAME}}"
+SRT_RELAY_SHA256="${SRT_RELAY_SHA256:-927b3881712b8de568b016d0706592395e5edc011f5344b1d84cfece5de861cc}"
+
 WORK="$(mktemp -d)"
 trap "rm -rf $WORK" EXIT
 
@@ -98,9 +103,41 @@ else
     echo "Installed: $(/usr/local/bin/mediamtx --version 2>&1 | head -1)"
 fi
 
-# ── 5. Prometheus and Grafana packages ──────────────────────────────────────
+# ── 5. srt-bonding-relay ────────────────────────────────────────────────────
 
-step "5/10 Prometheus and Grafana"
+step "5/11 srt-bonding-relay $SRT_RELAY_RELEASE_TAG"
+SRT_VERSION_MARKER=/usr/local/bin/.srt-bonding-relay-version
+if [[ -x /usr/local/bin/srt-bonding-relay && -f "$SRT_VERSION_MARKER" && "$(cat "$SRT_VERSION_MARKER")" == "$SRT_RELAY_RELEASE_TAG" ]]; then
+    echo "srt-bonding-relay $SRT_RELAY_RELEASE_TAG already installed."
+else
+    echo "Downloading $SRT_RELAY_FILENAME ($SRT_RELAY_RELEASE_TAG)..."
+    curl -fsSL "$SRT_RELAY_URL" -o "$WORK/$SRT_RELAY_FILENAME"
+    if [[ -n "$SRT_RELAY_SHA256" ]]; then
+        actual="$(sha256sum "$WORK/$SRT_RELAY_FILENAME" | awk '{print $1}')"
+        if [[ "$SRT_RELAY_SHA256" != "$actual" ]]; then
+            echo "ERROR: srt-bonding-relay checksum mismatch" >&2; exit 1
+        fi
+    fi
+    tar -xzf "$WORK/$SRT_RELAY_FILENAME" -C "$WORK"
+    SRT_BIN="$(find "$WORK" -type f -name srt-bonding-relay -perm -111 | head -1)"
+    if [[ -z "$SRT_BIN" ]]; then
+        echo "ERROR: could not find srt-bonding-relay binary in $SRT_RELAY_FILENAME" >&2
+        exit 1
+    fi
+    if [[ -d "$WORK/lib" ]]; then
+        install -d -m 755 /usr/local/lib/restream-srt
+        install -m 755 "$WORK"/lib/* /usr/local/lib/restream-srt/
+        echo /usr/local/lib/restream-srt > /etc/ld.so.conf.d/restream-srt.conf
+        ldconfig
+    fi
+    install -m 755 "$SRT_BIN" /usr/local/bin/srt-bonding-relay
+    echo "$SRT_RELAY_RELEASE_TAG" > "$SRT_VERSION_MARKER"
+    echo "Installed: /usr/local/bin/srt-bonding-relay"
+fi
+
+# ── 6. Prometheus and Grafana packages ──────────────────────────────────────
+
+step "6/11 Prometheus and Grafana"
 apt-get install -y -q prometheus
 
 if dpkg -s grafana >/dev/null 2>&1; then
@@ -118,9 +155,9 @@ EOF
     apt-get install -y -q grafana
 fi
 
-# ── 6. Service user and directories ─────────────────────────────────────────
+# ── 7. Service user and directories ─────────────────────────────────────────
 
-step "6/10 Service user and directories"
+step "7/11 Service user and directories"
 # restream is a no-login system user; the app and both services run as this
 # user so that neither has root privileges at runtime.
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -132,9 +169,9 @@ fi
 mkdir -p "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 
-# ── 7. Clone and build ───────────────────────────────────────────────────────
+# ── 8. Clone and build ───────────────────────────────────────────────────────
 
-step "7/10 Application"
+step "8/11 Application"
 if [[ ! -d "$APP_DIR/.git" ]]; then
     git clone "$REPO_URL" "$APP_DIR"
 else
@@ -146,11 +183,12 @@ npm run build
 npm prune --omit=dev
 echo "Build complete."
 
-# ── 8. Config and data ───────────────────────────────────────────────────────
+# ── 9. Config and data ───────────────────────────────────────────────────────
 
-step "8/10 Config and data"
+step "9/11 Config and data"
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
-chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml"
+cp "$APP_DIR/srt-bonding-relay.json" "$CONF_DIR/srt-bonding-relay.json"
+chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml" "$CONF_DIR/srt-bonding-relay.json"
 echo "Config written to $CONF_DIR/"
 
 # data.db and media/ live in DATA_DIR so they survive a full re-clone of the app.
@@ -167,9 +205,9 @@ if [[ ! -L "$APP_DIR/media" ]]; then
     ln -sfn "$DATA_DIR/media" "$APP_DIR/media"
 fi
 
-# ── 9. Monitoring manifests ──────────────────────────────────────────────────
+# ── 10. Monitoring manifests ─────────────────────────────────────────────────
 
-step "9/10 Monitoring manifests"
+step "10/11 Monitoring manifests"
 install -d -m 0755 "$PROMETHEUS_CONFIG_DIR" \
     "$GRAFANA_PROVISIONING_DIR/datasources" \
     "$GRAFANA_PROVISIONING_DIR/dashboards" \
@@ -200,9 +238,9 @@ EOF
 chown prometheus:prometheus "$PROMETHEUS_CONFIG_DIR/prometheus.yml" || true
 chown -R grafana:grafana "$GRAFANA_PROVISIONING_DIR" "$GRAFANA_DASHBOARD_DIR" || true
 
-# ── 10. Systemd units ────────────────────────────────────────────────────────
+# ── 11. Systemd units ────────────────────────────────────────────────────────
 
-step "10/10 Systemd"
+step "11/11 Systemd"
 # mediamtx.yml keeps apiAddress and hlsAddress bound to 127.0.0.1 so the
 # MediaMTX control API and HLS preview are never exposed directly to the network.
 # hlsAlwaysRemux is off: HLS muxers spin up on first viewer request, which
@@ -228,10 +266,35 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/srt-bonding-relay.service <<EOF
+[Unit]
+Description=SRT Bonding Relay
+After=network-online.target mediamtx.service
+Wants=network-online.target
+Requires=mediamtx.service
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+Group=$SERVICE_USER
+WorkingDirectory=$DATA_DIR
+ExecStart=/usr/local/bin/srt-bonding-relay $CONF_DIR/srt-bonding-relay.json
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=$DATA_DIR $LOG_DIR $CONF_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat > /etc/systemd/system/restream.service <<EOF
 [Unit]
 Description=Restream Control Plane
-After=network-online.target mediamtx.service
+After=network-online.target mediamtx.service srt-bonding-relay.service
 Wants=network-online.target
 Requires=mediamtx.service
 
@@ -272,6 +335,7 @@ systemctl daemon-reload
 systemctl enable --now prometheus.service
 systemctl enable --now grafana-server.service
 systemctl enable --now mediamtx.service
+systemctl enable --now srt-bonding-relay.service
 systemctl enable --now restream.service
 
 echo
@@ -287,12 +351,14 @@ echo "Check status:"
 echo "  systemctl status prometheus.service"
 echo "  systemctl status grafana-server.service"
 echo "  systemctl status mediamtx.service"
+echo "  systemctl status srt-bonding-relay.service"
 echo "  systemctl status restream.service"
 echo "  curl -fsS http://127.0.0.1:3030/healthz"
 echo "  curl -fsS http://127.0.0.1:9090/-/ready"
 echo ""
 echo "Follow logs:"
 echo "  journalctl -u restream.service -f"
+echo "  journalctl -u srt-bonding-relay.service -f"
 echo "  journalctl -u grafana-server.service -f"
 echo ""
 echo "Update later:"

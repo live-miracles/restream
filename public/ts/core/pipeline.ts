@@ -5,8 +5,35 @@ import type {
     IngestUrls,
     Job,
     PipelineView,
+    SrtBondingStatus,
     VideoTrack,
 } from '../types.js';
+
+const EMPTY_BONDING: SrtBondingStatus = {
+    inputActive: false,
+    outputConnected: false,
+    retryFailures: 0,
+    forwardedPackets: 0,
+    forwardedBytes: 0,
+    lastPacketAt: null,
+    lastInputPacketAt: null,
+    recvPacketsTotal: 0,
+    recvUniquePacketsTotal: 0,
+    recvLossTotal: 0,
+    recvDropTotal: 0,
+    retransTotal: 0,
+    inputRttMs: null,
+    outputRttMs: null,
+    outputSentPacketsTotal: 0,
+    outputSendLossTotal: 0,
+    outputSendDropTotal: 0,
+    outputRetransTotal: 0,
+    legs: [],
+    lastErrorAt: null,
+    lastError: null,
+    acceptedByMediamtx: false,
+    publishConflict: false,
+};
 
 const throughputState = {
     inputBytes: new Map<string, { ts: number; bytes: number }>(),
@@ -147,6 +174,7 @@ function parsePipelinesInfo(
                 unexpectedReadersCount,
             },
             recording: healthByPipeline[p.id]?.recording ?? { enabled: false, active: false },
+            srtBonding: healthByPipeline[p.id]?.srtBonding ?? EMPTY_BONDING,
         });
     });
 
@@ -187,6 +215,7 @@ function parsePipelinesInfo(
                     unexpectedReadersCount: 0,
                 },
                 recording: { enabled: false, active: false },
+                srtBonding: EMPTY_BONDING,
             };
             newPipelines.push(pipe);
         }

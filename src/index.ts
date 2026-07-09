@@ -23,6 +23,7 @@ import { createHealthMonitorService } from './services/health';
 import { createOutputLifecycleService } from './services/outputs';
 import { createRecordingService } from './services/recording';
 import { createIngestSecurityService } from './services/security';
+import { createSrtRelayService } from './services/srt-relay';
 import { startServer } from './services/bootstrap';
 import { registerSystemMetricsApi } from './api/metrics';
 import { errMsg, log } from './utils/app';
@@ -151,11 +152,15 @@ const processes = new Map<string, ChildProcess>();
 // ── Config API ────────────────────────────────────────
 registerConfigApi({ app, db });
 
+// ── SRT bonding relay ────────────────────────────────
+const srtRelayService = createSrtRelayService();
+
 // ── Health monitor ────────────────────────────────────
 const healthMonitor = createHealthMonitorService({
     db,
     fetch,
     ffmpegProgressByJobId,
+    srtRelayService,
 });
 
 // ── Output lifecycle (FFmpeg process management) ──────
@@ -307,6 +312,8 @@ async function main(): Promise<void> {
         log('error', 'ingest_security_stream_key_prewarm_failed', { error: errMsg(err) });
     }
 
+    srtRelayService.start();
+
     await startServer({
         app,
         healthMonitor,
@@ -344,6 +351,8 @@ async function gracefulShutdown(signal: string) {
     } catch (err) {
         log('error', 'Error stopping output processes during shutdown', { error: errMsg(err) });
     }
+
+    srtRelayService.shutdown();
 
     log('info', 'Graceful shutdown complete. Exiting.');
     process.exit(signal === 'SIGINT' ? 130 : 143);

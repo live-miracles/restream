@@ -15,7 +15,7 @@ import { parseProtocolAwareIngestUrl, renderProtocolDetails } from './ingest-url
 import { clearInputPreview, renderInputPreview } from './input-preview.js';
 import { openGrafanaDashboard } from './grafana.js';
 import { startRecording, stopRecording } from '../core/api.js';
-import type { AudioTrack, PipelineView, OutputView } from '../types.js';
+import type { AudioTrack, PipelineView, OutputView, SrtBondingLeg } from '../types.js';
 
 interface PipelineViewDependencies {
     openPipelineHistoryModal: ((pipeId: string, pipeName: string) => void) | null;
@@ -399,6 +399,108 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     publisherMeta.querySelector('.js-quality-btn')?.addEventListener('click', () => {
         pipelineViewDependencies.openPublisherHealthModal?.(pipe.id);
     });
+
+    renderSrtBondingCard(pipe);
+}
+
+function formatLegState(state: string): string {
+    const labels: Record<string, string> = {
+        running: 'Running',
+        pending: 'Pending',
+        idle: 'Idle',
+        broken: 'Broken',
+        unknown: 'Unknown',
+    };
+    return labels[state] || state;
+}
+
+function legStateBadgeClass(state: string): string {
+    if (state === 'running') return 'badge-success';
+    if (state === 'broken') return 'badge-error';
+    if (state === 'pending' || state === 'idle') return 'badge-warning';
+    return 'badge-ghost';
+}
+
+function renderLegRow(leg: SrtBondingLeg): string {
+    const rtt = leg.rttMs !== null ? `${leg.rttMs.toFixed(1)} ms` : '--';
+    const loss = leg.recvLossTotal ?? 0;
+    const drop = leg.recvDropTotal ?? 0;
+    return `<div class="grid grid-cols-[1fr_auto] gap-x-3 rounded-lg bg-base-100/60 px-3 py-1.5">
+        <div class="flex items-center gap-2 min-w-0">
+            <span class="badge badge-xs ${legStateBadgeClass(leg.state)}">${formatLegState(leg.state)}</span>
+            <code class="font-mono text-xs opacity-80 truncate">${escapeHtml(leg.ip)}:${leg.port}</code>
+        </div>
+        <div class="flex items-center gap-3 text-xs opacity-70 shrink-0">
+            <span title="Round-trip time">RTT ${rtt}</span>
+            <span title="Packets lost" class="${loss > 0 ? 'text-warning' : ''}">Loss ${loss}</span>
+            <span title="Packets dropped" class="${drop > 0 ? 'text-error' : ''}">Drop ${drop}</span>
+        </div>
+    </div>`;
+}
+
+function renderSrtBondingCard(pipe: PipelineView): void {
+    const card = document.getElementById('srt-bonding-card');
+    if (!card) return;
+
+    const bonding = pipe.srtBonding;
+    const hasActivity = bonding.inputActive || bonding.forwardedPackets > 0;
+
+    card.classList.toggle('hidden', !hasActivity);
+    if (!hasActivity) return;
+
+    const dot = document.getElementById('srt-bonding-status-fill');
+    if (dot) {
+        const isHealthy = bonding.inputActive && bonding.outputConnected;
+        const isBroken = bonding.legs.some((l) => l.state === 'broken');
+        dot.className = `h-full w-full rounded-full ${isHealthy && !isBroken ? 'bg-success' : isBroken ? 'bg-warning' : 'bg-error'}`;
+    }
+
+    const badges = document.getElementById('srt-bonding-badges');
+    if (badges) {
+        const parts: string[] = [];
+        if (bonding.legs.length > 0) {
+            const running = bonding.legs.filter((l) => l.state === 'running').length;
+            parts.push(
+                `<span class="badge badge-xs badge-info">${running}/${bonding.legs.length} legs</span>`,
+            );
+        }
+        if (bonding.publishConflict) {
+            parts.push(
+                `<span class="badge badge-xs badge-error" title="Another SRT publisher is connected directly, bypassing bonding">Conflict</span>`,
+            );
+        }
+        badges.innerHTML = parts.join('');
+    }
+
+    const statsEl = document.getElementById('srt-bonding-stats');
+    if (statsEl) {
+        const rtt = bonding.inputRttMs !== null ? `${bonding.inputRttMs.toFixed(1)} ms` : '--';
+        const fwdKb =
+            bonding.forwardedBytes > 0 ? `${(bonding.forwardedBytes / 1024).toFixed(0)} KB` : '0';
+        statsEl.innerHTML = `<div class="flex flex-wrap gap-3 text-xs opacity-70">
+            <span>RTT ${rtt}</span>
+            <span>Fwd ${fwdKb}</span>
+            <span>Loss ${bonding.recvLossTotal}</span>
+            <span>Drop ${bonding.recvDropTotal}</span>
+            <span>Retrans ${bonding.retransTotal}</span>
+        </div>`;
+    }
+
+    const legsEl = document.getElementById('srt-bonding-legs');
+    if (legsEl) {
+        if (bonding.legs.length > 0) {
+            legsEl.innerHTML = `<div class="space-y-1">${bonding.legs.map(renderLegRow).join('')}</div>`;
+        } else {
+            legsEl.innerHTML = '';
+        }
+    }
+
+    const errorWrap = document.getElementById('srt-bonding-last-error-wrap');
+    const errorEl = document.getElementById('srt-bonding-last-error');
+    if (errorWrap && errorEl) {
+        errorWrap.classList.toggle('hidden', !bonding.lastError);
+        errorEl.textContent = bonding.lastError || '';
+    }
 }
 
 export function renderOutsColumn(selectedPipe: string | null): void {

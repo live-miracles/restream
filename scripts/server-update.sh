@@ -35,8 +35,9 @@ npm prune --omit=dev
 echo
 echo "=== Deploy configs ==="
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
-chown restream:restream "$CONF_DIR/mediamtx.yml"
-echo "Copied mediamtx.yml to $CONF_DIR/"
+cp "$APP_DIR/srt-bonding-relay.json" "$CONF_DIR/srt-bonding-relay.json"
+chown restream:restream "$CONF_DIR/mediamtx.yml" "$CONF_DIR/srt-bonding-relay.json"
+echo "Copied mediamtx.yml and srt-bonding-relay.json to $CONF_DIR/"
 
 echo
 echo "=== Refresh Prometheus and Grafana manifests ==="
@@ -93,6 +94,7 @@ echo "=== Restart services ==="
 systemctl restart prometheus.service
 systemctl restart grafana-server.service
 systemctl restart mediamtx.service
+systemctl restart srt-bonding-relay.service
 systemctl restart restream.service
 
 echo
@@ -100,6 +102,7 @@ echo "=== Status ==="
 systemctl status prometheus.service --no-pager -l || true
 systemctl status grafana-server.service --no-pager -l || true
 systemctl status mediamtx.service --no-pager -l || true
+systemctl status srt-bonding-relay.service --no-pager -l || true
 systemctl status restream.service --no-pager -l || true
 echo
 echo "Logs: journalctl -u restream.service -n 50 --no-pager"
