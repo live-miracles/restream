@@ -110,8 +110,8 @@ async function fetchAndRerender(): Promise<void> {
     srtRelayBanner?.classList.toggle('flex', showSrtRelayBanner);
     if (srtRelayBannerText) {
         srtRelayBannerText.textContent =
-            state.health.srtRelay?.lastError && state.health.srtRelay.status !== 'running'
-                ? `SRT bonding relay is not responding: ${state.health.srtRelay.lastError}`
+            state.health.srtRelay?.status === 'failed' && state.health.srtRelay.lastError
+                ? `SRT bonding relay stopped responding: ${state.health.srtRelay.lastError}`
                 : 'SRT bonding relay is not running — bonded SRT input unavailable';
     }
 

@@ -403,6 +403,13 @@ export function renderPipelineInfoColumn(selectedPipe: string | null): void {
     renderSrtBondingCard(pipe);
 }
 
+function formatBondingBytes(bytes: number): string {
+    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+    if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+    return `${bytes} B`;
+}
+
 function formatLegState(state: string): string {
     const labels: Record<string, string> = {
         running: 'Running',
@@ -475,11 +482,9 @@ function renderSrtBondingCard(pipe: PipelineView): void {
     const statsEl = document.getElementById('srt-bonding-stats');
     if (statsEl) {
         const rtt = bonding.inputRttMs !== null ? `${bonding.inputRttMs.toFixed(1)} ms` : '--';
-        const fwdKb =
-            bonding.forwardedBytes > 0 ? `${(bonding.forwardedBytes / 1024).toFixed(0)} KB` : '0';
         statsEl.innerHTML = `<div class="flex flex-wrap gap-3 text-xs opacity-70">
             <span>RTT ${rtt}</span>
-            <span>Fwd ${fwdKb}</span>
+            <span>Fwd ${formatBondingBytes(bonding.forwardedBytes)}</span>
             <span>Loss ${bonding.recvLossTotal}</span>
             <span>Drop ${bonding.recvDropTotal}</span>
             <span>Retrans ${bonding.retransTotal}</span>
