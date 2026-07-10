@@ -1,0 +1,7 @@
+FROM ubuntu:24.04
+RUN apt-get update -q \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+        ffmpeg \
+        curl \
+        procps \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,8 @@
+{
+    "input_host": "0.0.0.0",
+    "input_port": 10081,
+    "output_host": "172.30.0.10",
+    "output_port": 10080,
+    "status_port": 8081,
+    "passphrase": ""
+}

@@ -1,0 +1,52 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.17.1
+    ports:
+      - "3031:3030"
+    volumes:
+      - ./mediamtx-docker.yml:/mediamtx.yml:ro
+    networks:
+      bonding:
+        ipv4_address: 172.30.0.10
+
+  relay:
+    build:
+      context: /tmp/srt-bonding-relay-src
+      dockerfile: scripts/srt-bonding-relay.Dockerfile
+    entrypoint:
+      - /src/app/srt-bonding-relay
+      - /config/srt-bonding-relay.json
+    volumes:
+      - ./relay-config.json:/config/srt-bonding-relay.json:ro
+    depends_on:
+      - mediamtx
+    network_mode: "service:mediamtx"
+
+  app:
+    build:
+      context: ../..
+      dockerfile: test/docker-e2e/Dockerfile.app
+    depends_on:
+      - mediamtx
+      - relay
+    volumes:
+      - ./relay-config-app.json:/app/srt-bonding-relay.json:ro
+    network_mode: "service:mediamtx"
+
+  sender:
+    build:
+      context: .
+      dockerfile: Dockerfile.sender
+    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      - relay
+    networks:
+      bonding:
+        ipv4_address: 172.30.0.20
+
+networks:
+  bonding:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

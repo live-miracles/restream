@@ -205,7 +205,8 @@ export function createSrtRelayService(): SrtRelayService {
         refreshInFlight = (async () => {
             try {
                 const relayConfig = readRelayConfig();
-                const statusUrl = `http://127.0.0.1:${relayConfig.status_port}/status`;
+                const statusHost = process.env.SRT_RELAY_STATUS_HOST || '127.0.0.1';
+                const statusUrl = `http://${statusHost}:${relayConfig.status_port}/status`;
                 const res = await fetch(statusUrl, {
                     signal: AbortSignal.timeout(SRT_BONDING_FETCH_TIMEOUT_MS),
                     headers: { Connection: 'close' },
