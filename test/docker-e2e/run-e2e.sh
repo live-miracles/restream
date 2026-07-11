@@ -197,6 +197,12 @@ if bonding.get("outputConnected"):
 else:
     results.append(("FAIL", f"outputConnected = {bonding.get('outputConnected')}"))
 
+# Health snapshot attributes the MediaMTX publisher to the relay
+if bonding.get("acceptedByMediamtx") and not bonding.get("publishConflict"):
+    results.append(("PASS", "MediaMTX publisher attributed to relay"))
+else:
+    results.append(("FAIL", f"acceptedByMediamtx={bonding.get('acceptedByMediamtx')} publishConflict={bonding.get('publishConflict')}"))
+
 for status, msg in results:
     if status == "PASS":
         print(f"\033[0;32m✓ {msg}\033[0m")
@@ -226,6 +232,43 @@ if [[ "$BONDING_ACTIVE3" == "False" ]]; then
 else
     fail "Bonding inputActive = $BONDING_ACTIVE3 after sender stopped (expected False)"
 fi
+
+# ── 8. Rejected stream IDs release their relay session ─────────────────────
+
+UNKNOWN_STREAMID="publish:live/unknown_e2e_probe"
+info "Sending an unknown stream ID and checking that its relay session is released..."
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T -d sender \
+    ffmpeg -re -f lavfi -i "testsrc2=size=160x120:rate=10" \
+           -f lavfi -i "sine=frequency=880:sample_rate=48000" \
+           -c:v libx264 -preset ultrafast -tune zerolatency -b:v 200k \
+           -c:a aac -b:a 48k -ac 2 -t 15 \
+           -f mpegts "srt://172.30.0.10:10081?streamid=$UNKNOWN_STREAMID&transtype=live&latency=200"
+sleep 4
+
+RELAY_RAW=$(docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T app \
+    node -e "fetch('http://127.0.0.1:8081/status').then(r => r.text()).then(console.log)")
+RELAY_LOGS=$(docker compose -f "$SCRIPT_DIR/docker-compose.yml" logs relay)
+
+if echo "$RELAY_LOGS" | grep -Fq "Closing input after downstream rejection streamid=$UNKNOWN_STREAMID"; then
+    pass "Unknown stream ID was classified as a terminal downstream rejection"
+else
+    fail "Relay did not log terminal rejection for the unknown stream ID"
+fi
+
+if echo "$RELAY_RAW" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+target = "publish:live/unknown_e2e_probe"
+active = d.get("activeStreamIds", [])
+states = [s.get("streamId") for s in d.get("streamStates", [])]
+raise SystemExit(0 if target not in active and target not in states else 1)
+'; then
+    pass "Unknown stream ID left no active relay session"
+else
+    fail "Unknown stream ID remained in relay status after rejection"
+fi
+
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T sender pkill -f ffmpeg 2>/dev/null || true
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 

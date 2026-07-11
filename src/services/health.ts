@@ -15,6 +15,7 @@ import {
 import type { PullProtocol } from '../utils/mediamtx';
 import type { Db, Pipeline, Output, Job } from '../types';
 import { normalizeSocketAddressKey, parseSsTcpSocketEntries } from '../utils/tcp-socket-stats';
+import { isLoopbackAddress } from './security';
 import type { SrtRelayService, SrtRelayStats, SrtRelayStreamStatus } from './srt-relay';
 
 const ffprobeCmd = process.env.FFPROBE_PATH || 'ffprobe';
@@ -170,6 +171,45 @@ function computeInputStatus({
     if (pathAvailable) return 'on';
     if (pathOnline) return 'warning';
     return 'off';
+}
+
+function socketAddressHost(value: string | null | undefined): string | null {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    const bracketed = /^\[([^\]]+)\]:(\d{1,5})$/.exec(raw);
+    if (bracketed) return bracketed[1];
+
+    const separator = raw.lastIndexOf(':');
+    if (separator <= 0 || !/^\d{1,5}$/.test(raw.slice(separator + 1))) return null;
+    return raw.slice(0, separator);
+}
+
+export function deriveSrtBondingPublicationState({
+    inputStatus,
+    publisherProtocol,
+    publisherRemoteAddr,
+    relayStatus,
+}: {
+    inputStatus: string;
+    publisherProtocol: string | null | undefined;
+    publisherRemoteAddr: string | null | undefined;
+    relayStatus: Pick<SrtRelayStreamStatus, 'inputActive' | 'outputConnected'> | null | undefined;
+}): { acceptedByMediamtx: boolean; publishConflict: boolean } {
+    const hasSrtPublisher = inputStatus === 'on' && publisherProtocol === 'srt';
+    const publisherIsRelay =
+        hasSrtPublisher && isLoopbackAddress(socketAddressHost(publisherRemoteAddr));
+    const relayInputActive = !!relayStatus?.inputActive;
+    const acceptedByMediamtx =
+        relayInputActive && !!relayStatus?.outputConnected && publisherIsRelay;
+
+    return {
+        acceptedByMediamtx,
+        publishConflict:
+            relayInputActive &&
+            hasSrtPublisher &&
+            (!relayStatus?.outputConnected || !publisherIsRelay),
+    };
 }
 
 export function parseFfmpegNumber(raw: unknown): number | null {
@@ -926,20 +966,17 @@ export function createHealthMonitorService({
 
         const bondingStreamId = `publish:${effectivePath}`;
         const rawBondingStatus = srtRelayService?.getStreamStatus(bondingStreamId);
-        const isSrtPublisher = publisher?.protocol === 'srt';
-        const relayAcceptedByMediamtx =
-            inputStatus === 'on' && isSrtPublisher && !!rawBondingStatus?.inputActive;
-        const publishConflict =
-            inputStatus === 'on' &&
-            isSrtPublisher &&
-            !relayAcceptedByMediamtx &&
-            !!rawBondingStatus?.inputActive;
+        const publicationState = deriveSrtBondingPublicationState({
+            inputStatus,
+            publisherProtocol: publisher?.protocol,
+            publisherRemoteAddr: publisher?.remoteAddr,
+            relayStatus: rawBondingStatus,
+        });
 
         const srtBonding: SrtBondingHealth = rawBondingStatus
             ? {
                   ...rawBondingStatus,
-                  acceptedByMediamtx: relayAcceptedByMediamtx,
-                  publishConflict,
+                  ...publicationState,
               }
             : { ...EMPTY_SRT_BONDING };
 

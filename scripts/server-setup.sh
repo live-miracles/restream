@@ -32,10 +32,10 @@ GRAFANA_DASHBOARD_DIR=/var/lib/grafana/dashboards
 MEDIAMTX_VERSION=1.17.1
 FFMPEG_VERSION=7.1
 
-SRT_RELAY_RELEASE_TAG="${SRT_RELAY_RELEASE_TAG:-v2.0.0}"
+SRT_RELAY_RELEASE_TAG="${SRT_RELAY_RELEASE_TAG:-v2.0.1}"
 SRT_RELAY_FILENAME="srt-bonding-relay-linux-x86_64.tar.gz"
 SRT_RELAY_URL="${SRT_RELAY_URL:-https://github.com/live-miracles/srt-bonding-relay/releases/download/${SRT_RELAY_RELEASE_TAG}/${SRT_RELAY_FILENAME}}"
-SRT_RELAY_SHA256="${SRT_RELAY_SHA256:-927b3881712b8de568b016d0706592395e5edc011f5344b1d84cfece5de861cc}"
+SRT_RELAY_SHA256="${SRT_RELAY_SHA256:-2e6e32eb99f9524d33c2021c15b3c70c67f32000a848fc4ce93378ca84637bd4}"
 
 WORK="$(mktemp -d)"
 trap "rm -rf $WORK" EXIT
@@ -295,7 +295,7 @@ cat > /etc/systemd/system/restream.service <<EOF
 [Unit]
 Description=Restream Control Plane
 After=network-online.target mediamtx.service srt-bonding-relay.service
-Wants=network-online.target
+Wants=network-online.target srt-bonding-relay.service
 Requires=mediamtx.service
 
 [Service]

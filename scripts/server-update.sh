@@ -11,15 +11,26 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 APP_DIR=/opt/restream
+DATA_DIR=/var/lib/restream
 CONF_DIR=/etc/restream
 LOG_DIR=/var/log/restream
+SERVICE_USER=restream
 PROMETHEUS_CONFIG_DIR=/etc/prometheus
 GRAFANA_PROVISIONING_DIR=/etc/grafana/provisioning
 GRAFANA_DASHBOARD_DIR=/var/lib/grafana/dashboards
 
+SRT_RELAY_RELEASE_TAG="${SRT_RELAY_RELEASE_TAG:-v2.0.1}"
+SRT_RELAY_FILENAME="srt-bonding-relay-linux-x86_64.tar.gz"
+SRT_RELAY_URL="${SRT_RELAY_URL:-https://github.com/live-miracles/srt-bonding-relay/releases/download/${SRT_RELAY_RELEASE_TAG}/${SRT_RELAY_FILENAME}}"
+SRT_RELAY_SHA256="${SRT_RELAY_SHA256:-2e6e32eb99f9524d33c2021c15b3c70c67f32000a848fc4ce93378ca84637bd4}"
+
+WORK="$(mktemp -d)"
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
 echo "=== Ensure runtime packages ==="
 apt-get update -q
-apt-get install -y -q iproute2
+apt-get install -y -q ca-certificates curl iproute2 tar
 
 echo
 echo "=== Pull latest code ==="
@@ -34,10 +45,42 @@ npm prune --omit=dev
 
 echo
 echo "=== Deploy configs ==="
+install -d -m 0755 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$CONF_DIR"
 cp "$APP_DIR/mediamtx.yml" "$CONF_DIR/mediamtx.yml"
 cp "$APP_DIR/srt-bonding-relay.json" "$CONF_DIR/srt-bonding-relay.json"
-chown restream:restream "$CONF_DIR/mediamtx.yml" "$CONF_DIR/srt-bonding-relay.json"
+chown "$SERVICE_USER:$SERVICE_USER" "$CONF_DIR/mediamtx.yml" "$CONF_DIR/srt-bonding-relay.json"
 echo "Copied mediamtx.yml and srt-bonding-relay.json to $CONF_DIR/"
+
+echo
+echo "=== Install srt-bonding-relay $SRT_RELAY_RELEASE_TAG ==="
+SRT_VERSION_MARKER=/usr/local/bin/.srt-bonding-relay-version
+if [[ -x /usr/local/bin/srt-bonding-relay && -f "$SRT_VERSION_MARKER" && "$(cat "$SRT_VERSION_MARKER")" == "$SRT_RELAY_RELEASE_TAG" ]]; then
+    echo "srt-bonding-relay $SRT_RELAY_RELEASE_TAG already installed."
+else
+    SRT_EXTRACT_DIR="$WORK/srt-bonding-relay"
+    mkdir -p "$SRT_EXTRACT_DIR"
+    curl -fsSL "$SRT_RELAY_URL" -o "$WORK/$SRT_RELAY_FILENAME"
+    actual="$(sha256sum "$WORK/$SRT_RELAY_FILENAME" | awk '{print $1}')"
+    if [[ -z "$SRT_RELAY_SHA256" || "$SRT_RELAY_SHA256" != "$actual" ]]; then
+        echo "ERROR: srt-bonding-relay checksum mismatch" >&2
+        exit 1
+    fi
+    tar -xzf "$WORK/$SRT_RELAY_FILENAME" -C "$SRT_EXTRACT_DIR"
+    SRT_BIN="$(find "$SRT_EXTRACT_DIR" -type f -name srt-bonding-relay -perm -111 | head -1)"
+    if [[ -z "$SRT_BIN" ]]; then
+        echo "ERROR: could not find srt-bonding-relay binary in $SRT_RELAY_FILENAME" >&2
+        exit 1
+    fi
+    if [[ -d "$SRT_EXTRACT_DIR/lib" ]]; then
+        install -d -m 0755 /usr/local/lib/restream-srt
+        install -m 0755 "$SRT_EXTRACT_DIR"/lib/* /usr/local/lib/restream-srt/
+        echo /usr/local/lib/restream-srt > /etc/ld.so.conf.d/restream-srt.conf
+        ldconfig
+    fi
+    install -m 0755 "$SRT_BIN" /usr/local/bin/srt-bonding-relay
+    echo "$SRT_RELAY_RELEASE_TAG" > "$SRT_VERSION_MARKER"
+    echo "Installed: /usr/local/bin/srt-bonding-relay"
+fi
 
 echo
 echo "=== Refresh Prometheus and Grafana manifests ==="
@@ -70,7 +113,7 @@ chown -R grafana:grafana "$GRAFANA_PROVISIONING_DIR" "$GRAFANA_DASHBOARD_DIR" ||
 echo
 echo "=== Configure MediaMTX diagnostics logging ==="
 mkdir -p "$LOG_DIR" /etc/systemd/system/mediamtx.service.d
-chown restream:restream "$LOG_DIR"
+chown "$SERVICE_USER:$SERVICE_USER" "$LOG_DIR"
 cat > /etc/systemd/system/mediamtx.service.d/restream-logging.conf <<'EOF'
 [Service]
 Environment=MTX_LOGDESTINATIONS=stdout,file
@@ -87,7 +130,41 @@ cat > /etc/logrotate.d/restream-mediamtx <<'EOF'
     notifempty
 }
 EOF
+
+echo
+echo "=== Configure srt-bonding-relay service ==="
+cat > /etc/systemd/system/srt-bonding-relay.service <<EOF
+[Unit]
+Description=SRT Bonding Relay
+After=network-online.target mediamtx.service
+Wants=network-online.target
+Requires=mediamtx.service
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+Group=$SERVICE_USER
+WorkingDirectory=$DATA_DIR
+ExecStart=/usr/local/bin/srt-bonding-relay $CONF_DIR/srt-bonding-relay.json
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=$DATA_DIR $LOG_DIR $CONF_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+install -d -m 0755 /etc/systemd/system/restream.service.d
+cat > /etc/systemd/system/restream.service.d/srt-bonding-relay.conf <<'EOF'
+[Unit]
+After=srt-bonding-relay.service
+Wants=srt-bonding-relay.service
+EOF
 systemctl daemon-reload
+systemctl enable srt-bonding-relay.service
 
 echo
 echo "=== Restart services ==="
