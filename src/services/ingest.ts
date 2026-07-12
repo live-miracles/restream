@@ -15,7 +15,15 @@ export interface IngestService {
     isRunning(id: string): boolean;
 }
 
-export function createIngestService({ db, mediaDir }: { db: Db; mediaDir: string }): IngestService {
+export function createIngestService({
+    db,
+    mediaDir,
+    isShuttingDown = () => false,
+}: {
+    db: Db;
+    mediaDir: string;
+    isShuttingDown?: () => boolean;
+}): IngestService {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const processes = new Map<string, ChildProcess>();
 
@@ -44,6 +52,7 @@ export function createIngestService({ db, mediaDir }: { db: Db; mediaDir: string
 
     return {
         start(id: string): { ok: boolean; error?: string } {
+            if (isShuttingDown()) return { ok: false, error: 'Service is shutting down' };
             if (processes.has(id)) return { ok: true };
 
             const ingest = db.getIngest(id);

@@ -25,6 +25,7 @@ import { createRecordingService } from './services/recording';
 import { createIngestSecurityService } from './services/security';
 import { createSrtRelayService } from './services/srt-relay';
 import { startServer } from './services/bootstrap';
+import { createRuntimeLifecycle } from './services/runtime-lifecycle';
 import { registerSystemMetricsApi } from './api/metrics';
 import { errMsg, log } from './utils/app';
 import { buildMediamtxPath, getMediamtxHlsBaseUrl } from './utils/mediamtx';
@@ -148,6 +149,7 @@ const ffmpegProgressByJobId = new Map<string, Record<string, string>>();
 
 // ── Shared child-process handle registry ─────────────
 const processes = new Map<string, ChildProcess>();
+const runtimeLifecycle = createRuntimeLifecycle();
 
 // ── Config API ────────────────────────────────────────
 registerConfigApi({ app, db });
@@ -171,10 +173,15 @@ const outputLifecycle = createOutputLifecycleService({
     ffmpegProgressByJobId,
     isInputOn: healthMonitor.isInputOn,
     getInputPullProtocol: healthMonitor.getInputPullProtocol,
+    isShuttingDown: runtimeLifecycle.isShuttingDown,
 });
 
 // ── Ingest service ────────────────────────────────────
-const ingestService = createIngestService({ db, mediaDir });
+const ingestService = createIngestService({
+    db,
+    mediaDir,
+    isShuttingDown: runtimeLifecycle.isShuttingDown,
+});
 
 // ── Recording service ─────────────────────────────────
 const recordingService = createRecordingService({
@@ -182,6 +189,7 @@ const recordingService = createRecordingService({
     mediaDir,
     isInputOn: healthMonitor.isInputOn,
     getInputPullProtocol: healthMonitor.getInputPullProtocol,
+    isShuttingDown: runtimeLifecycle.isShuttingDown,
 });
 
 // Resolve circular dependency: register the output recovery callback now that both services exist.
@@ -324,11 +332,19 @@ async function main(): Promise<void> {
     });
 }
 
-let isShuttingDown = false;
 async function gracefulShutdown(signal: string) {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
+    if (!runtimeLifecycle.beginShutdown()) return;
     log('info', `Received ${signal}, starting graceful shutdown...`);
+
+    log('info', 'Stopping health monitoring and automatic recovery...');
+    try {
+        await healthMonitor.stop();
+    } catch (err) {
+        log('error', 'Error stopping health monitoring during shutdown', {
+            error: errMsg(err),
+        });
+    }
+    outputLifecycle.shutdown();
 
     log('info', 'Stopping all ingest processes...');
     try {

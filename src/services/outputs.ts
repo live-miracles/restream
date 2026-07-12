@@ -58,6 +58,7 @@ export interface OutputLifecycle {
         job: Job | null | undefined,
         signal?: string,
     ): { stopped: boolean; reason: string };
+    shutdown(): void;
 }
 
 export function createOutputLifecycleService({
@@ -67,6 +68,7 @@ export function createOutputLifecycleService({
     ffmpegProgressByJobId,
     isInputOn,
     getInputPullProtocol = () => 'rtmp',
+    isShuttingDown = () => false,
 }: {
     db: Db;
     spawn: typeof nodeSpawn;
@@ -74,11 +76,17 @@ export function createOutputLifecycleService({
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
     isInputOn: (pipelineId: string) => boolean;
     getInputPullProtocol?: (pipelineId: string) => PullProtocol;
+    isShuttingDown?: () => boolean;
 }): OutputLifecycle {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const stopRequestedJobIds = new Set<string>();
     const startLocks = new Set<string>();
     const retryStateByKey = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>();
+    let shutdownRequested = false;
+
+    function shutdownInProgress(): boolean {
+        return shutdownRequested || isShuttingDown();
+    }
 
     function outputKey(pipelineId: string, outputId: string): string {
         return `${pipelineId}:${outputId}`;
@@ -172,6 +180,7 @@ export function createOutputLifecycleService({
     }
 
     function scheduleRetry(pipelineId: string, outputId: string) {
+        if (shutdownInProgress()) return;
         const state = getRetryState(pipelineId, outputId);
         if (state.failures >= MAX_RETRIES) {
             giveUpOutput(pipelineId, outputId, 'retry_limit_exhausted');
@@ -193,6 +202,7 @@ export function createOutputLifecycleService({
     }
 
     async function attemptAutoStart(pipelineId: string, outputId: string) {
+        if (shutdownInProgress()) return;
         const key = outputKey(pipelineId, outputId);
         if (startLocks.has(key)) return;
         startLocks.add(key);
@@ -343,6 +353,9 @@ export function createOutputLifecycleService({
         trigger = 'manual',
         reason = 'manual_request',
     ): Promise<{ job: Job }> {
+        if (shutdownInProgress()) {
+            throw createHttpError(503, 'Service is shutting down');
+        }
         const pipeline = db.getPipeline(pipelineId);
         if (!pipeline) throw createHttpError(404, 'Pipeline not found');
         const output = db.getOutput(pipelineId, outputId);
@@ -590,6 +603,7 @@ export function createOutputLifecycleService({
     }
 
     function restartPipelineOutputsOnInputRecovery(pipelineId: string) {
+        if (shutdownInProgress()) return;
         const outputs = db.listOutputsForPipeline(pipelineId);
         let scheduled = 0;
         outputs.forEach((output, i) => {
@@ -613,6 +627,12 @@ export function createOutputLifecycleService({
         }
     }
 
+    function shutdown() {
+        shutdownRequested = true;
+        for (const state of retryStateByKey.values()) clearRetryTimer(state);
+        retryStateByKey.clear();
+    }
+
     return {
         clearOutputRestartState,
         getOutputDesiredState,
@@ -622,5 +642,6 @@ export function createOutputLifecycleService({
         setOutputDesiredState,
         stopRunningJobAndWait,
         stopRunningJob,
+        shutdown,
     };
 }

@@ -49,3 +49,12 @@ test('update wires the Restream service to start after the relay', () => {
         /restream\.service\.d\/srt-bonding-relay\.conf[\s\S]*After=srt-bonding-relay\.service[\s\S]*Wants=srt-bonding-relay\.service/,
     );
 });
+
+test('setup and update keep FFmpeg children inside the Restream service lifecycle', () => {
+    for (const script of [setupScript, updateScript]) {
+        assert.match(script, /KillMode=control-group/);
+        assert.match(script, /SendSIGKILL=yes/);
+        assert.match(script, /TimeoutStopSec=30s/);
+    }
+    assert.match(updateScript, /restream\.service\.d\/process-lifecycle\.conf/);
+});

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
 const { createOutputLifecycleService } = require('../../src/services/outputs');
+const { createRuntimeLifecycle } = require('../../src/services/runtime-lifecycle');
 const { buildPullInputUrl } = require('../../src/utils/mediamtx');
 
 function createFakeChild() {
@@ -109,4 +110,29 @@ test('output lifecycle pulls via the active SRT ingest protocol', async () => {
         spawnedArgs[spawnedArgs.indexOf('-i') + 1],
         'srt://localhost:10080?streamid=read:live/cam1',
     );
+});
+
+test('output lifecycle rejects new FFmpeg jobs after shutdown begins', async () => {
+    const db = createFakeDb();
+    const runtimeLifecycle = createRuntimeLifecycle();
+    let spawnCount = 0;
+    const lifecycle = createOutputLifecycleService({
+        db,
+        spawn() {
+            spawnCount++;
+            return createFakeChild();
+        },
+        processes: new Map(),
+        ffmpegProgressByJobId: new Map(),
+        isInputOn: () => true,
+        isShuttingDown: runtimeLifecycle.isShuttingDown,
+    });
+
+    assert.equal(runtimeLifecycle.beginShutdown(), true);
+    assert.equal(runtimeLifecycle.beginShutdown(), false);
+    await assert.rejects(
+        lifecycle.reconcileOutput('pipe1', 'out1'),
+        (err) => err?.status === 503 && err?.publicError === 'Service is shutting down',
+    );
+    assert.equal(spawnCount, 0);
 });

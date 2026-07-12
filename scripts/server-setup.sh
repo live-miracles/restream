@@ -310,6 +310,11 @@ Environment=FFPROBE_PATH=/usr/local/bin/ffprobe
 ExecStart=/usr/bin/node /opt/restream/dist/index.js
 Restart=always
 RestartSec=2
+# Keep every FFmpeg child in this service's lifecycle. On a crash or forced
+# restart, systemd must remove the whole cgroup before starting a replacement.
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=30s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

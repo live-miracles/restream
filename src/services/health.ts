@@ -3,7 +3,7 @@ import type { Express } from 'express';
 import { errMsg, log } from '../utils/app';
 import {
     MEDIAMTX_FETCH_TIMEOUT_MS,
-    fetchMediamtxJson,
+    fetchMediamtxJson as defaultFetchMediamtxJson,
     getMediamtxApiBaseUrl,
     getMediamtxIngestPorts,
     buildMediamtxPath,
@@ -146,6 +146,7 @@ export interface HealthMonitor {
     resolveRuntimeInputState(streamKey: string): Promise<{ status: string }>;
     seedPipelineRuntimeState(pipelineId: string, status: string): void;
     start(): Promise<void>;
+    stop(): Promise<void>;
 }
 
 function parseFrameRate(str: unknown): number | null {
@@ -486,11 +487,13 @@ export function createHealthMonitorService({
     fetch: fetchImpl = globalThis.fetch,
     ffmpegProgressByJobId,
     srtRelayService,
+    fetchMediamtxJson = defaultFetchMediamtxJson,
 }: {
     db: Db;
     fetch?: typeof globalThis.fetch;
     ffmpegProgressByJobId: Map<string, Record<string, string>>;
     srtRelayService?: SrtRelayService;
+    fetchMediamtxJson?: typeof defaultFetchMediamtxJson;
 }): HealthMonitor {
     let inputRecoveryHandler: ((pipelineId: string) => void) | null = null;
     let inputLostHandler: ((pipelineId: string) => void) | null = null;
@@ -598,6 +601,7 @@ export function createHealthMonitorService({
     let latestHealthSnapshot: HealthSnapshot | null = null;
     let healthCollectorInFlight: Promise<HealthSnapshot> | null = null;
     let healthCollectorTimer: NodeJS.Timeout | null = null;
+    let stopping = false;
     const mediamtxReadiness: {
         ready: boolean;
         checkedAt: string | null;
@@ -930,14 +934,14 @@ export function createHealthMonitorService({
             inputTransition.previous !== 'on' &&
             inputTransition.current === 'on'
         ) {
-            inputRecoveryHandler?.(pipeline.id);
+            if (!stopping) inputRecoveryHandler?.(pipeline.id);
         }
         if (
             inputTransition.changed &&
             inputTransition.previous === 'on' &&
             inputTransition.current !== 'on'
         ) {
-            inputLostHandler?.(pipeline.id);
+            if (!stopping) inputLostHandler?.(pipeline.id);
         }
         if (inputTransition.changed) {
             if (inputTransition.current === 'on') {
@@ -1077,6 +1081,12 @@ export function createHealthMonitorService({
     }
 
     async function collectHealthSnapshot(): Promise<HealthSnapshot> {
+        if (stopping) {
+            return (
+                latestHealthSnapshot ||
+                buildDefaultHealthSnapshot('stopped', mediamtxReadiness.ready, getRelayStats())
+            );
+        }
         if (healthCollectorInFlight) return healthCollectorInFlight;
         healthCollectorInFlight = (async () => {
             const snapshot = await buildHealthSnapshot();
@@ -1129,9 +1139,28 @@ export function createHealthMonitorService({
     }
 
     async function start() {
+        stopping = false;
         startMediamtxReadinessChecks();
         await bootstrapPipelineInputStatusHistory();
         startHealthCollector();
+    }
+
+    async function stop() {
+        stopping = true;
+        if (healthCollectorTimer) {
+            clearInterval(healthCollectorTimer);
+            healthCollectorTimer = null;
+        }
+        if (mediamtxReadinessTimer) {
+            clearInterval(mediamtxReadinessTimer);
+            mediamtxReadinessTimer = null;
+        }
+        for (const pipelineId of ffprobeRetryByPipelineId.keys()) {
+            clearFfprobeState(pipelineId);
+        }
+        if (healthCollectorInFlight) {
+            await healthCollectorInFlight.catch(() => undefined);
+        }
     }
 
     function isInputOn(pipelineId: string): boolean {
@@ -1166,5 +1195,6 @@ export function createHealthMonitorService({
         resolveRuntimeInputState,
         seedPipelineRuntimeState,
         start,
+        stop,
     };
 }
