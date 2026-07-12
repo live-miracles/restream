@@ -39,12 +39,14 @@ export function createRecordingService({
     isInputOn,
     getInputPullProtocol = () => 'rtmp',
     spawn = nodeSpawn,
+    isShuttingDown = () => false,
 }: {
     db: Db;
     mediaDir: string;
     isInputOn: (pipelineId: string) => boolean;
     getInputPullProtocol?: (pipelineId: string) => PullProtocol;
     spawn?: typeof nodeSpawn;
+    isShuttingDown?: () => boolean;
 }): RecordingService {
     const ffmpegCmd = process.env.FFMPEG_PATH || 'ffmpeg';
     const processes = new Map<string, ChildProcess>();
@@ -61,6 +63,7 @@ export function createRecordingService({
     }
 
     function startRecording(pipelineId: string): void {
+        if (shuttingDown || isShuttingDown()) return;
         if (isActive(pipelineId)) return;
         const pipeline = db.getPipeline(pipelineId);
         if (!pipeline) return;
@@ -200,7 +203,9 @@ export function createRecordingService({
         },
 
         onInputRecovered(pipelineId: string): void {
-            if (isEnabled(pipelineId)) startRecording(pipelineId);
+            if (!shuttingDown && !isShuttingDown() && isEnabled(pipelineId)) {
+                startRecording(pipelineId);
+            }
         },
 
         onInputLost(pipelineId: string): void {

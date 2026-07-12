@@ -18,7 +18,7 @@ function createFakeProcess(pid) {
     return proc;
 }
 
-function createHarness() {
+function createHarness({ isShuttingDown = () => false } = {}) {
     const meta = new Map();
     const pipelines = new Map([['p1', { id: 'p1', name: 'Pipe 1', streamKey: 'live-key' }]]);
     const spawned = [];
@@ -38,6 +38,7 @@ function createHarness() {
         db,
         mediaDir: mkdtempSync(path.join(os.tmpdir(), 'restream-rec-test-')),
         isInputOn: () => inputOn,
+        isShuttingDown,
         spawn: () => {
             const proc = createFakeProcess(FAKE_PID_BASE + spawned.length);
             spawned.push(proc);
@@ -108,4 +109,15 @@ test('recording does not restart while the service is shutting down', async (t) 
     t.mock.timers.tick(5000);
 
     assert.equal(spawned.length, 1);
+});
+
+test('recording does not start after shared shutdown begins', async () => {
+    let shuttingDown = false;
+    const { service, spawned } = createHarness({ isShuttingDown: () => shuttingDown });
+
+    shuttingDown = true;
+    await service.enableRecording('p1');
+    service.onInputRecovered('p1');
+
+    assert.equal(spawned.length, 0);
 });

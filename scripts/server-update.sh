@@ -158,6 +158,13 @@ ReadWritePaths=$DATA_DIR $LOG_DIR $CONF_DIR
 WantedBy=multi-user.target
 EOF
 install -d -m 0755 /etc/systemd/system/restream.service.d
+cat > /etc/systemd/system/restream.service.d/process-lifecycle.conf <<'EOF'
+[Service]
+# Prevent FFmpeg children from surviving a Restream crash or forced restart.
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=30s
+EOF
 cat > /etc/systemd/system/restream.service.d/srt-bonding-relay.conf <<'EOF'
 [Unit]
 After=srt-bonding-relay.service

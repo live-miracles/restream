@@ -3,6 +3,7 @@ import type { Db } from '../types';
 
 interface HealthMonitor {
     start(): Promise<void>;
+    stop(): Promise<void>;
 }
 
 interface BootstrapOptions {
